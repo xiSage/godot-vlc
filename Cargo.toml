@@ -1,0 +1,15 @@
+[package]
+name = "godot-vlc"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = {version = "0.2.4", features = ["experimental-threads", "api-4-1"]}
+printf = "0.1.0"
+
+[build-dependencies]
+bindgen = "0.71.1"

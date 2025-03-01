@@ -1,0 +1,18 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.1
+reloadable = true
+
+[libraries]
+windows.debug.x86_64 = "res://addons/godot-vlc/bin/win64/godot_vlc_debug.dll"
+windows.release.x86_64 = "res://addons/godot-vlc/bin/win64/godot_vlc.dll"
+
+[dependencies]
+windows = {
+	"res://addons/godot-vlc/bin/win64/libvlc.dll": "",
+	"res://addons/godot-vlc/bin/win64/libvlccore.dll": "",
+	"res://addons/godot-vlc/bin/win64/plugins/": ""
+}
+
+[icons]
+VideoStreamVLC = "res://addons/godot-vlc/icons/vlc.svg"

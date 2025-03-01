@@ -1,0 +1,64 @@
+[gd_scene load_steps=3 format=3 uid="uid://dakfnot14s0bk"]
+
+[ext_resource type="VideoStream" path="res://test.mp4" id="1_cywye"]
+
+[sub_resource type="GDScript" id="GDScript_sho2u"]
+script/source = "extends VideoStreamPlayer
+	
+func _process(_delta: float) -> void:
+	%State.text = \"\"
+	%State.text += \"Playing: {0}\\n\".format([is_playing()])
+	%State.text += \"Paused: {0}\".format([paused])
+
+func _on_play_pressed() -> void:
+	play()
+
+func _on_pause_pressed() -> void:
+	paused = true
+
+func _on_resume_pressed() -> void:
+	paused = false
+
+func _on_stop_pressed() -> void:
+	stop()
+"
+
+[node name="VideoStreamPlayer" type="VideoStreamPlayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+stream = ExtResource("1_cywye")
+expand = true
+script = SubResource("GDScript_sho2u")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="."]
+layout_mode = 0
+offset_right = 123.0
+offset_bottom = 43.0
+
+[node name="Play" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Play"
+
+[node name="Pause" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Pause"
+
+[node name="Resume" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Resume"
+
+[node name="Stop" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Stop"
+
+[node name="State" type="Label" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[connection signal="pressed" from="VBoxContainer/Play" to="." method="_on_play_pressed"]
+[connection signal="pressed" from="VBoxContainer/Pause" to="." method="_on_pause_pressed"]
+[connection signal="pressed" from="VBoxContainer/Resume" to="." method="_on_resume_pressed"]
+[connection signal="pressed" from="VBoxContainer/Stop" to="." method="_on_stop_pressed"]
