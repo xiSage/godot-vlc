@@ -27,17 +27,16 @@ impl IObject for VLCInstance {
         let instance = unsafe {
             vlc::libvlc_new(0, ptr::null())
         };
-        let instance = Some(instance);
         unsafe {
-            //vlc::libvlc_log_set(instance.unwrap(), log_callback, ptr::null_mut());
             match debug_level {
-                0 => vlc::libvlc_log_set(instance.unwrap(), Some(VLCInstance::log_callback_debug), ptr::null_mut()),
-                1 => vlc::libvlc_log_set(instance.unwrap(), Some(VLCInstance::log_callback_info), ptr::null_mut()),
-                2 => vlc::libvlc_log_set(instance.unwrap(), Some(VLCInstance::log_callback_warning), ptr::null_mut()),
-                3 => vlc::libvlc_log_set(instance.unwrap(), Some(VLCInstance::log_callback_error), ptr::null_mut()),
+                0 => vlc::libvlc_log_set(instance, Some(VLCInstance::log_callback_debug), ptr::null_mut()),
+                1 => vlc::libvlc_log_set(instance, Some(VLCInstance::log_callback_info), ptr::null_mut()),
+                2 => vlc::libvlc_log_set(instance, Some(VLCInstance::log_callback_warning), ptr::null_mut()),
+                3 => vlc::libvlc_log_set(instance, Some(VLCInstance::log_callback_error), ptr::null_mut()),
                 _ => {}
             }
         }
+        let instance = Some(instance);
         Self {
             instance,
             base,
@@ -134,11 +133,8 @@ impl VLCInstance {
         args: vlc::va_list,
     ) {
         let s : String = printf(fmt, args as *mut _);
-        match level {
-            vlc::libvlc_log_level_LIBVLC_ERROR => {
-                godot_error!("LibVLC: {}", s);
-            },
-            _ => {}
+        if level == vlc::libvlc_log_level_LIBVLC_ERROR {
+            godot_error!("LibVLC: {}", s);
         }
     }
 }
