@@ -23,11 +23,7 @@ pub struct VideoStreamVLC {
 impl IVideoStream for VideoStreamVLC {
     fn instantiate_playback(&mut self) -> Option<Gd<VideoStreamPlayback>> {
         let file = self.base_mut().get_file();
-        if let Some(playback) = VideoStreamVLCPlayback::from_file(file) {
-            return Some(playback.upcast());
-        } else {
-            return None;
-        }
+        VideoStreamVLCPlayback::from_file(file).map(|playback| playback.upcast())
     }
 }
 
@@ -84,7 +80,7 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
         self.playing
     }
     fn set_paused(&mut self, paused: bool) {
-        let mut audio_data = unsafe { self.audio_data.as_mut().unwrap().lock().unwrap() };
+        let audio_data = unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap() };
         audio_data.buffer.clear();
         audio_data.frames = 0;
         self.paused = paused;
@@ -138,7 +134,7 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
     }
     fn update(&mut self, _delta: f64) {
         self.playing = unsafe { vlc::libvlc_media_player_is_playing(self.player) };
-        let mut audio_data = unsafe { self.audio_data.as_mut().unwrap().lock().unwrap() };
+        let audio_data = unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap() };
         if self.playing && !audio_data.paused && audio_data.frames > 0 {
             let count = audio_data.frames as usize * audio_data.channels as usize;
             let mut array = PackedFloat32Array::from([0.0; 2048]);
@@ -152,14 +148,14 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
                 array.as_mut_slice()[..len].copy_from_slice(&audio_data.buffer[mixed..mixed + len]);
                 let result = self
                     .base_mut()
-                    .mix_audio_ex(len as i32 / audio_data.channels as i32)
+                    .mix_audio_ex(len as i32 / audio_data.channels)
                     .buffer(&array)
                     .offset(0)
                     .done() as usize
                     * audio_data.channels as usize;
-                if result <= 0 {
+                if result == 0 {
                     audio_data.buffer = audio_data.buffer.drain(..mixed).collect();
-                    audio_data.frames -= mixed as i32 / audio_data.channels as i32;
+                    audio_data.frames -= mixed as i32 / audio_data.channels;
                     break;
                 }
                 mixed += result;
@@ -169,10 +165,10 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
         }
     }
     fn get_channels(&self) -> i32 {
-        unsafe { self.audio_data.as_mut().unwrap().lock().unwrap().channels }
+        unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap().channels }
     }
     fn get_mix_rate(&self) -> i32 {
-        unsafe { self.audio_data.as_mut().unwrap().lock().unwrap().rate }
+        unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap().rate }
     }
     fn on_notification(&mut self, what: ObjectNotification) {
         if what == ObjectNotification::PREDELETE {
@@ -190,7 +186,7 @@ impl VideoStreamVLCPlayback {
     #[func]
     fn from_file(file: GString) -> Option<Gd<Self>> {
         let file = GFile::open(&file, ModeFlags::READ);
-        if !file.is_ok() {
+        if file.is_err() {
             godot_error!("godot-vlc: unable to open file");
             return None;
         }
@@ -243,12 +239,15 @@ impl VideoStreamVLCPlayback {
         unsafe {
             let result = vlc::libvlc_media_player_play(player);
             vlc::libvlc_media_player_pause(player);
-            while result == 0 {
-                sleep(time::Duration::from_millis(10));
-                if vlc::libvlc_media_player_is_playing(player) {
-                    break;
+            if result == 0 {
+                loop {
+                    sleep(time::Duration::from_millis(10));
+                    if vlc::libvlc_media_player_is_playing(player) {
+                        break;
+                    }
                 }
             }
+
             sleep(time::Duration::from_millis(100));
             vlc::libvlc_media_player_stop_async(player);
             vlc::libvlc_media_player_pause(player);
@@ -273,7 +272,7 @@ impl VideoStreamVLCPlayback {
             .as_mut()
             .unwrap();
         *planes = buffer.as_mut_ptr() as *mut _;
-        return ptr::null_mut();
+        ptr::null_mut()
     }
 
     unsafe extern "C" fn video_unlock_callback(
@@ -328,7 +327,7 @@ impl VideoStreamVLCPlayback {
         *opaque = Box::into_raw(Box::new((texture_ptr, buffer))) as *mut c_void;
         *pitches = *width * 3;
         *lines = *height;
-        return 1;
+        1
     }
 
     unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) {
@@ -342,10 +341,10 @@ impl VideoStreamVLCPlayback {
         count: c_uint,
         _pts: i64,
     ) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         let samples = slice::from_raw_parts(
             samples as *const f32,
@@ -356,28 +355,28 @@ impl VideoStreamVLCPlayback {
     }
 
     unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.paused = true;
     }
 
     unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.paused = false;
     }
 
     unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.buffer.clear();
         audio_data.frames = 0;
@@ -393,24 +392,24 @@ impl VideoStreamVLCPlayback {
         rate: *mut c_uint,
         channels: *mut c_uint,
     ) -> c_int {
-        let mut audio_data = (*opaque as *mut Mutex<AudioData>)
+        let audio_data = (*opaque as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         slice::from_raw_parts_mut(format, 4).copy_from_slice(b"FL32".map(|x| x as i8).as_slice());
         audio_data.rate = *rate as i32;
         audio_data.channels = *channels as i32;
         audio_data.buffer.clear();
         audio_data.frames = 0;
-        return 0;
+        0
     }
 
     unsafe extern "C" fn audio_cleanup_callback(opaque: *mut c_void) {
-        let mut audio_data = (opaque as *mut Mutex<AudioData>)
+        let audio_data = (opaque as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.buffer.clear();
         audio_data.frames = 0;
