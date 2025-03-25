@@ -13,17 +13,42 @@ use std::io::{Read, Seek, SeekFrom};
 use std::ptr;
 use std::sync::Mutex;
 use std::thread::sleep;
+
+enum MediaType { File, Location }
+
 #[derive(GodotClass)]
 #[class(base=VideoStream, init)]
 pub struct VideoStreamVLC {
     base: Base<VideoStream>,
+    #[init(val = MediaType::File)]
+    media_type: MediaType,
 }
 
 #[godot_api]
 impl IVideoStream for VideoStreamVLC {
     fn instantiate_playback(&mut self) -> Option<Gd<VideoStreamPlayback>> {
-        let file = self.base_mut().get_file();
-        VideoStreamVLCPlayback::from_file(file).map(|playback| playback.upcast())
+        let playback = match self.media_type {
+            MediaType::File => {
+                let file = self.base_mut().get_file();
+                VideoStreamVLCPlayback::from_file(file)
+            },
+            MediaType::Location => VideoStreamVLCPlayback::from_location(self.base_mut().get_file())
+        };
+
+        playback.map(|playback| playback.upcast())
+    }
+}
+
+#[godot_api]
+impl VideoStreamVLC {
+    #[func]
+    fn create_from_location(location: GString) -> Gd<Self> {
+        let mut inst = Gd::from_init_fn(|base| Self {
+            base,
+            media_type: MediaType::Location
+        });
+        inst.bind_mut().base_mut().set_file(&location);
+        inst
     }
 }
 
@@ -165,7 +190,14 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
         }
     }
     fn get_channels(&self) -> i32 {
-        unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap().channels }
+        unsafe {
+            self.audio_data
+                .as_mut()
+                .unwrap()
+                .get_mut()
+                .unwrap()
+                .channels
+        }
     }
     fn get_mix_rate(&self) -> i32 {
         unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap().rate }
@@ -191,7 +223,21 @@ impl VideoStreamVLCPlayback {
             return None;
         }
         let file = file.unwrap();
-        let media = Media::new(file);
+        let media = Media::from_file(file);
+        Self::from_media(media)
+    }
+
+    #[func]
+    fn from_location(location: GString) -> Option<Gd<Self>> {
+        let media = Media::from_location(location);
+        Self::from_media(media)
+    }
+
+    fn from_media(media: Media) -> Option<Gd<Self>> {
+        if media.get_media_ptr().is_null() {
+            godot_error!("godot-vlc: unable to create media");
+            return None;
+        }
         let mut instance_singleton: Gd<VLCInstance> = Engine::singleton()
             .get_singleton("VLCInstance")
             .expect("VLCInstance not found")
@@ -314,13 +360,12 @@ impl VideoStreamVLCPlayback {
     ) -> c_uint {
         let texture_ptr = *opaque as *mut Gd<ImageTexture>;
         let texture = texture_ptr.as_mut().unwrap();
-        let img =
-            match Image::create(*width as i32, *height as i32, false, image::Format::RGB8) {
-                Some(img) => img,
-                None => {
-                    return 0;
-                }
-            };
+        let img = match Image::create(*width as i32, *height as i32, false, image::Format::RGB8) {
+            Some(img) => img,
+            None => {
+                return 0;
+            }
+        };
         texture.set_image(&img);
         slice::from_raw_parts_mut(chroma, 5).copy_from_slice(b"RV24\0".map(|x| x as i8).as_slice());
         let buffer = vec![0u8; (*width * *height * 3) as usize];
@@ -430,7 +475,7 @@ pub struct Media {
 }
 
 impl Media {
-    pub fn new(file: GFile) -> Self {
+    pub fn from_file(file: GFile) -> Self {
         let file = Box::into_raw(Box::new(file));
         let media_ptr = unsafe {
             vlc::libvlc_media_new_callbacks(
@@ -440,6 +485,23 @@ impl Media {
                 None,
                 file as *mut c_void,
             )
+        };
+        Self { file, media_ptr }
+    }
+
+    pub fn from_location(location: GString) -> Self {
+        let file = ptr::null_mut();
+        let mut location: Vec<i8> = location
+            .to_utf8_buffer()
+            .as_slice()
+            .iter()
+            .map(|x| *x as i8)
+            .collect();
+        location.push('\0' as i8);
+
+        let media_ptr = unsafe {
+            let location = location.as_ptr();
+            vlc::libvlc_media_new_location(location)
         };
         Self { file, media_ptr }
     }
@@ -495,8 +557,12 @@ impl Media {
 impl Drop for Media {
     fn drop(&mut self) {
         unsafe {
-            vlc::libvlc_media_release(self.media_ptr);
-            drop(Box::from_raw(self.file));
+            if !self.media_ptr.is_null() {
+                vlc::libvlc_media_release(self.media_ptr);
+            }
+            if !self.file.is_null() {
+                drop(Box::from_raw(self.file));
+            }
         }
     }
 }
