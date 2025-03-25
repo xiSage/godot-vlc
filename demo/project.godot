@@ -11,8 +11,12 @@ config_version=5
 [application]
 
 config/name="godot-vlc"
-config/features=PackedStringArray("4.3", "Forward Plus")
+config/features=PackedStringArray("4.4", "Forward Plus")
 
 [dotnet]
 
 project/assembly_name="godot-vlc"
+
+[vlc]
+
+log_level=0

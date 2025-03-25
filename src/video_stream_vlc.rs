@@ -13,21 +13,42 @@ use std::io::{Read, Seek, SeekFrom};
 use std::ptr;
 use std::sync::Mutex;
 use std::thread::sleep;
+
+enum MediaType { File, Location }
+
 #[derive(GodotClass)]
 #[class(base=VideoStream, init)]
 pub struct VideoStreamVLC {
     base: Base<VideoStream>,
+    #[init(val = MediaType::File)]
+    media_type: MediaType,
 }
 
 #[godot_api]
 impl IVideoStream for VideoStreamVLC {
     fn instantiate_playback(&mut self) -> Option<Gd<VideoStreamPlayback>> {
-        let file = self.base_mut().get_file();
-        if let Some(playback) = VideoStreamVLCPlayback::from_file(file) {
-            return Some(playback.upcast());
-        } else {
-            return None;
-        }
+        let playback = match self.media_type {
+            MediaType::File => {
+                let file = self.base_mut().get_file();
+                VideoStreamVLCPlayback::from_file(file)
+            },
+            MediaType::Location => VideoStreamVLCPlayback::from_location(self.base_mut().get_file())
+        };
+
+        playback.map(|playback| playback.upcast())
+    }
+}
+
+#[godot_api]
+impl VideoStreamVLC {
+    #[func]
+    fn create_from_location(location: GString) -> Gd<Self> {
+        let mut inst = Gd::from_init_fn(|base| Self {
+            base,
+            media_type: MediaType::Location
+        });
+        inst.bind_mut().base_mut().set_file(&location);
+        inst
     }
 }
 
@@ -84,7 +105,7 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
         self.playing
     }
     fn set_paused(&mut self, paused: bool) {
-        let mut audio_data = unsafe { self.audio_data.as_mut().unwrap().lock().unwrap() };
+        let audio_data = unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap() };
         audio_data.buffer.clear();
         audio_data.frames = 0;
         self.paused = paused;
@@ -138,7 +159,7 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
     }
     fn update(&mut self, _delta: f64) {
         self.playing = unsafe { vlc::libvlc_media_player_is_playing(self.player) };
-        let mut audio_data = unsafe { self.audio_data.as_mut().unwrap().lock().unwrap() };
+        let audio_data = unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap() };
         if self.playing && !audio_data.paused && audio_data.frames > 0 {
             let count = audio_data.frames as usize * audio_data.channels as usize;
             let mut array = PackedFloat32Array::from([0.0; 2048]);
@@ -152,14 +173,14 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
                 array.as_mut_slice()[..len].copy_from_slice(&audio_data.buffer[mixed..mixed + len]);
                 let result = self
                     .base_mut()
-                    .mix_audio_ex(len as i32 / audio_data.channels as i32)
+                    .mix_audio_ex(len as i32 / audio_data.channels)
                     .buffer(&array)
                     .offset(0)
                     .done() as usize
                     * audio_data.channels as usize;
-                if result <= 0 {
+                if result == 0 {
                     audio_data.buffer = audio_data.buffer.drain(..mixed).collect();
-                    audio_data.frames -= mixed as i32 / audio_data.channels as i32;
+                    audio_data.frames -= mixed as i32 / audio_data.channels;
                     break;
                 }
                 mixed += result;
@@ -169,10 +190,17 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
         }
     }
     fn get_channels(&self) -> i32 {
-        unsafe { self.audio_data.as_mut().unwrap().lock().unwrap().channels }
+        unsafe {
+            self.audio_data
+                .as_mut()
+                .unwrap()
+                .get_mut()
+                .unwrap()
+                .channels
+        }
     }
     fn get_mix_rate(&self) -> i32 {
-        unsafe { self.audio_data.as_mut().unwrap().lock().unwrap().rate }
+        unsafe { self.audio_data.as_mut().unwrap().get_mut().unwrap().rate }
     }
     fn on_notification(&mut self, what: ObjectNotification) {
         if what == ObjectNotification::PREDELETE {
@@ -190,12 +218,26 @@ impl VideoStreamVLCPlayback {
     #[func]
     fn from_file(file: GString) -> Option<Gd<Self>> {
         let file = GFile::open(&file, ModeFlags::READ);
-        if !file.is_ok() {
+        if file.is_err() {
             godot_error!("godot-vlc: unable to open file");
             return None;
         }
         let file = file.unwrap();
-        let media = Media::new(file);
+        let media = Media::from_file(file);
+        Self::from_media(media)
+    }
+
+    #[func]
+    fn from_location(location: GString) -> Option<Gd<Self>> {
+        let media = Media::from_location(location);
+        Self::from_media(media)
+    }
+
+    fn from_media(media: Media) -> Option<Gd<Self>> {
+        if media.get_media_ptr().is_null() {
+            godot_error!("godot-vlc: unable to create media");
+            return None;
+        }
         let mut instance_singleton: Gd<VLCInstance> = Engine::singleton()
             .get_singleton("VLCInstance")
             .expect("VLCInstance not found")
@@ -243,12 +285,15 @@ impl VideoStreamVLCPlayback {
         unsafe {
             let result = vlc::libvlc_media_player_play(player);
             vlc::libvlc_media_player_pause(player);
-            while result == 0 {
-                sleep(time::Duration::from_millis(10));
-                if vlc::libvlc_media_player_is_playing(player) {
-                    break;
+            if result == 0 {
+                loop {
+                    sleep(time::Duration::from_millis(10));
+                    if vlc::libvlc_media_player_is_playing(player) {
+                        break;
+                    }
                 }
             }
+
             sleep(time::Duration::from_millis(100));
             vlc::libvlc_media_player_stop_async(player);
             vlc::libvlc_media_player_pause(player);
@@ -273,7 +318,7 @@ impl VideoStreamVLCPlayback {
             .as_mut()
             .unwrap();
         *planes = buffer.as_mut_ptr() as *mut _;
-        return ptr::null_mut();
+        ptr::null_mut()
     }
 
     unsafe extern "C" fn video_unlock_callback(
@@ -315,20 +360,19 @@ impl VideoStreamVLCPlayback {
     ) -> c_uint {
         let texture_ptr = *opaque as *mut Gd<ImageTexture>;
         let texture = texture_ptr.as_mut().unwrap();
-        let img =
-            match Image::create(*width as i32, *height as i32, false, image::Format::RGB8) {
-                Some(img) => img,
-                None => {
-                    return 0;
-                }
-            };
+        let img = match Image::create(*width as i32, *height as i32, false, image::Format::RGB8) {
+            Some(img) => img,
+            None => {
+                return 0;
+            }
+        };
         texture.set_image(&img);
         slice::from_raw_parts_mut(chroma, 5).copy_from_slice(b"RV24\0".map(|x| x as i8).as_slice());
         let buffer = vec![0u8; (*width * *height * 3) as usize];
         *opaque = Box::into_raw(Box::new((texture_ptr, buffer))) as *mut c_void;
         *pitches = *width * 3;
         *lines = *height;
-        return 1;
+        1
     }
 
     unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) {
@@ -342,10 +386,10 @@ impl VideoStreamVLCPlayback {
         count: c_uint,
         _pts: i64,
     ) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         let samples = slice::from_raw_parts(
             samples as *const f32,
@@ -356,28 +400,28 @@ impl VideoStreamVLCPlayback {
     }
 
     unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.paused = true;
     }
 
     unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.paused = false;
     }
 
     unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
-        let mut audio_data = (data as *mut Mutex<AudioData>)
+        let audio_data = (data as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.buffer.clear();
         audio_data.frames = 0;
@@ -393,24 +437,24 @@ impl VideoStreamVLCPlayback {
         rate: *mut c_uint,
         channels: *mut c_uint,
     ) -> c_int {
-        let mut audio_data = (*opaque as *mut Mutex<AudioData>)
+        let audio_data = (*opaque as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         slice::from_raw_parts_mut(format, 4).copy_from_slice(b"FL32".map(|x| x as i8).as_slice());
         audio_data.rate = *rate as i32;
         audio_data.channels = *channels as i32;
         audio_data.buffer.clear();
         audio_data.frames = 0;
-        return 0;
+        0
     }
 
     unsafe extern "C" fn audio_cleanup_callback(opaque: *mut c_void) {
-        let mut audio_data = (opaque as *mut Mutex<AudioData>)
+        let audio_data = (opaque as *mut Mutex<AudioData>)
             .as_mut()
             .unwrap()
-            .lock()
+            .get_mut()
             .unwrap();
         audio_data.buffer.clear();
         audio_data.frames = 0;
@@ -431,7 +475,7 @@ pub struct Media {
 }
 
 impl Media {
-    pub fn new(file: GFile) -> Self {
+    pub fn from_file(file: GFile) -> Self {
         let file = Box::into_raw(Box::new(file));
         let media_ptr = unsafe {
             vlc::libvlc_media_new_callbacks(
@@ -441,6 +485,23 @@ impl Media {
                 None,
                 file as *mut c_void,
             )
+        };
+        Self { file, media_ptr }
+    }
+
+    pub fn from_location(location: GString) -> Self {
+        let file = ptr::null_mut();
+        let mut location: Vec<i8> = location
+            .to_utf8_buffer()
+            .as_slice()
+            .iter()
+            .map(|x| *x as i8)
+            .collect();
+        location.push('\0' as i8);
+
+        let media_ptr = unsafe {
+            let location = location.as_ptr();
+            vlc::libvlc_media_new_location(location)
         };
         Self { file, media_ptr }
     }
@@ -496,8 +557,12 @@ impl Media {
 impl Drop for Media {
     fn drop(&mut self) {
         unsafe {
-            vlc::libvlc_media_release(self.media_ptr);
-            drop(Box::from_raw(self.file));
+            if !self.media_ptr.is_null() {
+                vlc::libvlc_media_release(self.media_ptr);
+            }
+            if !self.file.is_null() {
+                drop(Box::from_raw(self.file));
+            }
         }
     }
 }

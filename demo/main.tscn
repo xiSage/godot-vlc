@@ -1,6 +1,4 @@
-[gd_scene load_steps=3 format=3 uid="uid://dakfnot14s0bk"]
-
-[ext_resource type="VideoStream" path="res://test.mp4" id="1_cywye"]
+[gd_scene load_steps=2 format=3 uid="uid://dakfnot14s0bk"]
 
 [sub_resource type="GDScript" id="GDScript_sho2u"]
 script/source = "extends VideoStreamPlayer
@@ -21,6 +19,17 @@ func _on_resume_pressed() -> void:
 
 func _on_stop_pressed() -> void:
 	stop()
+
+func _on_load_pressed() -> void:
+	stream = load(\"res://test.mp4\")
+
+func _on_load_mrl_pressed() -> void:
+	if !%InputMRLDialog.visible:
+		%InputMRLDialog.popup_centered()
+
+func _on_input_mrl_dialog_confirmed() -> void:
+	stream = VideoStreamVLC.create_from_location(%MRL.text)
+	%InputMRLDialog.hide()
 "
 
 [node name="VideoStreamPlayer" type="VideoStreamPlayer"]
@@ -29,7 +38,6 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-stream = ExtResource("1_cywye")
 expand = true
 script = SubResource("GDScript_sho2u")
 
@@ -37,6 +45,14 @@ script = SubResource("GDScript_sho2u")
 layout_mode = 0
 offset_right = 123.0
 offset_bottom = 43.0
+
+[node name="Load" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Load File"
+
+[node name="LoadMRL" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Load MRL"
 
 [node name="Play" type="Button" parent="VBoxContainer"]
 layout_mode = 2
@@ -58,7 +74,22 @@ text = "Stop"
 unique_name_in_owner = true
 layout_mode = 2
 
+[node name="InputMRLDialog" type="ConfirmationDialog" parent="."]
+unique_name_in_owner = true
+title = "Input MRL"
+size = Vector2i(600, 100)
+
+[node name="MRL" type="TextEdit" parent="InputMRLDialog"]
+unique_name_in_owner = true
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 592.0
+offset_bottom = 51.0
+
+[connection signal="pressed" from="VBoxContainer/Load" to="." method="_on_load_pressed"]
+[connection signal="pressed" from="VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
 [connection signal="pressed" from="VBoxContainer/Play" to="." method="_on_play_pressed"]
 [connection signal="pressed" from="VBoxContainer/Pause" to="." method="_on_pause_pressed"]
 [connection signal="pressed" from="VBoxContainer/Resume" to="." method="_on_resume_pressed"]
 [connection signal="pressed" from="VBoxContainer/Stop" to="." method="_on_stop_pressed"]
+[connection signal="confirmed" from="InputMRLDialog" to="." method="_on_input_mrl_dialog_confirmed"]
