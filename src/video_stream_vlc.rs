@@ -125,15 +125,29 @@ impl IVideoStreamPlayback for VideoStreamVLCPlayback {
         unsafe { vlc::libvlc_media_player_get_time(self.player) as f64 / 1000.0 }
     }
     fn seek(&mut self, time: f64) {
+        let target_time = (time * 1000.0) as i64;
+
         unsafe {
-            match vlc::libvlc_media_player_set_time(self.player, (time * 1000.0) as i64, false) {
+            match vlc::libvlc_media_player_set_time(self.player, target_time, false) {
                 0 => {}
                 _ => {
                     godot_warn!("LibVLC: seek failed")
                 }
             }
         }
+
+        // Wait until we're close to the target time
+        let threshold = 100; // threshold for seeking accuracy ms
+        loop {
+            sleep(time::Duration::from_millis(10));
+            let current_time = unsafe { vlc::libvlc_media_player_get_time(self.player) };
+            if (current_time - target_time).abs() <= threshold {
+                break;
+            }
+        }
     }
+
+    /// Sets the audio track by index.
     fn set_audio_track(&mut self, idx: i32) {
         unsafe {
             let tracklist = vlc::libvlc_media_player_get_tracklist(
