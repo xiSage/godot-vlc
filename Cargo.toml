@@ -8,7 +8,7 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = {version = "0.3.2", features = ["experimental-threads", "api-4-1"]}
+godot = {version = "0.3.2", features = ["experimental-threads"]}
 printf = "0.1.0"
 
 [build-dependencies]
