@@ -1,11 +1,11 @@
-#![feature(c_variadic)]
 use godot::{classes::Engine, prelude::*};
 
 
-#[allow(dead_code, non_camel_case_types, non_upper_case_globals, non_snake_case, clippy::upper_case_acronyms)]
+#[allow(dead_code, non_camel_case_types, non_upper_case_globals, non_snake_case, clippy::upper_case_acronyms, unused_imports)]
 mod vlc { include!(concat!(env!("OUT_DIR"), "/vlc_bindings.rs")); }
 mod vlc_instance;
-mod video_stream_vlc;
+mod vlc_media_player;
+mod vlc_media;
 
 struct GodotVLCExtension;
 

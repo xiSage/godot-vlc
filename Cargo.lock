@@ -95,9 +95,9 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "godot"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5c4b80a6697ab47cbe03beaa519b4f40fc408ee43b853842224d5d4bdeb85ad"
+checksum = "bf88bc5c641a412f8098695546790e13d8e1c0b2ec6556356e2c6f47f8d80c91"
 dependencies = [
  "godot-core",
  "godot-macros",
@@ -105,24 +105,24 @@ dependencies = [
 
 [[package]]
 name = "godot-bindings"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3ef8e3a3873c1c442b66da8ad939d12ab3ba2bb8c929bc9d45ae4d46047dbd4"
+checksum = "7b232ed5a858d55c7d450fd532e46dcfdc5616e7f7a31b77a39abf56acf55837"
 dependencies = [
  "gdextension-api",
 ]
 
 [[package]]
 name = "godot-cell"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e792bd37ca9b374ab70293bf1b62c17083048938773e9fe527fa844ba411c27"
+checksum = "c30a71a51456c7a190cfa01ad4c21700bb03df24dd41edb4c632c23e0306407c"
 
 [[package]]
 name = "godot-codegen"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1af2c1cf73ea183c4d6b3344259da3de41bf76df17227fa4c3fa309eecceb0d"
+checksum = "5970685601c06be9fc7f53c0560bda1c813d81604b748dbf057e4db22b788e0f"
 dependencies = [
  "godot-bindings",
  "heck",
@@ -134,9 +134,9 @@ dependencies = [
 
 [[package]]
 name = "godot-core"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24fb24e8689e236c80ad7580f87491c90a7f5f6fba8ea6f41863993d5b2b5b8f"
+checksum = "ea7fa55d72449795e32dc3c115efbbe2b6a4fb7fd5336bd8b27985e4731baa59"
 dependencies = [
  "glam",
  "godot-bindings",
@@ -147,9 +147,9 @@ dependencies = [
 
 [[package]]
 name = "godot-ffi"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6f4fbcd1be7bae4c4e781c727317e68879afa1a6e33cd412160bc17e42827"
+checksum = "56ed673789ef833491f717074ccd9a5dde987760e56b872f6d63094d52d616a1"
 dependencies = [
  "godot-bindings",
  "godot-codegen",
@@ -159,11 +159,13 @@ dependencies = [
 
 [[package]]
 name = "godot-macros"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b32a375c5a9852de4201751dbc650a39609c8f618c0a2c156958fd9fe6148e4"
+checksum = "b2e3396be9600ee93a3457628ad021fe5e6c0940b4ace5067ef92d5f448931cf"
 dependencies = [
  "godot-bindings",
+ "litrs",
+ "markdown",
  "proc-macro2",
  "quote",
  "venial",
@@ -210,10 +212,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "litrs"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5e54036fe321fd421e10d732f155734c4e4afd610dd556d9a82833ab3ee0bed"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
 name = "log"
 version = "0.4.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04cbf5b083de1c7e0222a7a51dbfdba1cbe1c6ab0b15e29fff3f6c077fd9cd9f"
+
+[[package]]
+name = "markdown"
+version = "1.0.0-alpha.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9047e0a37a596d4e15411a1ffbdabe71c328908cb90a721cb9bf8dcf3434e6d2"
+dependencies = [
+ "unicode-id",
+]
 
 [[package]]
 name = "memchr"
@@ -341,6 +361,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "unicode-id"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10103c57044730945224467c09f71a4db0071c123a0648cc3e818913bde6b561"
 
 [[package]]
 name = "unicode-ident"
