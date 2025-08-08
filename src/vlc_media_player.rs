@@ -33,8 +33,7 @@ pub enum StretchMode {
     KeepAspectCovered,
 }
 
-/// A control used for video playback.
-///
+/// A control used for video playback.\
 /// This control provides a simple way to play video files using the VLC library. It supports most common video formats, including MP4, MKV, AVI, etc.
 #[derive(GodotClass)]
 #[class(base=Control, rename=VLCMediaPlayer)]
@@ -251,7 +250,7 @@ impl VlcMediaPlayer {
     /// Get title chapter count.
     ///
     /// # Parameters
-    /// - `title` title
+    /// - [param title] title
     ///
     /// # Returns
     /// number of chapters in title, or -1.
@@ -293,7 +292,7 @@ impl VlcMediaPlayer {
     /// Get current movie state.
     ///
     /// # Returns
-    /// the current state of the media player(`STATE_PLAYING`, `STATE_PAUSED`, ...)
+    /// the current state of the media player([constant STATE_PLAYING], [constant STATE_PAUSED], ...)
     #[func]
     pub fn get_state(&self) -> i32 {
         unsafe { libvlc_media_player_get_state(self.player_ptr) }
@@ -346,12 +345,11 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_is_seekable(self.player_ptr) }
     }
 
-    /// Jump the movie time (in ms).
-    ///
+    /// Jump the movie time (in ms).\
     /// This will trigger a precise and relative seek (from the current time). This has no effect if no media is being played. Not all formats and protocols support this.
     ///
     /// # Parameters
-    /// - `time` the movie time (in ms).
+    /// - [param time] the movie time (in ms).
     ///
     /// # Returns
     /// 0 on success, -1 on error.
@@ -363,7 +361,7 @@ impl VlcMediaPlayer {
     /// Navigate through DVD Menu.
     ///
     /// # Parameters
-    /// `navigate` the Navigation mode(NAVIGATE_ACTIVATE, NAVIGATE_UP,...)
+    /// [param navigate] the Navigation mode([constant NAVIGATE_ACTIVATE], [constant NAVIGATE_UP],...)
     #[func]
     fn navigate(&mut self, navigate: u32) {
         unsafe { libvlc_media_player_navigate(self.player_ptr, navigate) }
@@ -388,6 +386,7 @@ impl VlcMediaPlayer {
     }
 
     /// Play.
+    /// 
     /// # Returns
     /// 0 if playback started (and was already started), or -1 on error.
     #[func]
@@ -404,7 +403,7 @@ impl VlcMediaPlayer {
     /// Set movie chapter (if applicable).
     ///
     /// # Parameters
-    /// - `chapter` chapter number to play
+    /// - [param chapter] chapter number to play
     #[func]
     fn set_chapter(&mut self, chapter: i32) {
         unsafe { libvlc_media_player_set_chapter(self.player_ptr, chapter) }
@@ -413,19 +412,18 @@ impl VlcMediaPlayer {
     /// Pause or resume (no effect if there is no media)
     ///
     /// # Parameters
-    /// - `do_pause` play/resume if `false`, pause if `true`
+    /// - [param do_pause] play/resume if `false`, pause if `true`
     #[func]
     fn set_pause(&mut self, do_pause: bool) {
         unsafe { libvlc_media_player_set_pause(self.player_ptr, do_pause as c_int) }
     }
 
-    /// Set movie position as percentage between 0.0 and 1.0.
-    ///
+    /// Set movie position as percentage between 0.0 and 1.0.\
     /// This has no effect if playback is not enabled. This might not work depending on the underlying input format and protocol.
     ///
     /// # Parameters
-    /// - `pos` the position
-    /// - `fast` prefer fast seeking or precise seeking
+    /// - [param pos] the position
+    /// - [param fast] prefer fast seeking or precise seeking
     ///
     /// # Returns
     /// 0 on success, -1 on error
@@ -437,7 +435,7 @@ impl VlcMediaPlayer {
     /// Set movie play rate.
     ///
     /// # Parameters
-    /// - `rate` movie play rate to set
+    /// - [param rate] movie play rate to set
     ///
     /// # Returns
     /// -1 if an error was detected, 0 otherwise (but even then, it might not actually work depending on the underlying media protocol)
@@ -446,13 +444,12 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_set_rate(self.player_ptr, rate) }
     }
 
-    /// Set the movie time (in ms).
-    ///
+    /// Set the movie time (in ms).\
     /// This has no effect if no media is being played. Not all formats and protocols support this.
     ///
     /// # Parameters
-    /// - `time` the movie time (in ms).
-    /// - `fast` prefer fast seeking or precise seeking
+    /// - [param time] the movie time (in ms).
+    /// - [param fast] prefer fast seeking or precise seeking
     ///
     /// # Returns
     /// 0 on success, -1 on error
@@ -464,7 +461,7 @@ impl VlcMediaPlayer {
     /// Set movie title.
     ///
     /// # Parameters
-    /// - `title` title number to play
+    /// - [param title] title number to play
     #[func]
     fn set_title(&mut self, title: i32) {
         unsafe { libvlc_media_player_set_title(self.player_ptr, title) }
@@ -473,8 +470,8 @@ impl VlcMediaPlayer {
     /// Set if, and how, the video title will be shown when media is played.
     ///
     /// # Parameters
-    /// - `position` position at which to display the title (`POSITION_CENTER`, `POSITION_TOP`,...), or `POSITION_DISABLE` to prevent the title from being displayed
-    /// - `timeout` title display timeout in milliseconds (ignored if libvlc_position_disable)
+    /// - [param position] position at which to display the title ([constant POSITION_CENTER], [constant POSITION_TOP],...), or [constant POSITION_DISABLE] to prevent the title from being displayed
+    /// - [param timeout] title display timeout in milliseconds (ignored if [constant POSITION_DISABLE])
     #[func]
     fn set_video_title_display(&mut self, position: i32, timeout: u32) {
         unsafe { libvlc_media_player_set_video_title_display(self.player_ptr, position, timeout) }
@@ -483,12 +480,12 @@ impl VlcMediaPlayer {
     /// Stop asynchronously.
     ///
     /// # Note
-    /// This function is asynchronous. In case of success, the user should wait for the `stopped` signal to know when the stop is finished.
+    /// This function is asynchronous. In case of success, the user should wait for the [signal stopped] signal to know when the stop is finished.
     ///
     /// # Returns
     /// 0 if the player is being stopped, -1 otherwise (no-op)
     #[func]
-    fn stop_async(&self) -> i32 {
+    fn stop_async(&mut self) -> i32 {
         unsafe { libvlc_media_player_stop_async(self.player_ptr) }
     }
 

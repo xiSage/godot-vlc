@@ -6,7 +6,7 @@ use std::{
 
 use crate::{vlc::*, vlc_instance};
 use godot::{
-    classes::{class_macros::registry::constant, file_access::ModeFlags, WeakRef},
+    classes::{file_access::ModeFlags, WeakRef},
     global::weakref,
     prelude::*,
 };
@@ -122,20 +122,17 @@ impl VlcMedia {
         media
     }
 
-    /// Parse the media asynchronously with options.
-    ///
-    /// This fetches (local or network) art, meta data and/or tracks information.
-    ///
-    /// To track when this is over you can listen to `parsed_changed` signal. However if this functions returns an error, you will not receive any events.
-    ///
-    /// It uses a flag to specify parse options (see `PARSE_FLAG_*` constants). All these flags can be combined. By default, media is parsed if it's a local file.
+    /// Parse the media asynchronously with options.\
+    /// This fetches (local or network) art, meta data and/or tracks information.\
+    /// To track when this is over you can listen to [signal parsed_changed] signal. However if this functions returns an error, you will not receive any events.\
+    /// It uses a flag to specify parse options ([constant PARSE_FLAG_PARSE_LOCAL], [constant PARSE_FLAG_PARSE_NETWORK],...). All these flags can be combined. By default, media is parsed if it's a local file.
     ///
     /// # Note
-    /// Parsing can be aborted with `parse_stop()`.
+    /// Parsing can be aborted with [method parse_stop].
     ///
     /// # Parameters
-    /// - `parse_flag` parse options:
-    /// - `timeout` maximum time allowed to preparse the media. If -1, the default "preparse-timeout" option will be used as a timeout. If 0, it will wait indefinitely. If > 0, the timeout will be used (in milliseconds).
+    /// - [param parse_flag] parse options:
+    /// - [param timeout] maximum time allowed to preparse the media. If -1, the default "preparse-timeout" option will be used as a timeout. If 0, it will wait indefinitely. If > 0, the timeout will be used (in milliseconds).
     ///
     /// # Returns
     /// -1 in case of error, 0 otherwise
@@ -146,9 +143,8 @@ impl VlcMedia {
         }
     }
 
-    /// Stop the parsing of the media.
-    ///
-    /// When the media parsing is stopped, the parsed_changed signal will be sent with the `PARSED_STATUS_TIMEOUT` status.
+    /// Stop the parsing of the media.\
+    /// When the media parsing is stopped, the [signal parsed_changed] signal will be sent with the [constant PARSED_STATUS_TIMEOUT] status.
     #[func]
     fn parse_stop(&mut self) {
         unsafe {
