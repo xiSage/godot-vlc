@@ -92,6 +92,7 @@ impl IControl for VlcMediaPlayer {
                     } else {
                         self.texture.update(&data.1);
                     }
+                    self.signals().video_frame().emit();
                 }
             }
         } else if what == ControlNotification::READY {
@@ -207,6 +208,8 @@ impl VlcMediaPlayer {
     fn backward();
     #[signal]
     fn stopping();
+    #[signal]
+    fn video_frame();
 
     #[func]
     pub fn set_media(&mut self, media: Option<Gd<VlcMedia>>) {
