@@ -142,21 +142,21 @@ impl Drop for VlcMediaPlayer {
 #[godot_api]
 impl VlcMediaPlayer {
     #[constant]
-    pub const STATE_NOTHING_SPECIAL: i32 = libvlc_state_t_libvlc_NothingSpecial;
+    const STATE_NOTHING_SPECIAL: i32 = libvlc_state_t_libvlc_NothingSpecial;
     #[constant]
-    pub const STATE_OPENING: i32 = libvlc_state_t_libvlc_Opening;
+    const STATE_OPENING: i32 = libvlc_state_t_libvlc_Opening;
     #[constant]
-    pub const STATE_BUFFERING: i32 = libvlc_state_t_libvlc_Buffering;
+    const STATE_BUFFERING: i32 = libvlc_state_t_libvlc_Buffering;
     #[constant]
-    pub const STATE_PLAYING: i32 = libvlc_state_t_libvlc_Playing;
+    const STATE_PLAYING: i32 = libvlc_state_t_libvlc_Playing;
     #[constant]
-    pub const STATE_PAUSED: i32 = libvlc_state_t_libvlc_Paused;
+    const STATE_PAUSED: i32 = libvlc_state_t_libvlc_Paused;
     #[constant]
-    pub const STATE_STOPPED: i32 = libvlc_state_t_libvlc_Stopped;
+    const STATE_STOPPED: i32 = libvlc_state_t_libvlc_Stopped;
     #[constant]
-    pub const STATE_STOPPING: i32 = libvlc_state_t_libvlc_Stopping;
+    const STATE_STOPPING: i32 = libvlc_state_t_libvlc_Stopping;
     #[constant]
-    pub const STATE_ERROR: i32 = libvlc_state_t_libvlc_Error;
+    const STATE_ERROR: i32 = libvlc_state_t_libvlc_Error;
 
     #[constant]
     const NAVIGATE_ACTIVATE: i32 = libvlc_navigate_mode_t_libvlc_navigate_activate;
