@@ -139,7 +139,12 @@ impl VlcMedia {
     #[func]
     fn parse_request(&mut self, parse_flag: i32, timeout: i32) -> i32 {
         unsafe {
-            libvlc_media_parse_request(vlc_instance::get(), self.media_ptr, parse_flag | libvlc_media_parse_flag_t_libvlc_media_fetch_local, timeout)
+            libvlc_media_parse_request(
+                vlc_instance::get(),
+                self.media_ptr,
+                parse_flag | libvlc_media_parse_flag_t_libvlc_media_fetch_local,
+                timeout,
+            )
         }
     }
 

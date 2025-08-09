@@ -8,6 +8,8 @@ use crate::{
     vlc::*,
     vlc_instance::{self},
     vlc_media::VlcMedia,
+    vlc_track::VlcTrack,
+    vlc_track_list::VlcTrackList,
 };
 use godot::{
     classes::{
@@ -328,6 +330,23 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_get_title_count(self.player_ptr) }
     }
 
+    /// Get the track list for one type.\
+    /// The track list can be used to get track information and to select specific tracks.
+    ///
+    /// # Note
+    /// You need to call [method VLCMedia.parse_request] or play the media at least once before calling this function. Not doing this will result in an empty list.\
+    /// This track list is a snapshot of the current tracks when this function is called. If a track is updated after this call, the user will need to call this function again to get the updated track.
+    ///
+    /// # Parameters
+    /// - [param track_type] type of the track list to request ([constant VLCTrack.TYPE_AUDIO], [constant VLCTrack.TYPE_VIDEO],...)
+    /// - [param selected] filter only selected tracks if true (return all tracks, even selected ones if false)
+    #[func]
+    fn get_tracklist(&self, track_type: i32, selected: bool) -> Gd<VlcTrackList> {
+        let ptr =
+            unsafe { libvlc_media_player_get_tracklist(self.player_ptr, track_type, selected) };
+        VlcTrackList::from_ptr(ptr)
+    }
+
     /// is_playing
     ///
     /// # Return values
@@ -389,7 +408,7 @@ impl VlcMediaPlayer {
     }
 
     /// Play.
-    /// 
+    ///
     /// # Returns
     /// 0 if playback started (and was already started), or -1 on error.
     #[func]
@@ -401,6 +420,19 @@ impl VlcMediaPlayer {
     #[func]
     fn previous_chapter(&mut self) {
         unsafe { libvlc_media_player_previous_chapter(self.player_ptr) }
+    }
+
+    /// Select a track.\
+    /// This will unselected the current track.
+    ///
+    /// # Warning
+    /// Only use a libvlc_media_track_t retrieved with libvlc_media_player_get_tracklist
+    ///
+    /// # Parameters
+    /// - [param track] track to select, can't be NULL
+    #[func]
+    fn select_track(&mut self, track: Gd<VlcTrack>) {
+        unsafe { libvlc_media_player_select_track(self.player_ptr, track.bind().ptr) }
     }
 
     /// Set movie chapter (if applicable).

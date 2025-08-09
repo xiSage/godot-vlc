@@ -6,6 +6,8 @@ mod vlc { include!(concat!(env!("OUT_DIR"), "/vlc_bindings.rs")); }
 mod vlc_instance;
 mod vlc_media_player;
 mod vlc_media;
+mod vlc_track_list;
+mod vlc_track;
 
 struct GodotVLCExtension;
 
