@@ -69,6 +69,18 @@ impl VlcTrack {
     pub fn from_ptr(ptr: *mut libvlc_media_track_t) -> Gd<Self> {
         Gd::from_object(Self { ptr })
     }
+
+    /// Get codec description.
+    #[func]
+    fn get_codec_description(&self) -> GString {
+        let str = unsafe {
+            CStr::from_ptr(libvlc_media_get_codec_description(
+                self.get_type(),
+                self.ptr.as_ref().unwrap().i_codec,
+            ))
+        };
+        GString::try_from_cstr(str, Encoding::Utf8).unwrap_or_default()
+    }
 }
 
 impl Drop for VlcTrack {
