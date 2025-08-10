@@ -17,8 +17,12 @@ impl Drop for VlcTrackList {
 
 #[godot_api]
 impl VlcTrackList {
-    pub fn from_ptr(ptr: *mut libvlc_media_tracklist_t) -> Gd<Self> {
-        Gd::from_object(VlcTrackList { ptr })
+    pub fn from_ptr(ptr: *mut libvlc_media_tracklist_t) -> Option<Gd<Self>> {
+        if ptr.is_null() {
+            None
+        } else {
+            Some(Gd::from_object(VlcTrackList { ptr }))
+        }
     }
 
     /// Get a track at a specific index.\

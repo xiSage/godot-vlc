@@ -1,10 +1,10 @@
 use std::{
-    ffi::{c_int, c_uchar, c_void},
+    ffi::{c_int, c_uchar, c_void, CStr},
     io::{Read, Seek, SeekFrom},
-    ptr,
+    ptr, slice,
 };
 
-use crate::{vlc::*, vlc_instance};
+use crate::{util::cstring_to_gstring, vlc::*, vlc_instance, vlc_track_list::VlcTrackList};
 use godot::{
     classes::{file_access::ModeFlags, WeakRef},
     global::weakref,
@@ -64,6 +64,59 @@ impl VlcMedia {
     #[constant]
     const PARSE_FLAG_DO_INTERACT: i32 = libvlc_media_parse_flag_t_libvlc_media_do_interact;
 
+    #[constant]
+    const META_TITLE: i32 = libvlc_meta_t_libvlc_meta_Title;
+    #[constant]
+    const META_ARTIST: i32 = libvlc_meta_t_libvlc_meta_Artist;
+    #[constant]
+    const META_GENRE: i32 = libvlc_meta_t_libvlc_meta_Genre;
+    #[constant]
+    const META_COPYRIGHT: i32 = libvlc_meta_t_libvlc_meta_Copyright;
+    #[constant]
+    const META_ALBUM: i32 = libvlc_meta_t_libvlc_meta_Album;
+    #[constant]
+    const META_TRACK_NUMBER: i32 = libvlc_meta_t_libvlc_meta_TrackNumber;
+    #[constant]
+    const META_DESCRIPTION: i32 = libvlc_meta_t_libvlc_meta_Description;
+    #[constant]
+    const META_RATING: i32 = libvlc_meta_t_libvlc_meta_Rating;
+    #[constant]
+    const META_DATE: i32 = libvlc_meta_t_libvlc_meta_Date;
+    #[constant]
+    const META_SETTING: i32 = libvlc_meta_t_libvlc_meta_Setting;
+    #[constant]
+    const META_URL: i32 = libvlc_meta_t_libvlc_meta_URL;
+    #[constant]
+    const META_LANGUAGE: i32 = libvlc_meta_t_libvlc_meta_Language;
+    #[constant]
+    const META_NOW_PLAYING: i32 = libvlc_meta_t_libvlc_meta_NowPlaying;
+    #[constant]
+    const META_PUBLISHER: i32 = libvlc_meta_t_libvlc_meta_Publisher;
+    #[constant]
+    const META_ENCODED_BY: i32 = libvlc_meta_t_libvlc_meta_EncodedBy;
+    #[constant]
+    const META_ARTWORK_URL: i32 = libvlc_meta_t_libvlc_meta_ArtworkURL;
+    #[constant]
+    const META_TRACK_ID: i32 = libvlc_meta_t_libvlc_meta_TrackID;
+    #[constant]
+    const META_TRACK_TOTAL: i32 = libvlc_meta_t_libvlc_meta_TrackTotal;
+    #[constant]
+    const META_DIRECTOR: i32 = libvlc_meta_t_libvlc_meta_Director;
+    #[constant]
+    const META_SEASON: i32 = libvlc_meta_t_libvlc_meta_Season;
+    #[constant]
+    const META_EPISODE: i32 = libvlc_meta_t_libvlc_meta_Episode;
+    #[constant]
+    const META_SHOW_NAME: i32 = libvlc_meta_t_libvlc_meta_ShowName;
+    #[constant]
+    const META_ACTORS: i32 = libvlc_meta_t_libvlc_meta_Actors;
+    #[constant]
+    const META_ALBUM_ARTIST: i32 = libvlc_meta_t_libvlc_meta_AlbumArtist;
+    #[constant]
+    const DISC_NUMBER: i32 = libvlc_meta_t_libvlc_meta_DiscNumber;
+    #[constant]
+    const DISC_TOTAL: i32 = libvlc_meta_t_libvlc_meta_DiscTotal;
+
     /// Parsing state of a `VLCMedia` changed.
     #[signal]
     fn parsed_changed(status: i32);
@@ -120,6 +173,153 @@ impl VlcMedia {
         }
 
         media
+    }
+
+    /// Get duration (in ms) of media descriptor object item.\
+    /// Note, you need to call [method parse_request] or play the media at least once before calling this function. Not doing this will result in an undefined result.
+    ///
+    /// # Returns
+    /// duration of media item or -1 on error
+    #[func]
+    fn get_duration(&self) -> i64 {
+        unsafe { libvlc_media_get_duration(self.media_ptr) }
+    }
+
+    /// Read the meta of the media.\
+    /// Note, you need to call [method parse_request] or play the media at least once before calling this function. If the media has not yet been parsed this will return an empty string.
+    ///
+    /// # Parameters
+    /// - [param meta] the media descriptor
+    ///
+    /// # Returns
+    /// the media's meta
+    #[func]
+    fn get_meta(&self, meta: i32) -> GString {
+        let str = unsafe { CStr::from_ptr(libvlc_media_get_meta(self.media_ptr, meta)) };
+        GString::try_from_cstr(str, Encoding::Utf8).unwrap_or_default()
+    }
+
+    /// Read the meta extra of the media.\
+    /// If the media has not yet been parsed this will return an empty string.
+    ///
+    /// # Parameters
+    /// - [param name] the meta extra to read (nonnullable)
+    ///
+    /// # Returns
+    /// the media's meta extra
+    #[func]
+    fn get_meta_extra(&self, name: GString) -> GString {
+        let name = cstring_to_gstring(name);
+        let str =
+            unsafe { CStr::from_ptr(libvlc_media_get_meta_extra(self.media_ptr, name.as_ptr())) };
+        GString::try_from_cstr(str, Encoding::Utf8).unwrap_or_default()
+    }
+
+    /// Read the meta extra names of the media.
+    ///
+    /// # Returns
+    /// the media's meta extra name array
+    #[func]
+    fn get_meta_extra_names(&self) -> PackedStringArray {
+        let names = ptr::null_mut();
+        let count = unsafe { libvlc_media_get_meta_extra_names(self.media_ptr, names) };
+        let arr = unsafe {
+            if count > 0 {
+                slice::from_raw_parts(*names, count as usize)
+                    .iter()
+                    .map(|x| {
+                        GString::try_from_cstr(CStr::from_ptr(*x), Encoding::Utf8)
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            } else {
+                PackedStringArray::default()
+            }
+        };
+        unsafe {
+            libvlc_media_meta_extra_names_release(*names, count);
+        };
+        arr
+    }
+
+    /// Get Parsed status for media.
+    ///
+    /// # Returns
+    /// parsed status of media ([constant PARSED_STATUS_NONE], [constant PARSED_STATUS_PENDING], [constant PARSED_STATUS_SKIPPED],...)
+    #[func]
+    fn get_parsed_status(&self) -> i32 {
+        unsafe { libvlc_media_get_parsed_status(self.media_ptr) }
+    }
+
+    /// Get the current statistics about the media.
+    ///
+    /// # Returns
+    /// dictionary that contain the statistics about the media or an empty dictionary if the statistics are not available. The dictionary contains the following keys:
+    /// - `read_bytes`: int
+    /// - `input_bitrate`: float
+    /// - `demux_read_bytes`: int
+    /// - `demux_bitrate`: float
+    /// - `demux_corrupted`: int
+    /// - `demux_discontinuity`: int
+    /// - `decoded_video`: int
+    /// - `decoded_audio`: int
+    /// - `displayed_pictures`: int
+    /// - `late_pictures`: int
+    /// - `lost_pictures`: int
+    /// - `played_abuffers`: int
+    /// - `lost_abuffers`: int
+    #[func]
+    fn get_stats(&self) -> Dictionary {
+        let mut stats = libvlc_media_stats_t {
+            i_read_bytes: 0,
+            f_input_bitrate: 0.0,
+            i_demux_read_bytes: 0,
+            f_demux_bitrate: 0.0,
+            i_demux_corrupted: 0,
+            i_demux_discontinuity: 0,
+            i_decoded_video: 0,
+            i_decoded_audio: 0,
+            i_displayed_pictures: 0,
+            i_late_pictures: 0,
+            i_lost_pictures: 0,
+            i_played_abuffers: 0,
+            i_lost_abuffers: 0,
+        };
+        let available = unsafe { libvlc_media_get_stats(self.media_ptr, &mut stats) };
+        if available {
+            let mut dict = Dictionary::new();
+            dict.set("read_bytes", stats.i_read_bytes);
+            dict.set("input_bitrate", stats.f_input_bitrate);
+            dict.set("demux_read_bytes", stats.i_demux_read_bytes);
+            dict.set("demux_bitrate", stats.f_demux_bitrate);
+            dict.set("demux_corrupted", stats.i_demux_corrupted);
+            dict.set("demux_discontinuity", stats.i_demux_discontinuity);
+            dict.set("decoded_video", stats.i_decoded_video);
+            dict.set("decoded_audio", stats.i_decoded_audio);
+            dict.set("displayed_pictures", stats.i_displayed_pictures);
+            dict.set("late_pictures", stats.i_late_pictures);
+            dict.set("lost_pictures", stats.i_lost_pictures);
+            dict.set("played_abuffers", stats.i_played_abuffers);
+            dict.set("lost_abuffers", stats.i_lost_abuffers);
+            dict
+        } else {
+            Dictionary::default()
+        }
+    }
+
+    /// Get the track list for one type.
+    ///
+    /// # Note
+    /// You need to call [method parse_request] or play the media at least once before calling this function. Not doing this will result in an empty list.
+    ///
+    /// # Parameters
+    /// - [param track_type] type of the track list to request (e.g. [constant TRACK_TYPE_VIDEO], [constant TRACK_TYPE_AUDIO], [constant TRACK_TYPE_TEXT])
+    ///
+    /// # Returns
+    /// a valid [VLCTrackList] or null in case of error, if there is no track for a category, the returned list will have a size of 0.
+    #[func]
+    fn get_tracklist(&self, track_type: i32) -> Option<Gd<VlcTrackList>> {
+        unsafe { VlcTrackList::from_ptr(libvlc_media_get_tracklist(self.media_ptr, track_type)) }
     }
 
     /// Parse the media asynchronously with options.\

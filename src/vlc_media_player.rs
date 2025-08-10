@@ -340,8 +340,11 @@ impl VlcMediaPlayer {
     /// # Parameters
     /// - [param track_type] type of the track list to request ([constant VLCTrack.TYPE_AUDIO], [constant VLCTrack.TYPE_VIDEO],...)
     /// - [param selected] filter only selected tracks if true (return all tracks, even selected ones if false)
+    ///
+    /// # Returns
+    /// a valid [VLCTrackList] object, or `null` in case of error, if there is no track for a category, the returned list will have a size of 0.
     #[func]
-    fn get_tracklist(&self, track_type: i32, selected: bool) -> Gd<VlcTrackList> {
+    fn get_tracklist(&self, track_type: i32, selected: bool) -> Option<Gd<VlcTrackList>> {
         let ptr =
             unsafe { libvlc_media_player_get_tracklist(self.player_ptr, track_type, selected) };
         VlcTrackList::from_ptr(ptr)

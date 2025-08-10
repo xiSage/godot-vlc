@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 
 use crate::vlc::*;
 use godot::prelude::*;
