@@ -527,6 +527,15 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_stop_async(self.player_ptr) }
     }
 
+    /// Unselect all tracks for a given type.
+    ///
+    /// # Parameters
+    /// - [param track_type] type to unselect
+    #[func]
+    fn unselect_track_type(&mut self, track_type: i32) {
+        unsafe { libvlc_media_player_unselect_track_type(self.player_ptr, track_type) }
+    }
+
     #[func]
     fn set_stretch_mode(&mut self, stretch_mode: i64) {
         self.stretch_mode = match stretch_mode {
