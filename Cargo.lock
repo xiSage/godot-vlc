@@ -13,9 +13,9 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.72.0"
+version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
 dependencies = [
  "bitflags",
  "cexpr",
@@ -64,6 +64,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-utils"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
 name = "either"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -95,9 +101,9 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "godot"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf88bc5c641a412f8098695546790e13d8e1c0b2ec6556356e2c6f47f8d80c91"
+checksum = "ab462a365a4b8bcfcdaf93afe767a189a183edfb1d1e697bde9fb26c3f9bfbe9"
 dependencies = [
  "godot-core",
  "godot-macros",
@@ -105,24 +111,24 @@ dependencies = [
 
 [[package]]
 name = "godot-bindings"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b232ed5a858d55c7d450fd532e46dcfdc5616e7f7a31b77a39abf56acf55837"
+checksum = "597469df0a890b2c7f102b094942e6b184e7ee573adf6ed35fad0421ee86b8fa"
 dependencies = [
  "gdextension-api",
 ]
 
 [[package]]
 name = "godot-cell"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c30a71a51456c7a190cfa01ad4c21700bb03df24dd41edb4c632c23e0306407c"
+checksum = "7e48bf49cf5d6ef0b64b2a58be980e4854f57e75b822889d639f96c3c098a5ec"
 
 [[package]]
 name = "godot-codegen"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5970685601c06be9fc7f53c0560bda1c813d81604b748dbf057e4db22b788e0f"
+checksum = "282e80108e93950e66ed3a40f7dcb6f61978ecb0dd2d19ad7028799d6a5537cb"
 dependencies = [
  "godot-bindings",
  "heck",
@@ -134,9 +140,9 @@ dependencies = [
 
 [[package]]
 name = "godot-core"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea7fa55d72449795e32dc3c115efbbe2b6a4fb7fd5336bd8b27985e4731baa59"
+checksum = "2593ce360312bdec4c45994402dc624c43c3dd8741c8e6391958626dcf635b40"
 dependencies = [
  "glam",
  "godot-bindings",
@@ -147,9 +153,9 @@ dependencies = [
 
 [[package]]
 name = "godot-ffi"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56ed673789ef833491f717074ccd9a5dde987760e56b872f6d63094d52d616a1"
+checksum = "8ce5ae6a7ae29a753f2f0af3d2a2f3194fa482d9900fc167f35a0738fe7d54d2"
 dependencies = [
  "godot-bindings",
  "godot-codegen",
@@ -159,9 +165,9 @@ dependencies = [
 
 [[package]]
 name = "godot-macros"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2e3396be9600ee93a3457628ad021fe5e6c0940b4ace5067ef92d5f448931cf"
+checksum = "2a0f3ebf0fe09733267c4631ae0af2d6b1008b322d032832ddcfb4dfc54607ad"
 dependencies = [
  "godot-bindings",
  "litrs",
@@ -178,6 +184,7 @@ dependencies = [
  "bindgen",
  "godot",
  "printf",
+ "ringbuf",
 ]
 
 [[package]]
@@ -273,6 +280,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable-atomic"
+version = "1.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8a2f0d8d040d7848a709caf78912debcc3f33ee4b3cac47d73d1e1069e83507"
+dependencies = [
+ "portable-atomic",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -338,6 +360,17 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+
+[[package]]
+name = "ringbuf"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe47b720588c8702e34b5979cb3271a8b1842c7cb6f57408efa70c779363488c"
+dependencies = [
+ "crossbeam-utils",
+ "portable-atomic",
+ "portable-atomic-util",
+]
 
 [[package]]
 name = "rustc-hash"
