@@ -1,16 +1,16 @@
 /*
 * Copyright (c) 2025 xiSage
-* 
+*
 * This library is free software; you can redistribute it and/or
 * modify it under the terms of the GNU Lesser General Public
 * License as published by the Free Software Foundation; either
 * version 2.1 of the License, or (at your option) any later version.
-* 
+*
 * This library is distributed in the hope that it will be useful,
 * but WITHOUT ANY WARRANTY; without even the implied warranty of
 * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 * Lesser General Public License for more details.
-* 
+*
 * You should have received a copy of the GNU Lesser General Public
 * License along with this library; if not, write to the Free Software
 * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
@@ -49,9 +49,9 @@ pub struct VLCInstance {
 impl IObject for VLCInstance {
     fn init(base: Base<Object>) -> Self {
         if !ProjectSettings::singleton().has_setting("vlc/log_level") {
-            ProjectSettings::singleton().set_setting("vlc/log_level", &Variant::from(3));
+            ProjectSettings::singleton().set_setting("vlc/log_level", &Variant::from(4));
         }
-        ProjectSettings::singleton().set_initial_value("vlc/log_level", &Variant::from(3));
+        ProjectSettings::singleton().set_initial_value("vlc/log_level", &Variant::from(4));
         let mut info = Dictionary::new();
         let _ = info.insert("name", "vlc/log_level");
         let _ = info.insert("type", VariantType::INT);

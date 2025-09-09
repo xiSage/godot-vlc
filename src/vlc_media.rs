@@ -1,16 +1,16 @@
 /*
 * Copyright (c) 2025 xiSage
-* 
+*
 * This library is free software; you can redistribute it and/or
 * modify it under the terms of the GNU Lesser General Public
 * License as published by the Free Software Foundation; either
 * version 2.1 of the License, or (at your option) any later version.
-* 
+*
 * This library is distributed in the hope that it will be useful,
 * but WITHOUT ANY WARRANTY; without even the implied warranty of
 * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 * Lesser General Public License for more details.
-* 
+*
 * You should have received a copy of the GNU Lesser General Public
 * License along with this library; if not, write to the Free Software
 * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
@@ -35,9 +35,10 @@ use godot::{
 pub struct VlcMedia {
     base: Base<Resource>,
     // file: *mut GFile,
-    path: *mut GString,
+    #[allow(dead_code)]
+    path: Box<GString>,
     pub media_ptr: *mut libvlc_media_t,
-    self_gd: *mut Gd<WeakRef>,
+    self_gd: Option<Box<Gd<WeakRef>>>,
 }
 
 #[godot_api]
@@ -142,24 +143,24 @@ impl VlcMedia {
 
     #[func]
     fn load_from_file(path: GString) -> Gd<Self> {
-        let path = Box::into_raw(Box::new(path));
+        let mut path = Box::new(path);
         let media_ptr = unsafe {
             libvlc_media_new_callbacks(
                 Some(media_open_callback),
                 Some(media_read_callback),
                 Some(media_seek_callback),
                 Some(media_close_cb),
-                path as *mut c_void,
+                path.as_mut() as *mut _ as *mut c_void,
             )
         };
         let mut media = Gd::from_init_fn(|base| Self {
             base,
             path,
             media_ptr,
-            self_gd: ptr::null_mut(),
+            self_gd: None,
         });
-        let self_gd = Box::into_raw(Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>()));
-        media.bind_mut().self_gd = self_gd;
+        let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
+        media.bind_mut().self_gd = Some(self_gd);
 
         // signals
         unsafe {
@@ -187,7 +188,7 @@ impl VlcMedia {
                 event_manager,
                 libvlc_event_e_libvlc_MediaParsedChanged,
                 Some(parsed_changed_callback),
-                self_gd as *mut c_void,
+                media.bind_mut().self_gd.as_mut().unwrap().as_mut() as *mut _ as *mut c_void,
             );
         }
 
@@ -382,12 +383,6 @@ impl Drop for VlcMedia {
         unsafe {
             if !self.media_ptr.is_null() {
                 libvlc_media_release(self.media_ptr);
-            }
-            if !self.path.is_null() {
-                drop(Box::from_raw(self.path));
-            }
-            if !self.self_gd.is_null() {
-                drop(Box::from_raw(self.self_gd));
             }
         }
     }
