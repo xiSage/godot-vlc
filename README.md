@@ -4,4 +4,9 @@
 VLC extension for Godot. Supports Godot 4.1 and newer.
 
 ## How to use
-Put videos into `res://` and they will be loaded as `VideoStreamVLC`. Then you can use them like any other `VideoStream` with `VideoStreamPlayer`.
+Put videos into `res://` and they will be loaded as `VLCMedia`. Then you can play them with `VLCPlayer` node.
+
+for more information, see the ingame documentation.
+
+## Screenshot
+<img src="img/screenshot.png" alt="screenshot">
