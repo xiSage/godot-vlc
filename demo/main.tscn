@@ -1,50 +1,151 @@
-[gd_scene load_steps=2 format=3 uid="uid://dakfnot14s0bk"]
+[gd_scene load_steps=3 format=3 uid="uid://dakfnot14s0bk"]
+
+[ext_resource type="VLCMedia" uid="uid://n41raqiv2ion" path="res://test.mp4" id="1_ig7tw"]
 
 [sub_resource type="GDScript" id="GDScript_sho2u"]
-script/source = "extends VideoStreamPlayer
-	
+script/source = "extends VLCMediaPlayer
+
+
+var dragging = false
+var video_tracks: Array[VLCTrack]
+var audio_tracks: Array[VLCTrack]
+var text_tracks: Array[VLCTrack]
+
+
 func _process(_delta: float) -> void:
-	%State.text = \"\"
-	%State.text += \"Playing: {0}\\n\".format([is_playing()])
-	%State.text += \"Paused: {0}\".format([paused])
+	var state = get_state()
+	var state_text = \"\"
+	match state:
+		STATE_BUFFERING: state_text = \"buffering\"
+		STATE_ERROR: state_text = \"error\"
+		STATE_NOTHING_SPECIAL: state_text = \"noting special\"
+		STATE_OPENING: state_text = \"openning\"
+		STATE_PAUSED: state_text = \"paused\"
+		STATE_PLAYING: state_text = \"playing\"
+		STATE_STOPPED :state_text = \"stopped\"
+		STATE_STOPPING: state_text = \"stopping\"
+	%State.text = \"state: \" + state_text
+	
+
 
 func _on_play_pressed() -> void:
 	play()
 
+
 func _on_pause_pressed() -> void:
-	paused = true
+	set_pause(true)
+
 
 func _on_resume_pressed() -> void:
-	paused = false
+	set_pause(false)
+
 
 func _on_stop_pressed() -> void:
-	stop()
+	stop_async()
+	
+
 
 func _on_load_pressed() -> void:
-	stream = load(\"res://test.mp4\")
+	#media = load(\"res://[Sakurato] City the Animation [01][HEVC-10bit 1080P AAC][CHS&CHT].mkv\")
+	media = load(\"res://test.mp4\")
+
 
 func _on_load_mrl_pressed() -> void:
 	if !%InputMRLDialog.visible:
 		%InputMRLDialog.popup_centered()
 
+
 func _on_input_mrl_dialog_confirmed() -> void:
-	stream = VideoStreamVLC.create_from_location(%MRL.text)
-	%InputMRLDialog.hide()
+	#stream = VideoStreamVLC.create_from_location(%MRL.text)
+	#%InputMRLDialog.hide()
+	pass
+
+
+func _on_video_frame() -> void:
+	%Time.text = \"time: {0} / {1}\".format([get_time(), get_length()])
+	var pos = get_position()
+	%Position.text = \"position: %.6f\" % pos
+	if not dragging:
+		%HSlider.value = pos
+
+
+func _on_h_slider_drag_started() -> void:
+	dragging = true
+
+
+func _on_h_slider_drag_ended(value_changed: bool) -> void:
+	if value_changed:
+		set_position(%HSlider.value, false)
+		dragging = false
+
+
+func _on_playing() -> void:
+	video_tracks = get_tracklist(VLCTrack.TYPE_VIDEO, false).get_tracks()
+	audio_tracks = get_tracklist(VLCTrack.TYPE_AUDIO, false).get_tracks()
+	text_tracks = get_tracklist(VLCTrack.TYPE_TEXT, false).get_tracks()
+	
+	var video_button: OptionButton = %VideoTrack/OptionButton
+	var audio_button: OptionButton= %AudioTrack/OptionButton
+	var text_button: OptionButton= %TextTrack/OptionButton
+	video_button.clear()
+	audio_button.clear()
+	text_button.clear()
+	video_button.add_item(\"disable\")
+	audio_button.add_item(\"disable\")
+	text_button.add_item(\"disable\")
+	for track in video_tracks:
+		video_button.add_item(track.get_name())
+		if track.is_selected():
+			video_button.selected = video_button.item_count - 1
+	for track in audio_tracks:
+		audio_button.add_item(track.get_name())
+		if track.is_selected():
+			audio_button.selected = video_button.item_count - 1
+	for track in text_tracks:
+		text_button.add_item(track.get_name())
+		if track.is_selected():
+			text_button.selected = video_button.item_count - 1
+
+
+func _on_video_option_button_item_selected(index: int) -> void:
+	if index == 0:
+		unselect_track_type(VLCTrack.TYPE_VIDEO)
+	else:
+		select_track(video_tracks[index - 1])
+
+
+func _on_audio_option_button_item_selected(index: int) -> void:
+	if index == 0:
+		unselect_track_type(VLCTrack.TYPE_AUDIO)
+	else:
+		select_track(audio_tracks[index - 1])
+
+
+func _on_text_option_button_item_selected(index: int) -> void:
+	if index == 0:
+		unselect_track_type(VLCTrack.TYPE_TEXT)
+	else:
+		select_track(text_tracks[index - 1])
+
+
+func _on_statics_pressed() -> void:
+	var stats = media.get_stats()
+	print(stats)
 "
 
-[node name="VideoStreamPlayer" type="VideoStreamPlayer"]
+[node name="VLCMediaPlayer" type="VLCMediaPlayer"]
+media = ExtResource("1_ig7tw")
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-expand = true
 script = SubResource("GDScript_sho2u")
 
 [node name="VBoxContainer" type="VBoxContainer" parent="."]
 layout_mode = 0
-offset_right = 123.0
-offset_bottom = 43.0
+offset_right = 201.0
+offset_bottom = 233.0
 
 [node name="Load" type="Button" parent="VBoxContainer"]
 layout_mode = 2
@@ -70,9 +171,75 @@ text = "Resume"
 layout_mode = 2
 text = "Stop"
 
+[node name="VideoTrack" type="HBoxContainer" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label" type="Label" parent="VBoxContainer/VideoTrack"]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 0
+text = "video track:"
+
+[node name="OptionButton" type="OptionButton" parent="VBoxContainer/VideoTrack"]
+layout_mode = 2
+size_flags_horizontal = 3
+clip_text = true
+
+[node name="AudioTrack" type="HBoxContainer" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label" type="Label" parent="VBoxContainer/AudioTrack"]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 0
+text = "audio track:"
+
+[node name="OptionButton" type="OptionButton" parent="VBoxContainer/AudioTrack"]
+layout_mode = 2
+size_flags_horizontal = 3
+clip_text = true
+
+[node name="TextTrack" type="HBoxContainer" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label" type="Label" parent="VBoxContainer/TextTrack"]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 0
+text = "text track:"
+
+[node name="OptionButton" type="OptionButton" parent="VBoxContainer/TextTrack"]
+layout_mode = 2
+size_flags_horizontal = 3
+clip_text = true
+
+[node name="HSlider" type="HSlider" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+max_value = 1.0
+step = 0.0
+
+[node name="Time" type="Label" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "time:"
+
+[node name="Position" type="Label" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "position:"
+
 [node name="State" type="Label" parent="VBoxContainer"]
 unique_name_in_owner = true
 layout_mode = 2
+text = "state:"
+
+[node name="Statics" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Statics"
 
 [node name="InputMRLDialog" type="ConfirmationDialog" parent="."]
 unique_name_in_owner = true
@@ -86,10 +253,19 @@ offset_top = 8.0
 offset_right = 592.0
 offset_bottom = 51.0
 
+[connection signal="playing" from="." to="." method="_on_playing"]
+[connection signal="video_frame" from="." to="." method="_on_video_frame"]
 [connection signal="pressed" from="VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
 [connection signal="pressed" from="VBoxContainer/Play" to="." method="_on_play_pressed"]
 [connection signal="pressed" from="VBoxContainer/Pause" to="." method="_on_pause_pressed"]
 [connection signal="pressed" from="VBoxContainer/Resume" to="." method="_on_resume_pressed"]
 [connection signal="pressed" from="VBoxContainer/Stop" to="." method="_on_stop_pressed"]
+[connection signal="item_selected" from="VBoxContainer/VideoTrack/OptionButton" to="." method="_on_video_option_button_item_selected"]
+[connection signal="item_selected" from="VBoxContainer/AudioTrack/OptionButton" to="." method="_on_audio_option_button_item_selected"]
+[connection signal="item_selected" from="VBoxContainer/TextTrack/OptionButton" to="." method="_on_text_option_button_item_selected"]
+[connection signal="drag_ended" from="VBoxContainer/HSlider" to="." method="_on_h_slider_drag_ended"]
+[connection signal="drag_started" from="VBoxContainer/HSlider" to="." method="_on_h_slider_drag_started"]
+[connection signal="value_changed" from="VBoxContainer/HSlider" to="." method="_on_h_slider_value_changed"]
+[connection signal="pressed" from="VBoxContainer/Statics" to="." method="_on_statics_pressed"]
 [connection signal="confirmed" from="InputMRLDialog" to="." method="_on_input_mrl_dialog_confirmed"]

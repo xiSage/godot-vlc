@@ -15,4 +15,5 @@ windows = {
 }
 
 [icons]
-VideoStreamVLC = "res://addons/godot-vlc/icons/vlc.svg"
+VLCMedia = "res://addons/godot-vlc/icons/VLCMedia.svg"
+VLCMediaPlayer = "res://addons/godot-vlc/icons/VLCMediaPlayer.svg"
