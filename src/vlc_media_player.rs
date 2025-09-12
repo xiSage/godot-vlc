@@ -195,8 +195,12 @@ impl Drop for VlcMediaPlayer {
         unsafe {
             libvlc_media_player_release(self.player_ptr);
         }
-        self.texture_rect.queue_free();
-        self.audio_player.queue_free();
+        if self.texture_rect.is_instance_valid() {
+            self.texture_rect.queue_free();
+        }
+        if self.audio_player.is_instance_valid() {
+            self.audio_player.queue_free();
+        }
     }
 }
 
