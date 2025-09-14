@@ -25,7 +25,11 @@ func _process(_delta: float) -> void:
 		STATE_STOPPED :state_text = \"stopped\"
 		STATE_STOPPING: state_text = \"stopping\"
 	%State.text = \"state: \" + state_text
-	
+	%Time.text = \"time: {0} / {1}\".format([get_time(), get_length()])
+	var pos = get_position()
+	%Position.text = \"position: %.6f\" % pos
+	if not dragging:
+		%HSlider.value = pos
 
 
 func _on_play_pressed() -> void:
@@ -46,7 +50,6 @@ func _on_stop_pressed() -> void:
 
 
 func _on_load_pressed() -> void:
-	#media = load(\"res://[Sakurato] City the Animation [01][HEVC-10bit 1080P AAC][CHS&CHT].mkv\")
 	media = load(\"res://test.mp4\")
 
 
@@ -59,14 +62,6 @@ func _on_input_mrl_dialog_confirmed() -> void:
 	#stream = VideoStreamVLC.create_from_location(%MRL.text)
 	#%InputMRLDialog.hide()
 	pass
-
-
-func _on_video_frame() -> void:
-	%Time.text = \"time: {0} / {1}\".format([get_time(), get_length()])
-	var pos = get_position()
-	%Position.text = \"position: %.6f\" % pos
-	if not dragging:
-		%HSlider.value = pos
 
 
 func _on_h_slider_drag_started() -> void:
@@ -254,7 +249,6 @@ offset_right = 592.0
 offset_bottom = 51.0
 
 [connection signal="playing" from="." to="." method="_on_playing"]
-[connection signal="video_frame" from="." to="." method="_on_video_frame"]
 [connection signal="pressed" from="VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
 [connection signal="pressed" from="VBoxContainer/Play" to="." method="_on_play_pressed"]
