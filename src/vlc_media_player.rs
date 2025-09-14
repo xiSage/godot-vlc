@@ -875,7 +875,7 @@ unsafe extern "C" fn video_display_callback(opaque: *mut c_void, _picture: *mut 
         ))
         .as_mut()
         .unwrap();
-    _ = tx.as_mut().unwrap().send((false, img.clone()));
+    _ = tx.as_mut().unwrap().send((false, img.duplicate().unwrap().cast()));
 }
 
 unsafe extern "C" fn video_format_callback(
