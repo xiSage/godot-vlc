@@ -20,7 +20,7 @@
 use godot::prelude::*;
 use std::{ffi::CString, num::NonZeroU8};
 
-pub fn cstring_to_gstring(str: GString) -> CString {
+pub fn cstring_from_gstring(str: GString) -> CString {
     CString::from(
         str.to_utf8_buffer()
             .as_slice()
