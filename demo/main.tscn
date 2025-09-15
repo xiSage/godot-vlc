@@ -59,8 +59,8 @@ func _on_load_mrl_pressed() -> void:
 
 
 func _on_input_mrl_dialog_confirmed() -> void:
-	#stream = VideoStreamVLC.create_from_location(%MRL.text)
-	#%InputMRLDialog.hide()
+	media = VLCMedia.load_from_mrl(%MRL.text)
+	%InputMRLDialog.hide()
 	pass
 
 
@@ -247,6 +247,7 @@ offset_left = 8.0
 offset_top = 8.0
 offset_right = 592.0
 offset_bottom = 51.0
+text = "https://github.com/xiSage/godot-vlc/raw/refs/heads/master/demo/test.mp4"
 
 [connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="pressed" from="VBoxContainer/Load" to="." method="_on_load_pressed"]

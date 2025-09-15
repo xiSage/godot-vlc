@@ -23,7 +23,7 @@ use std::{
     ptr, slice,
 };
 
-use crate::{util::cstring_to_gstring, vlc::*, vlc_instance, vlc_track_list::VlcTrackList};
+use crate::{util::cstring_from_gstring, vlc::*, vlc_instance, vlc_track_list::VlcTrackList};
 use godot::{
     classes::{file_access::ModeFlags, WeakRef},
     global::weakref,
@@ -34,9 +34,8 @@ use godot::{
 #[class(base=Resource, rename=VLCMedia, no_init)]
 pub struct VlcMedia {
     base: Base<Resource>,
-    // file: *mut GFile,
     #[allow(dead_code)]
-    path: Box<GString>,
+    path: Option<Box<GString>>,
     pub media_ptr: *mut libvlc_media_t,
     self_gd: Option<Box<Gd<WeakRef>>>,
 }
@@ -141,6 +140,10 @@ impl VlcMedia {
     #[signal]
     fn parsed_changed(status: i32);
 
+    /// Create a new `VLCMedia` from a file path.
+    ///
+    /// # Parameters
+    /// - [param path] the path to the media file.
     #[func]
     fn load_from_file(path: GString) -> Gd<Self> {
         let mut path = Box::new(path);
@@ -155,20 +158,51 @@ impl VlcMedia {
         };
         let mut media = Gd::from_init_fn(|base| Self {
             base,
-            path,
+            path: Some(path),
             media_ptr,
             self_gd: None,
         });
         let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
         media.bind_mut().self_gd = Some(self_gd);
 
-        // signals
+        Self::register_signals(&mut media);
+
+        media
+    }
+
+    /// Create a new `VLCMedia` from a media resource locator (MRL).\
+    /// A media resource locator (MRL) is a string of characters used to identify a multimedia resource or part of a multimedia resource. A MRL may be used to identify inputs or outputs to VLC media player. See [VideoLAN wiki](https://wiki.videolan.org/Media_resource_locator).
+    ///
+    /// # Parameters
+    /// - [param mrl] the media resource locator.
+    #[func]
+    fn load_from_mrl(mrl: GString) -> Option<Gd<Self>> {
+        let mrl = cstring_from_gstring(mrl);
+        let media_ptr = unsafe { libvlc_media_new_location(mrl.as_ptr()) };
+        if media_ptr.is_null() {
+            return None;
+        }
+        let mut media = Gd::from_init_fn(|base| Self {
+            base,
+            path: None,
+            media_ptr,
+            self_gd: None,
+        });
+        let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
+        media.bind_mut().self_gd = Some(self_gd);
+
+        Self::register_signals(&mut media);
+
+        Some(media)
+    }
+
+    fn register_signals(media: &mut Gd<Self>) {
         unsafe {
             fn get_media(ptr: *mut c_void) -> Gd<VlcMedia> {
                 unsafe { (ptr as *mut WeakRef).as_mut().unwrap().get_ref().to() }
             }
 
-            let event_manager = libvlc_media_event_manager(media_ptr);
+            let event_manager = libvlc_media_event_manager(media.bind().media_ptr);
 
             unsafe extern "C" fn parsed_changed_callback(
                 _event: *const libvlc_event_t,
@@ -191,8 +225,6 @@ impl VlcMedia {
                 media.bind_mut().self_gd.as_mut().unwrap().as_mut() as *mut _ as *mut c_void,
             );
         }
-
-        media
     }
 
     /// Get duration (in ms) of media descriptor object item.\
@@ -229,7 +261,7 @@ impl VlcMedia {
     /// the media's meta extra
     #[func]
     fn get_meta_extra(&self, name: GString) -> GString {
-        let name = cstring_to_gstring(name);
+        let name = cstring_from_gstring(name);
         let str =
             unsafe { CStr::from_ptr(libvlc_media_get_meta_extra(self.media_ptr, name.as_ptr())) };
         GString::try_from_cstr(str, Encoding::Utf8).unwrap_or_default()
