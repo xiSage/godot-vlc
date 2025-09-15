@@ -21,7 +21,12 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rustc-link-search=./thirdparty/vlc/lib");
+    let target = env::var("TARGET").unwrap();
+
+    if target.contains("windows") && target.contains("x86_64") {
+        println!("cargo:rustc-link-search=./thirdparty/vlc/lib/win64");
+    }
+    
     println!("cargo:rustc-link-lib=libvlc");
     println!("cargo:rustc-link-lib=libvlccore");
 
