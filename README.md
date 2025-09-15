@@ -1,6 +1,8 @@
 <img src="icon.svg" alt="icon" width="128"/>
 
 # godot-vlc
+[![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgodotengine.org%2Fasset-library%2Fapi%2Fasset%2F3766&query=%24.version_string&logo=godotengine&label=asset%20library&labelColor=333639)](https://godotengine.org/asset-library/asset/3766)
+
 VLC extension for Godot. Supports Godot 4.3 and newer.
 
 ## How to use
