@@ -50,7 +50,7 @@ func _on_stop_pressed() -> void:
 
 
 func _on_load_pressed() -> void:
-	media = load(\"res://test.mp4\")
+	$FileDialog.visible = true
 
 
 func _on_load_mrl_pressed() -> void:
@@ -126,6 +126,10 @@ func _on_text_option_button_item_selected(index: int) -> void:
 func _on_statics_pressed() -> void:
 	var stats = media.get_stats()
 	print(stats)
+
+
+func _on_file_dialog_file_selected(path: String) -> void:
+	media = VLCMedia.load_from_file(path)
 "
 
 [node name="VLCMediaPlayer" type="VLCMediaPlayer"]
@@ -140,7 +144,7 @@ script = SubResource("GDScript_sho2u")
 [node name="VBoxContainer" type="VBoxContainer" parent="."]
 layout_mode = 0
 offset_right = 201.0
-offset_bottom = 233.0
+offset_bottom = 423.0
 
 [node name="Load" type="Button" parent="VBoxContainer"]
 layout_mode = 2
@@ -249,6 +253,14 @@ offset_right = 592.0
 offset_bottom = 51.0
 text = "https://github.com/xiSage/godot-vlc/raw/refs/heads/master/demo/test.mp4"
 
+[node name="FileDialog" type="FileDialog" parent="."]
+title = "Open a File"
+initial_position = 2
+ok_button_text = "Open"
+file_mode = 0
+access = 2
+use_native_dialog = true
+
 [connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="pressed" from="VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
@@ -264,3 +276,4 @@ text = "https://github.com/xiSage/godot-vlc/raw/refs/heads/master/demo/test.mp4"
 [connection signal="value_changed" from="VBoxContainer/HSlider" to="." method="_on_h_slider_value_changed"]
 [connection signal="pressed" from="VBoxContainer/Statics" to="." method="_on_statics_pressed"]
 [connection signal="confirmed" from="InputMRLDialog" to="." method="_on_input_mrl_dialog_confirmed"]
+[connection signal="file_selected" from="FileDialog" to="." method="_on_file_dialog_file_selected"]
