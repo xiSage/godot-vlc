@@ -27,8 +27,8 @@ fn main() {
         println!("cargo:rustc-link-search=./thirdparty/vlc/lib/win64");
     }
 
-    println!("cargo:rustc-link-lib=libvlc");
-    println!("cargo:rustc-link-lib=libvlccore");
+    println!("cargo:rustc-link-lib=vlc");
+    println!("cargo:rustc-link-lib=vlccore");
 
     let bindings = bindgen::Builder::default()
         .header("thirdparty/vlc/include/vlc/vlc.h")

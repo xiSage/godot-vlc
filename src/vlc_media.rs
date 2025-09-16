@@ -43,98 +43,102 @@ pub struct VlcMedia {
 #[godot_api]
 impl VlcMedia {
     #[constant]
-    const PARSED_STATUS_NONE: i32 = libvlc_media_parsed_status_t_libvlc_media_parsed_status_none;
+    const PARSED_STATUS_NONE: i32 =
+        libvlc_media_parsed_status_t_libvlc_media_parsed_status_none as i32;
     #[constant]
     const PARSED_STATUS_PENDING: i32 =
-        libvlc_media_parsed_status_t_libvlc_media_parsed_status_pending;
+        libvlc_media_parsed_status_t_libvlc_media_parsed_status_pending as i32;
     #[constant]
     const PARSED_STATUS_SKIPPED: i32 =
-        libvlc_media_parsed_status_t_libvlc_media_parsed_status_skipped;
+        libvlc_media_parsed_status_t_libvlc_media_parsed_status_skipped as i32;
     #[constant]
     const PARSED_STATUS_FAILED: i32 =
-        libvlc_media_parsed_status_t_libvlc_media_parsed_status_failed;
+        libvlc_media_parsed_status_t_libvlc_media_parsed_status_failed as i32;
     #[constant]
     const PARSED_STATUS_TIMEOUT: i32 =
-        libvlc_media_parsed_status_t_libvlc_media_parsed_status_timeout;
+        libvlc_media_parsed_status_t_libvlc_media_parsed_status_timeout as i32;
     #[constant]
     const PARSED_STATUS_CANCELLED: i32 =
-        libvlc_media_parsed_status_t_libvlc_media_parsed_status_cancelled;
+        libvlc_media_parsed_status_t_libvlc_media_parsed_status_cancelled as i32;
     #[constant]
-    const PARSED_STATUS_DONE: i32 = libvlc_media_parsed_status_t_libvlc_media_parsed_status_done;
+    const PARSED_STATUS_DONE: i32 =
+        libvlc_media_parsed_status_t_libvlc_media_parsed_status_done as i32;
 
     /// Parse media if it's a local file.
     #[constant]
-    const PARSE_FLAG_PARSE_LOCAL: i32 = libvlc_media_parse_flag_t_libvlc_media_parse_local;
+    const PARSE_FLAG_PARSE_LOCAL: i32 = libvlc_media_parse_flag_t_libvlc_media_parse_local as i32;
     /// Parse media even if it's a network file.
     #[constant]
-    const PARSE_FLAG_PARSE_NETWORK: i32 = libvlc_media_parse_flag_t_libvlc_media_parse_network;
+    const PARSE_FLAG_PARSE_NETWORK: i32 =
+        libvlc_media_parse_flag_t_libvlc_media_parse_network as i32;
     /// Force parsing the media even if it would be skipped.
     #[constant]
-    const PARSE_FLAG_PARSE_FORCED: i32 = libvlc_media_parse_flag_t_libvlc_media_parse_forced;
+    const PARSE_FLAG_PARSE_FORCED: i32 = libvlc_media_parse_flag_t_libvlc_media_parse_forced as i32;
     /// Fetch meta and cover art using local resources.
     #[constant]
-    const PARSE_FLAG_FETCH_LOCAL: i32 = libvlc_media_parse_flag_t_libvlc_media_fetch_local;
+    const PARSE_FLAG_FETCH_LOCAL: i32 = libvlc_media_parse_flag_t_libvlc_media_fetch_local as i32;
     /// Fetch meta and cover art using network resources.
     #[constant]
-    const PARSE_FLAG_FETCH_NETWORK: i32 = libvlc_media_parse_flag_t_libvlc_media_fetch_network;
+    const PARSE_FLAG_FETCH_NETWORK: i32 =
+        libvlc_media_parse_flag_t_libvlc_media_fetch_network as i32;
     /// Interact with the user (via libvlc_dialog_cbs) when preparsing this item (and not its sub items).
     ///
     /// Set this flag in order to receive a callback when the input is asking for credentials.
     #[constant]
-    const PARSE_FLAG_DO_INTERACT: i32 = libvlc_media_parse_flag_t_libvlc_media_do_interact;
+    const PARSE_FLAG_DO_INTERACT: i32 = libvlc_media_parse_flag_t_libvlc_media_do_interact as i32;
 
     #[constant]
-    const META_TITLE: i32 = libvlc_meta_t_libvlc_meta_Title;
+    const META_TITLE: i32 = libvlc_meta_t_libvlc_meta_Title as i32;
     #[constant]
-    const META_ARTIST: i32 = libvlc_meta_t_libvlc_meta_Artist;
+    const META_ARTIST: i32 = libvlc_meta_t_libvlc_meta_Artist as i32;
     #[constant]
-    const META_GENRE: i32 = libvlc_meta_t_libvlc_meta_Genre;
+    const META_GENRE: i32 = libvlc_meta_t_libvlc_meta_Genre as i32;
     #[constant]
-    const META_COPYRIGHT: i32 = libvlc_meta_t_libvlc_meta_Copyright;
+    const META_COPYRIGHT: i32 = libvlc_meta_t_libvlc_meta_Copyright as i32;
     #[constant]
-    const META_ALBUM: i32 = libvlc_meta_t_libvlc_meta_Album;
+    const META_ALBUM: i32 = libvlc_meta_t_libvlc_meta_Album as i32;
     #[constant]
-    const META_TRACK_NUMBER: i32 = libvlc_meta_t_libvlc_meta_TrackNumber;
+    const META_TRACK_NUMBER: i32 = libvlc_meta_t_libvlc_meta_TrackNumber as i32;
     #[constant]
-    const META_DESCRIPTION: i32 = libvlc_meta_t_libvlc_meta_Description;
+    const META_DESCRIPTION: i32 = libvlc_meta_t_libvlc_meta_Description as i32;
     #[constant]
-    const META_RATING: i32 = libvlc_meta_t_libvlc_meta_Rating;
+    const META_RATING: i32 = libvlc_meta_t_libvlc_meta_Rating as i32;
     #[constant]
-    const META_DATE: i32 = libvlc_meta_t_libvlc_meta_Date;
+    const META_DATE: i32 = libvlc_meta_t_libvlc_meta_Date as i32;
     #[constant]
-    const META_SETTING: i32 = libvlc_meta_t_libvlc_meta_Setting;
+    const META_SETTING: i32 = libvlc_meta_t_libvlc_meta_Setting as i32;
     #[constant]
-    const META_URL: i32 = libvlc_meta_t_libvlc_meta_URL;
+    const META_URL: i32 = libvlc_meta_t_libvlc_meta_URL as i32;
     #[constant]
-    const META_LANGUAGE: i32 = libvlc_meta_t_libvlc_meta_Language;
+    const META_LANGUAGE: i32 = libvlc_meta_t_libvlc_meta_Language as i32;
     #[constant]
-    const META_NOW_PLAYING: i32 = libvlc_meta_t_libvlc_meta_NowPlaying;
+    const META_NOW_PLAYING: i32 = libvlc_meta_t_libvlc_meta_NowPlaying as i32;
     #[constant]
-    const META_PUBLISHER: i32 = libvlc_meta_t_libvlc_meta_Publisher;
+    const META_PUBLISHER: i32 = libvlc_meta_t_libvlc_meta_Publisher as i32;
     #[constant]
-    const META_ENCODED_BY: i32 = libvlc_meta_t_libvlc_meta_EncodedBy;
+    const META_ENCODED_BY: i32 = libvlc_meta_t_libvlc_meta_EncodedBy as i32;
     #[constant]
-    const META_ARTWORK_URL: i32 = libvlc_meta_t_libvlc_meta_ArtworkURL;
+    const META_ARTWORK_URL: i32 = libvlc_meta_t_libvlc_meta_ArtworkURL as i32;
     #[constant]
-    const META_TRACK_ID: i32 = libvlc_meta_t_libvlc_meta_TrackID;
+    const META_TRACK_ID: i32 = libvlc_meta_t_libvlc_meta_TrackID as i32;
     #[constant]
-    const META_TRACK_TOTAL: i32 = libvlc_meta_t_libvlc_meta_TrackTotal;
+    const META_TRACK_TOTAL: i32 = libvlc_meta_t_libvlc_meta_TrackTotal as i32;
     #[constant]
-    const META_DIRECTOR: i32 = libvlc_meta_t_libvlc_meta_Director;
+    const META_DIRECTOR: i32 = libvlc_meta_t_libvlc_meta_Director as i32;
     #[constant]
-    const META_SEASON: i32 = libvlc_meta_t_libvlc_meta_Season;
+    const META_SEASON: i32 = libvlc_meta_t_libvlc_meta_Season as i32;
     #[constant]
-    const META_EPISODE: i32 = libvlc_meta_t_libvlc_meta_Episode;
+    const META_EPISODE: i32 = libvlc_meta_t_libvlc_meta_Episode as i32;
     #[constant]
-    const META_SHOW_NAME: i32 = libvlc_meta_t_libvlc_meta_ShowName;
+    const META_SHOW_NAME: i32 = libvlc_meta_t_libvlc_meta_ShowName as i32;
     #[constant]
-    const META_ACTORS: i32 = libvlc_meta_t_libvlc_meta_Actors;
+    const META_ACTORS: i32 = libvlc_meta_t_libvlc_meta_Actors as i32;
     #[constant]
-    const META_ALBUM_ARTIST: i32 = libvlc_meta_t_libvlc_meta_AlbumArtist;
+    const META_ALBUM_ARTIST: i32 = libvlc_meta_t_libvlc_meta_AlbumArtist as i32;
     #[constant]
-    const DISC_NUMBER: i32 = libvlc_meta_t_libvlc_meta_DiscNumber;
+    const DISC_NUMBER: i32 = libvlc_meta_t_libvlc_meta_DiscNumber as i32;
     #[constant]
-    const DISC_TOTAL: i32 = libvlc_meta_t_libvlc_meta_DiscTotal;
+    const DISC_TOTAL: i32 = libvlc_meta_t_libvlc_meta_DiscTotal as i32;
 
     /// Parsing state of a `VLCMedia` changed.
     #[signal]
@@ -220,7 +224,7 @@ impl VlcMedia {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaParsedChanged,
+                libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
                 Some(parsed_changed_callback),
                 media.bind_mut().self_gd.as_mut().unwrap().as_mut() as *mut _ as *mut c_void,
             );
@@ -246,8 +250,9 @@ impl VlcMedia {
     /// # Returns
     /// the media's meta
     #[func]
-    fn get_meta(&self, meta: i32) -> GString {
-        let str = unsafe { CStr::from_ptr(libvlc_media_get_meta(self.media_ptr, meta)) };
+    fn get_meta(&self, meta: u32) -> GString {
+        let str =
+            unsafe { CStr::from_ptr(libvlc_media_get_meta(self.media_ptr, meta as libvlc_meta_t)) };
         GString::try_from_cstr(str, Encoding::Utf8).unwrap_or_default()
     }
 
@@ -300,7 +305,7 @@ impl VlcMedia {
     /// parsed status of media ([constant PARSED_STATUS_NONE], [constant PARSED_STATUS_PENDING], [constant PARSED_STATUS_SKIPPED],...)
     #[func]
     fn get_parsed_status(&self) -> i32 {
-        unsafe { libvlc_media_get_parsed_status(self.media_ptr) }
+        unsafe { libvlc_media_get_parsed_status(self.media_ptr) as i32 }
     }
 
     /// Get the current statistics about the media.
@@ -394,7 +399,8 @@ impl VlcMedia {
             libvlc_media_parse_request(
                 vlc_instance::get(),
                 self.media_ptr,
-                parse_flag | libvlc_media_parse_flag_t_libvlc_media_fetch_local,
+                parse_flag as libvlc_media_parse_flag_t
+                    | libvlc_media_parse_flag_t_libvlc_media_fetch_local,
                 timeout,
             )
         }

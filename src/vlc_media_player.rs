@@ -207,55 +207,55 @@ impl Drop for VlcMediaPlayer {
 #[godot_api]
 impl VlcMediaPlayer {
     #[constant]
-    const STATE_NOTHING_SPECIAL: i32 = libvlc_state_t_libvlc_NothingSpecial;
+    const STATE_NOTHING_SPECIAL: i32 = libvlc_state_t_libvlc_NothingSpecial as i32;
     #[constant]
-    const STATE_OPENING: i32 = libvlc_state_t_libvlc_Opening;
+    const STATE_OPENING: i32 = libvlc_state_t_libvlc_Opening as i32;
     #[constant]
-    const STATE_BUFFERING: i32 = libvlc_state_t_libvlc_Buffering;
+    const STATE_BUFFERING: i32 = libvlc_state_t_libvlc_Buffering as i32;
     #[constant]
-    const STATE_PLAYING: i32 = libvlc_state_t_libvlc_Playing;
+    const STATE_PLAYING: i32 = libvlc_state_t_libvlc_Playing as i32;
     #[constant]
-    const STATE_PAUSED: i32 = libvlc_state_t_libvlc_Paused;
+    const STATE_PAUSED: i32 = libvlc_state_t_libvlc_Paused as i32;
     #[constant]
-    const STATE_STOPPED: i32 = libvlc_state_t_libvlc_Stopped;
+    const STATE_STOPPED: i32 = libvlc_state_t_libvlc_Stopped as i32;
     #[constant]
-    const STATE_STOPPING: i32 = libvlc_state_t_libvlc_Stopping;
+    const STATE_STOPPING: i32 = libvlc_state_t_libvlc_Stopping as i32;
     #[constant]
-    const STATE_ERROR: i32 = libvlc_state_t_libvlc_Error;
+    const STATE_ERROR: i32 = libvlc_state_t_libvlc_Error as i32;
 
     #[constant]
-    const NAVIGATE_ACTIVATE: i32 = libvlc_navigate_mode_t_libvlc_navigate_activate;
+    const NAVIGATE_ACTIVATE: i32 = libvlc_navigate_mode_t_libvlc_navigate_activate as i32;
     #[constant]
-    const NAVIGATE_UP: i32 = libvlc_navigate_mode_t_libvlc_navigate_up;
+    const NAVIGATE_UP: i32 = libvlc_navigate_mode_t_libvlc_navigate_up as i32;
     #[constant]
-    const NAVIGATE_DOWN: i32 = libvlc_navigate_mode_t_libvlc_navigate_down;
+    const NAVIGATE_DOWN: i32 = libvlc_navigate_mode_t_libvlc_navigate_down as i32;
     #[constant]
-    const NAVIGATE_LEFT: i32 = libvlc_navigate_mode_t_libvlc_navigate_left;
+    const NAVIGATE_LEFT: i32 = libvlc_navigate_mode_t_libvlc_navigate_left as i32;
     #[constant]
-    const NAVIGATE_RIGHT: i32 = libvlc_navigate_mode_t_libvlc_navigate_right;
+    const NAVIGATE_RIGHT: i32 = libvlc_navigate_mode_t_libvlc_navigate_right as i32;
     #[constant]
-    const NAVIGATE_POPUP: i32 = libvlc_navigate_mode_t_libvlc_navigate_popup;
+    const NAVIGATE_POPUP: i32 = libvlc_navigate_mode_t_libvlc_navigate_popup as i32;
 
     #[constant]
-    const POSITION_DISABLE: i32 = libvlc_position_t_libvlc_position_disable;
+    const POSITION_DISABLE: c_int = libvlc_position_t_libvlc_position_disable;
     #[constant]
-    const POSITION_CENTER: i32 = libvlc_position_t_libvlc_position_center;
+    const POSITION_CENTER: c_int = libvlc_position_t_libvlc_position_center;
     #[constant]
-    const POSITION_LEFT: i32 = libvlc_position_t_libvlc_position_left;
+    const POSITION_LEFT: c_int = libvlc_position_t_libvlc_position_left;
     #[constant]
-    const POSITION_RIGHT: i32 = libvlc_position_t_libvlc_position_right;
+    const POSITION_RIGHT: c_int = libvlc_position_t_libvlc_position_right;
     #[constant]
-    const POSITION_TOP: i32 = libvlc_position_t_libvlc_position_top;
+    const POSITION_TOP: c_int = libvlc_position_t_libvlc_position_top;
     #[constant]
-    const POSITION_TOP_LEFT: i32 = libvlc_position_t_libvlc_position_top_left;
+    const POSITION_TOP_LEFT: c_int = libvlc_position_t_libvlc_position_top_left;
     #[constant]
-    const POSITION_TOP_RIGHT: i32 = libvlc_position_t_libvlc_position_top_right;
+    const POSITION_TOP_RIGHT: c_int = libvlc_position_t_libvlc_position_top_right;
     #[constant]
-    const POSITION_BOTTOM: i32 = libvlc_position_t_libvlc_position_bottom;
+    const POSITION_BOTTOM: c_int = libvlc_position_t_libvlc_position_bottom;
     #[constant]
-    const POSITION_BOTTOM_LEFT: i32 = libvlc_position_t_libvlc_position_bottom_left;
+    const POSITION_BOTTOM_LEFT: c_int = libvlc_position_t_libvlc_position_bottom_left;
     #[constant]
-    const POSITION_BOTTOM_RIGHT: i32 = libvlc_position_t_libvlc_position_bottom_right;
+    const POSITION_BOTTOM_RIGHT: c_int = libvlc_position_t_libvlc_position_bottom_right;
 
     #[signal]
     fn openning();
@@ -363,7 +363,7 @@ impl VlcMediaPlayer {
     /// the current state of the media player([constant STATE_PLAYING], [constant STATE_PAUSED], ...)
     #[func]
     pub fn get_state(&self) -> i32 {
-        unsafe { libvlc_media_player_get_state(self.player_ptr) }
+        unsafe { libvlc_media_player_get_state(self.player_ptr) as i32 }
     }
 
     /// Get the current movie time (in ms).
@@ -722,7 +722,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerOpening,
+                libvlc_event_e_libvlc_MediaPlayerOpening as libvlc_event_type_t,
                 Some(openning_callback),
                 self_ptr as *mut c_void,
             );
@@ -738,7 +738,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerBuffering,
+                libvlc_event_e_libvlc_MediaPlayerBuffering as libvlc_event_type_t,
                 Some(buffering_callback),
                 self_ptr as *mut c_void,
             );
@@ -752,7 +752,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerPlaying,
+                libvlc_event_e_libvlc_MediaPlayerPlaying as libvlc_event_type_t,
                 Some(playing_callback),
                 self_ptr as *mut c_void,
             );
@@ -766,7 +766,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerPaused,
+                libvlc_event_e_libvlc_MediaPlayerPaused as libvlc_event_type_t,
                 Some(paused_callback),
                 self_ptr as *mut c_void,
             );
@@ -780,7 +780,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerStopped,
+                libvlc_event_e_libvlc_MediaPlayerStopped as libvlc_event_type_t,
                 Some(stopped_callback),
                 self_ptr as *mut c_void,
             );
@@ -794,7 +794,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerForward,
+                libvlc_event_e_libvlc_MediaPlayerForward as libvlc_event_type_t,
                 Some(forward_callback),
                 self_ptr as *mut c_void,
             );
@@ -808,7 +808,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerBackward,
+                libvlc_event_e_libvlc_MediaPlayerBackward as libvlc_event_type_t,
                 Some(backward_callback),
                 self_ptr as *mut c_void,
             );
@@ -822,7 +822,7 @@ impl VlcMediaPlayer {
             }
             libvlc_event_attach(
                 event_manager,
-                libvlc_event_e_libvlc_MediaPlayerStopping,
+                libvlc_event_e_libvlc_MediaPlayerStopping as libvlc_event_type_t,
                 Some(stopping_callback),
                 self_ptr as *mut c_void,
             );
@@ -875,7 +875,10 @@ unsafe extern "C" fn video_display_callback(opaque: *mut c_void, _picture: *mut 
         ))
         .as_mut()
         .unwrap();
-    _ = tx.as_mut().unwrap().send((false, img.duplicate().unwrap().cast()));
+    _ = tx
+        .as_mut()
+        .unwrap()
+        .send((false, img.duplicate().unwrap().cast()));
 }
 
 unsafe extern "C" fn video_format_callback(

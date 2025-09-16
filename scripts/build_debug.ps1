@@ -1,7 +1,24 @@
 cargo build
-Remove-Item -Path "target/debug/godot_vlc_debug.dll", "target/debug/godot_vlc_debug.pdb" -ErrorAction SilentlyContinue
-Rename-Item -Path "target\debug\godot_vlc.dll" -NewName "godot_vlc_debug.dll"
-Rename-Item -Path "target\debug\godot_vlc.pdb" -NewName "godot_vlc_debug.pdb"
-Copy-Item `
-    -Path "target/debug/godot_vlc_debug.dll", "target/debug/godot_vlc_debug.pdb" `
-    -Destination "demo/addons/godot-vlc/bin/win64"
+
+if ($IsWindows) {
+    if (!(Test-Path "demo/addons/godot-vlc/bin/win64/")) {
+        New-Item -Path "demo/addons/godot-vlc/bin/win64/" -ItemType Directory
+    }
+    Copy-Item `
+        -Path "target/debug/godot_vlc.dll" `
+        -Destination "demo/addons/godot-vlc/bin/win64/godot_vlc_debug.dll"`
+        -Force
+    Copy-Item `
+        -Path "target/debug/godot_vlc.pdb" `
+        -Destination "demo/addons/godot-vlc/bin/win64/godot_vlc_debug.pdb"`
+        -Force
+} elseif ($IsLinux) {
+    if (!(Test-Path "demo/addons/godot-vlc/bin/linux64/")) {
+        New-Item -Path "demo/addons/godot-vlc/bin/linux64/" -ItemType Directory
+    }
+    Copy-Item `
+        -Path "target/debug/libgodot_vlc.so" `
+        -Destination "demo/addons/godot-vlc/bin/linux64/libgodot_vlc_debug.so"`
+        -Force
+}
+

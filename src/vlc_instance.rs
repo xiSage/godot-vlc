@@ -114,7 +114,7 @@ impl VLCInstance {
         args: *mut c_void,
     ) {
         let s: String = printf(fmt, args);
-        match level {
+        match level as vlc::libvlc_log_level {
             vlc::libvlc_log_level_LIBVLC_NOTICE => {
                 godot_print!("LibVLC: {}", s);
             }
@@ -139,7 +139,7 @@ impl VLCInstance {
         args: *mut c_void,
     ) {
         let s: String = printf(fmt, args);
-        match level {
+        match level as vlc::libvlc_log_level {
             vlc::libvlc_log_level_LIBVLC_NOTICE => {
                 godot_print!("LibVLC: {}", s);
             }
@@ -161,7 +161,7 @@ impl VLCInstance {
         args: *mut c_void,
     ) {
         let s: String = printf(fmt, args);
-        match level {
+        match level as vlc::libvlc_log_level {
             vlc::libvlc_log_level_LIBVLC_WARNING => {
                 godot_warn!("LibVLC: {}", s);
             }
@@ -180,7 +180,7 @@ impl VLCInstance {
         args: *mut c_void,
     ) {
         let s: String = printf(fmt, args);
-        if level == vlc::libvlc_log_level_LIBVLC_ERROR {
+        if level as vlc::libvlc_log_level == vlc::libvlc_log_level_LIBVLC_ERROR {
             godot_error!("LibVLC: {}", s);
         }
     }
