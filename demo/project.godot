@@ -12,7 +12,7 @@ config_version=5
 
 config/name="godot-vlc"
 run/main_scene="uid://dakfnot14s0bk"
-config/features=PackedStringArray("4.4", "Forward Plus")
+config/features=PackedStringArray("4.5", "Forward Plus")
 config/icon="uid://dikoetdhrb054"
 
 [dotnet]
@@ -23,3 +23,7 @@ project/assembly_name="godot-vlc"
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+
+[vlc]
+
+log_level=0
