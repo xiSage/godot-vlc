@@ -28,7 +28,6 @@ fn main() {
     }
 
     println!("cargo:rustc-link-lib=vlc");
-    println!("cargo:rustc-link-lib=vlccore");
 
     let bindings = bindgen::Builder::default()
         .header("thirdparty/vlc/include/vlc/vlc.h")
