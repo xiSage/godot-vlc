@@ -1,5 +1,5 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
-/addons/godot-vlc/bin/*/godot_vlc*
-/addons/godot-vlc/bin/*/~godot_vlc*
+/addons/godot-vlc/bin/*/*godot_vlc*
+/addons/godot-vlc/bin/*/~*godot_vlc*

@@ -6,6 +6,7 @@ reloadable = true
 [libraries]
 windows.debug.x86_64 = "res://addons/godot-vlc/bin/win64/godot_vlc_debug.dll"
 windows.release.x86_64 = "res://addons/godot-vlc/bin/win64/godot_vlc.dll"
+linux.debug.x86_64 = "res://addons/godot-vlc/bin/linux64/libgodot_vlc_debug.so"
 
 [dependencies]
 windows.x86_64 = {
