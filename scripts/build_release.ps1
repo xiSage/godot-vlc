@@ -1,4 +1,2 @@
+$Env:RUSTFLAGS="-Clink-arg=-Wl,-rpath,`$ORIGIN"
 cargo build -r
-Copy-Item `
-    -Path "target/release/godot_vlc.dll" `
-    -Destination "demo/addons/godot-vlc/bin/win64"

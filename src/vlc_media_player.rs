@@ -433,18 +433,18 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_is_seekable(self.player_ptr) }
     }
 
-    /// Jump the movie time (in ms).\
-    /// This will trigger a precise and relative seek (from the current time). This has no effect if no media is being played. Not all formats and protocols support this.
-    ///
-    /// # Parameters
-    /// - [param time] the movie time (in ms).
-    ///
-    /// # Returns
-    /// 0 on success, -1 on error.
-    #[func()]
-    fn jump_time(&mut self, time: i64) -> i32 {
-        unsafe { libvlc_media_player_jump_time(self.player_ptr, time) }
-    }
+    // /// Jump the movie time (in ms).\
+    // /// This will trigger a precise and relative seek (from the current time). This has no effect if no media is being played. Not all formats and protocols support this.
+    // ///
+    // /// # Parameters
+    // /// - [param time] the movie time (in ms).
+    // ///
+    // /// # Returns
+    // /// 0 on success, -1 on error.
+    // #[func()]
+    // fn jump_time(&mut self, time: i64) -> i32 {
+    //     unsafe { libvlc_media_player_jump_time(self.player_ptr, time) }
+    // }
 
     /// Navigate through DVD Menu.
     ///

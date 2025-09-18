@@ -25,6 +25,8 @@ fn main() {
 
     if target.contains("windows") && target.contains("x86_64") {
         println!("cargo:rustc-link-search=./thirdparty/vlc/lib/win64");
+    } else if target.contains("linux") && target.contains("x86_64") {
+        println!("cargo:rustc-link-search=./thirdparty/vlc/lib/linux64");
     }
 
     println!("cargo:rustc-link-lib=vlc");
