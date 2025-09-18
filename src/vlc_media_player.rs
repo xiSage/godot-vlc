@@ -204,6 +204,7 @@ impl Drop for VlcMediaPlayer {
     }
 }
 
+#[allow(clippy::unnecessary_cast)]
 #[godot_api]
 impl VlcMediaPlayer {
     #[constant]

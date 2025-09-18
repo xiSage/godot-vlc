@@ -40,6 +40,7 @@ pub struct VlcMedia {
     self_gd: Option<Box<Gd<WeakRef>>>,
 }
 
+#[allow(clippy::unnecessary_cast)]
 #[godot_api]
 impl VlcMedia {
     #[constant]
