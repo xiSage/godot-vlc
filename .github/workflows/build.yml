@@ -61,6 +61,7 @@ jobs:
       run: ./scripts/build_release.ps1
       
     - name: Copy Binary
+      run: |
         New-Item -Path "bin/" -ItemType Directory
         Copy-Item -Path "targets/debug/godot_vlc.dll" -Destination "bin/godot_vlc_debug.dll"
         Copy-Item -Path "targets/debug/godot_vlc.pdb" -Destination "bin/godot_vlc_debug.pdb"
