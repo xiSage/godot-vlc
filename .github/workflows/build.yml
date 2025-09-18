@@ -30,8 +30,8 @@ jobs:
     - name: Copy Binary
       run: |
         New-Item -Path "bin/" -ItemType Directory
-        Copy-Item -Path "targets/debug/libgodot_vlc.so" -Destination "bin/libgodot_vlc_debug.so"
-        Copy-Item -Path "targets/release/libgodot_vlc.so" -Destination "bin/libgodot_vlc.so"
+        Copy-Item -Path "target/debug/libgodot_vlc.so" -Destination "bin/libgodot_vlc_debug.so"
+        Copy-Item -Path "target/release/libgodot_vlc.so" -Destination "bin/libgodot_vlc.so"
     
     - uses: actions/upload-artifact@v4.6.2
       with:
@@ -63,9 +63,9 @@ jobs:
     - name: Copy Binary
       run: |
         New-Item -Path "bin/" -ItemType Directory
-        Copy-Item -Path "targets/debug/godot_vlc.dll" -Destination "bin/godot_vlc_debug.dll"
-        Copy-Item -Path "targets/debug/godot_vlc.pdb" -Destination "bin/godot_vlc_debug.pdb"
-        Copy-Item -Path "targets/release/godot_vlc.dll" -Destination "bin/godot_vlc.dll"
+        Copy-Item -Path "target/debug/godot_vlc.dll" -Destination "bin/godot_vlc_debug.dll"
+        Copy-Item -Path "target/debug/godot_vlc.pdb" -Destination "bin/godot_vlc_debug.pdb"
+        Copy-Item -Path "target/release/godot_vlc.dll" -Destination "bin/godot_vlc.dll"
     
     - uses: actions/upload-artifact@v4.6.2
       with:
