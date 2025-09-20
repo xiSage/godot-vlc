@@ -4,27 +4,23 @@ compatibility_minimum = 4.3
 reloadable = true
 
 [libraries]
-windows.debug.x86_64 = "res://addons/godot-vlc/bin/win64/godot_vlc_debug.dll"
-windows.release.x86_64 = "res://addons/godot-vlc/bin/win64/godot_vlc.dll"
+windows.debug.x86_64 = "res://addons/godot-vlc/bin/win-x64/godot_vlc_debug.dll"
+windows.release.x86_64 = "res://addons/godot-vlc/bin/win-x64/godot_vlc.dll"
 
-linux.debug.x86_64 = "res://addons/godot-vlc/bin/linux64/libgodot_vlc_debug.so"
-linux.release.x86_64 = "res://addons/godot-vlc/bin/linux64/libgodot_vlc.so"
+linux.debug.x86_64 = "res://addons/godot-vlc/bin/linux-x64/libgodot_vlc_debug.so"
+linux.release.x86_64 = "res://addons/godot-vlc/bin/linux-x64/libgodot_vlc.so"
 
 [dependencies]
 windows.x86_64 = {
-	"res://addons/godot-vlc/bin/win64/libvlc.dll": "",
-	"res://addons/godot-vlc/bin/win64/libvlccore.dll": "",
-	"res://addons/godot-vlc/bin/win64/plugins": ""
+	"res://addons/godot-vlc/bin/win-x64/libvlc.dll": "",
+	"res://addons/godot-vlc/bin/win-x64/libvlccore.dll": "",
+	"res://addons/godot-vlc/bin/win-x64/plugins": ""
 }
 linux.x86_64 = {
-	"res://addons/godot_vlc/bin/linux64/libvlc.so",
-	"res://addons/godot_vlc/bin/linux64/libvlc.so.12",
-	"res://addons/godot_vlc/bin/linux64/libvlc.so.12.0.0,
-	"res://addons/godot_vlc/bin/linux64/libvlccore.so",
-	"res://addons/godot_vlc/bin/linux64/libvlccore.so.9",
-	"res://addons/godot_vlc/bin/linux64/libvlccore.so.9.0.0",
-	"res://addons/godot_vlc/bin/linux64/libidn.so.11",
-	"res://addons/godot_vlc/bin/linux64/libidn.so.11.6.16",
+	"res://addons/godot-vlc/bin/linux-x64/libvlc.so.12": "",
+	"res://addons/godot-vlc/bin/linux-x64/libvlccore.so.9": "",
+	"res://addons/godot-vlc/bin/linux-x64/libidn.so.11": "",
+	"res://addons/godot-vlc/bin/linux-x64/vlc": ""
 }
 
 [icons]
