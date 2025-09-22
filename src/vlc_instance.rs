@@ -17,15 +17,15 @@
 * USA
 */
 
-use crate::vlc;
+use crate::{util::cstring_from_gstring, vlc};
 use godot::{
-    classes::{notify::ObjectNotification, Engine, ProjectSettings},
+    classes::{class_macros::sys::GDEXTENSION_VARIANT_TYPE_STRING, notify::ObjectNotification, Engine, ProjectSettings},
     global::PropertyHint,
     prelude::*,
 };
 use printf::printf;
 use std::{
-    ffi::{c_char, c_int, c_void},
+    ffi::{c_char, c_int, c_void, CString},
     mem, ptr,
 };
 
@@ -58,11 +58,33 @@ impl IObject for VLCInstance {
         let _ = info.insert("hint", PropertyHint::ENUM);
         let _ = info.insert("hint_string", "Debug, Info, Warning, Error, Disabled");
         ProjectSettings::singleton().add_property_info(&info);
+        ProjectSettings::singleton().set_restart_if_changed("vlc/log_level", true);
         let debug_level: i32 = ProjectSettings::singleton()
             .get_setting("vlc/log_level")
             .try_to()
             .unwrap();
-        let instance = unsafe { vlc::libvlc_new(0, ptr::null()) };
+
+        if !ProjectSettings::singleton().has_setting("vlc/arguments") {
+            ProjectSettings::singleton().set_setting("vlc/arguments", &Variant::from(Array::<GString>::new()));
+        }
+        ProjectSettings::singleton().set_initial_value("vlc/arguments", &Variant::from(Array::<GString>::new()));
+        let mut info = Dictionary::new();
+        let _ = info.insert("name", "vlc/arguments");
+        let _ = info.insert("type", VariantType::ARRAY);
+        let _ = info.insert("hint", PropertyHint::TYPE_STRING);
+        let _ = info.insert("hint_string", format!("{}:", GDEXTENSION_VARIANT_TYPE_STRING));
+        ProjectSettings::singleton().add_property_info(&info);
+        ProjectSettings::singleton().set_restart_if_changed("vlc/arguments", true);
+        let arguments: Array<GString> = ProjectSettings::singleton()
+            .get_setting("vlc/arguments")
+            .try_to()
+            .unwrap_or_default();
+        let args: Vec<CString> = arguments.iter_shared().map(cstring_from_gstring).collect();
+        let argc = args.len() as c_int;
+        let args: Vec<_> = args.iter().map(|s| s.as_ptr()).collect();
+        let argv = args.as_ptr();
+
+        let instance = unsafe { vlc::libvlc_new(argc, argv) };
         #[allow(clippy::missing_transmute_annotations)]
         let debug_cb =
             unsafe { Some(mem::transmute(VLCInstance::log_callback_debug as *const ())) };
