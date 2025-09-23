@@ -965,14 +965,16 @@ unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
     let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
         .as_mut()
         .unwrap();
-    player.call_thread_safe("stop", &[]);
-    if let Some(stream) = player.get_stream() {
-        if let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>() {
-            internal_stream
-                .bind_mut()
-                .playback
-                .bind_mut()
-                .clear_buffer();
+    if player.is_instance_valid() {
+        player.call_thread_safe("stop", &[]);
+        if let Some(stream) = player.get_stream() {
+            if let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>() {
+                internal_stream
+                    .bind_mut()
+                    .playback
+                    .bind_mut()
+                    .clear_buffer();
+            }
         }
     }
 }
