@@ -19,10 +19,14 @@
 
 mod internal_audio_stream;
 pub mod internal_audio_stream_playback;
+mod software_video;
+
+#[cfg(all(feature = "gpu", windows))]
+mod gpu_d3d11;
 
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
-    ptr::{self, slice_from_raw_parts},
+    ptr::slice_from_raw_parts,
     sync::mpsc,
 };
 
@@ -37,13 +41,12 @@ use crate::{
 use godot::{
     classes::{
         control::{LayoutPreset, LayoutPresetMode},
-        image,
         native::AudioFrame,
         node::InternalMode,
         notify::ControlNotification,
         texture_rect::{ExpandMode, StretchMode as TextureRectStretchMode},
         AudioServer, AudioStream, AudioStreamPlayer, Control, IControl, Image, ImageTexture,
-        Texture2D, TextureRect,
+        RenderingServer, Texture2D, TextureRect,
     },
     obj::NewAlloc,
     prelude::*,
@@ -84,6 +87,13 @@ struct VlcMediaPlayer {
     media: Option<Gd<VlcMedia>>,
     #[export]
     autoplay: bool,
+    /// Opt into the GPU output backend (libvlc renders into a D3D11 shared
+    /// texture, our private D3D12 queue copies it into a Godot RD texture
+    /// each frame). Requires Windows + `--rendering-driver d3d12`; on any
+    /// prerequisite failure the player logs an error and falls back to the
+    /// software path. Default `false` keeps the CPU pipeline.
+    #[export]
+    force_hardware: bool,
     #[export]
     #[var(get, set=set_stretch_mode)]
     stretch_mode: StretchMode,
@@ -104,6 +114,19 @@ struct VlcMediaPlayer {
     video_rx: mpsc::Receiver<(bool, Gd<Image>)>,
     audio_prod: Box<(HeapProd<AudioFrame>, Gd<AudioStreamPlayer>)>,
     audio_player: Gd<AudioStreamPlayer>,
+    /// libvlc-side `Arc<Backend>` ref; the libvlc-side ref is held via the
+    /// opaque pointer passed to `libvlc_video_set_output_callbacks`. Both
+    /// drop when the player is destroyed (libvlc's via `cleanup_cb`).
+    #[cfg(all(feature = "gpu", windows))]
+    gpu_backend: Option<std::sync::Arc<gpu_d3d11::output_callbacks::Backend>>,
+    #[cfg(all(feature = "gpu", windows))]
+    gpu_mailbox: Option<std::sync::Arc<gpu_d3d11::event_queue::EventMailbox>>,
+    /// Per-frame importer captured by the `frame_pre_draw` Callable below;
+    /// disconnecting that Callable on Drop releases the ref.
+    #[cfg(all(feature = "gpu", windows))]
+    gpu_importer: Option<std::sync::Arc<gpu_d3d11::importer::ImporterTask>>,
+    #[cfg(all(feature = "gpu", windows))]
+    gpu_frame_callable: Option<Callable>,
 }
 
 #[godot_api]
@@ -129,6 +152,7 @@ impl IControl for VlcMediaPlayer {
             base,
             media: None,
             autoplay: false,
+            force_hardware: false,
             stretch_mode: StretchMode::KeepAspectCenterd,
             volume_db: 0.0,
             mix_target: MixTarget::Stereo,
@@ -141,6 +165,14 @@ impl IControl for VlcMediaPlayer {
             video_rx,
             audio_prod,
             audio_player,
+            #[cfg(all(feature = "gpu", windows))]
+            gpu_backend: None,
+            #[cfg(all(feature = "gpu", windows))]
+            gpu_mailbox: None,
+            #[cfg(all(feature = "gpu", windows))]
+            gpu_importer: None,
+            #[cfg(all(feature = "gpu", windows))]
+            gpu_frame_callable: None,
         }
     }
 
@@ -192,6 +224,14 @@ impl IControl for VlcMediaPlayer {
 
 impl Drop for VlcMediaPlayer {
     fn drop(&mut self) {
+        // Disconnect the per-frame callable BEFORE releasing the player —
+        // an in-flight frame_pre_draw must not run against a half-torn
+        // ImporterTask.
+        #[cfg(all(feature = "gpu", windows))]
+        if let Some(c) = self.gpu_frame_callable.take() {
+            RenderingServer::singleton()
+                .disconnect(&StringName::from("frame_pre_draw"), &c);
+        }
         unsafe {
             libvlc_media_player_release(self.player_ptr);
         }
@@ -286,6 +326,122 @@ impl VlcMediaPlayer {
     #[func]
     fn get_texture(&self) -> Gd<Texture2D> {
         self.texture.clone().upcast()
+    }
+
+    /// Pop the pending GPU output event from the mailbox, returning the
+    /// texture's `(width, height)` or `(0, 0)` if empty. Drains the mailbox.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn _debug_pop_gpu_event(&self) -> Vector2i {
+        let Some(mailbox) = self.gpu_mailbox.as_ref() else {
+            return Vector2i::new(0, 0);
+        };
+        match mailbox.take() {
+            Some(e) => Vector2i::new(e.width as i32, e.height as i32),
+            None => Vector2i::new(0, 0),
+        }
+    }
+
+    /// True when the GPU backend successfully initialized for this player.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn _debug_gpu_active(&self) -> bool {
+        self.gpu_backend.is_some()
+    }
+
+    /// Number of per-frame `copy_and_sync` invocations completed by the
+    /// importer. 0 if the GPU backend isn't active.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn _debug_frames_copied(&self) -> i64 {
+        match &self.gpu_importer {
+            None => 0,
+            Some(t) => t
+                .frames_copied
+                .load(std::sync::atomic::Ordering::SeqCst) as i64,
+        }
+    }
+
+    /// libvlc callback hit counts as `(update_output, swap, make_current)`.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn _debug_callback_counts(&self) -> Vector3i {
+        let Some(b) = self.gpu_backend.as_ref() else {
+            return Vector3i::new(0, 0, 0);
+        };
+        Vector3i::new(
+            b.update_output_calls.load(std::sync::atomic::Ordering::SeqCst) as i32,
+            b.swap_calls.load(std::sync::atomic::Ordering::SeqCst) as i32,
+            b.make_current_calls.load(std::sync::atomic::Ordering::SeqCst) as i32,
+        )
+    }
+
+    /// Average RGBA of the GPU destination texture, read back via
+    /// `RenderingDevice::texture_get_data`. `Color(0,0,0,0)` when GPU isn't
+    /// active or no destination is bound.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn _debug_dst_pixel_avg(&self) -> Color {
+        let Some(importer) = self.gpu_importer.as_ref() else {
+            return Color::from_rgba(0.0, 0.0, 0.0, 0.0);
+        };
+        let rid = match importer.current_dst_rid() {
+            Some(r) => r,
+            None => return Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        };
+        let mut rd = match RenderingServer::singleton().get_rendering_device() {
+            Some(rd) => rd,
+            None => return Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        };
+        let bytes = rd.texture_get_data(rid, 0);
+        if bytes.is_empty() {
+            return Color::from_rgba(0.0, 0.0, 0.0, 0.0);
+        }
+        let mut sums = [0u64; 4];
+        let mut count: u64 = 0;
+        for chunk in bytes.as_slice().chunks_exact(4) {
+            sums[0] += chunk[0] as u64;
+            sums[1] += chunk[1] as u64;
+            sums[2] += chunk[2] as u64;
+            sums[3] += chunk[3] as u64;
+            count += 1;
+        }
+        if count == 0 {
+            return Color::from_rgba(0.0, 0.0, 0.0, 0.0);
+        }
+        let denom = count as f32 * 255.0;
+        Color::from_rgba(
+            sums[0] as f32 / denom,
+            sums[1] as f32 / denom,
+            sums[2] as f32 / denom,
+            sums[3] as f32 / denom,
+        )
+    }
+
+    /// Returns `{godot_luid, d3d11_luid}` when the rendering driver is D3D12
+    /// and the LUIDs match, or `{error}` otherwise.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn _debug_get_adapter_luids(&self) -> Dictionary {
+        use gpu_d3d11::adapter::{dxgi_adapter_luid_for, godot_d3d12_luid};
+        let mut dict = Dictionary::new();
+        match godot_d3d12_luid() {
+            Err(e) => {
+                let _ = dict.insert("error", e.to_string());
+            }
+            Ok(godot_luid) => {
+                let _ = dict.insert("godot_luid", godot_luid);
+                match dxgi_adapter_luid_for(godot_luid) {
+                    Ok(d3d11_luid) => {
+                        let _ = dict.insert("d3d11_luid", d3d11_luid);
+                    }
+                    Err(e) => {
+                        let _ = dict.insert("error", e.to_string());
+                    }
+                }
+            }
+        }
+        dict
     }
 
     /// Can this media player be paused?
@@ -678,22 +834,111 @@ impl VlcMediaPlayer {
         Some(self.media.as_ref()?.bind().media_ptr)
     }
 
+    /// Bring up the GPU output backend. `true` if it activated; `false`
+    /// means the caller should register the software callbacks instead.
+    /// Failures are logged via `godot_error!`; no panics.
+    #[cfg(all(feature = "gpu", windows))]
+    fn try_init_gpu_backend(&mut self) -> bool {
+        if !self.force_hardware {
+            return false;
+        }
+        use std::sync::Arc;
+        let (_adapter, d3d11) = match gpu_d3d11::adapter::create_d3d11_device_for_godot() {
+            Ok(v) => v,
+            Err(e) => {
+                godot_error!("godot-vlc: GPU init failed (adapter/D3D11 device): {e}");
+                return false;
+            }
+        };
+        let mailbox = Arc::new(gpu_d3d11::event_queue::EventMailbox::new());
+        let backend = match gpu_d3d11::output_callbacks::Backend::new(
+            d3d11.device,
+            d3d11.context,
+            mailbox.clone(),
+        ) {
+            Ok(b) => Arc::new(b),
+            Err(e) => {
+                godot_error!("godot-vlc: GPU init failed (Backend::new): {e}");
+                return false;
+            }
+        };
+        let importer = match gpu_d3d11::importer::ImporterTask::create(backend.clone()) {
+            Ok(t) => t,
+            Err(e) => {
+                godot_error!("godot-vlc: GPU init failed (ImporterTask::create): {e}");
+                return false;
+            }
+        };
+        // Swap the texture_rect's bound texture to the GPU-path Texture2Drd.
+        {
+            let drd = importer
+                .texture_2drd
+                .lock()
+                .expect("texture_2drd poisoned")
+                .clone();
+            self.texture_rect.set_texture(&drd.upcast::<Texture2D>());
+        }
+        // Per-frame import + copy: frame_pre_draw → call_on_render_thread.
+        let frame_task = importer.clone();
+        let frame_callable = Callable::from_sync_fn("godot_vlc_per_frame", move |_args| {
+            let task = frame_task.clone();
+            let render_callable =
+                Callable::from_sync_fn("godot_vlc_per_frame_render", move |_args| {
+                    gpu_d3d11::importer::run_frame(&task);
+                    Ok(Variant::nil())
+                });
+            RenderingServer::singleton().call_on_render_thread(&render_callable);
+            Ok(Variant::nil())
+        });
+        // Untyped Object::connect: godot-rust 0.3.5's typed-signal accessor
+        // takes a closure with no disconnect path; we need a Callable handle
+        // to disconnect on Drop.
+        RenderingServer::singleton()
+            .connect(&StringName::from("frame_pre_draw"), &frame_callable);
+        if let Err(e) = gpu_d3d11::output_callbacks::register(self.player_ptr, backend.clone()) {
+            godot_error!("godot-vlc: GPU init failed ({e})");
+            RenderingServer::singleton()
+                .disconnect(&StringName::from("frame_pre_draw"), &frame_callable);
+            return false;
+        }
+        self.gpu_backend = Some(backend);
+        self.gpu_mailbox = Some(mailbox);
+        self.gpu_importer = Some(importer);
+        self.gpu_frame_callable = Some(frame_callable);
+        godot_print!("godot-vlc: GPU backend active (D3D11→D3D12 GPU-copy)");
+        true
+    }
+
+    /// Stub for non-GPU builds. Always returns false so the software path
+    /// runs.
+    #[cfg(not(all(feature = "gpu", windows)))]
+    fn try_init_gpu_backend(&mut self) -> bool {
+        false
+    }
+
     fn register_player_callbacks(&mut self) {
         unsafe {
             let self_ptr = self.self_gd.as_mut().unwrap().as_mut() as *mut _;
 
-            libvlc_video_set_callbacks(
-                self.player_ptr,
-                Some(video_lock_callback),
-                Some(video_unlock_callback),
-                Some(video_display_callback),
-                self.video_tx.as_mut() as *mut _ as *mut c_void,
-            );
-            libvlc_video_set_format_callbacks(
-                self.player_ptr,
-                Some(video_format_callback),
-                Some(video_cleanup_callback),
-            );
+            // The GPU output-callbacks API and the software callbacks API
+            // are mutually exclusive at the libvlc level: register one or
+            // the other, never both. On any GPU init failure we fall
+            // through to the software path.
+            let gpu_active = self.try_init_gpu_backend();
+            if !gpu_active {
+                libvlc_video_set_callbacks(
+                    self.player_ptr,
+                    Some(software_video::video_lock_callback),
+                    Some(software_video::video_unlock_callback),
+                    Some(software_video::video_display_callback),
+                    self.video_tx.as_mut() as *mut _ as *mut c_void,
+                );
+                libvlc_video_set_format_callbacks(
+                    self.player_ptr,
+                    Some(software_video::video_format_callback),
+                    Some(software_video::video_cleanup_callback),
+                );
+            }
             libvlc_audio_set_callbacks(
                 self.player_ptr,
                 Some(audio_play_callback),
@@ -829,93 +1074,6 @@ impl VlcMediaPlayer {
             );
         }
     }
-}
-
-unsafe extern "C" fn video_lock_callback(
-    opaque: *mut c_void,
-    planes: *mut *mut c_void,
-) -> *mut c_void {
-    let (_tx, _img, buffer) = (opaque
-        as *mut (
-            *mut mpsc::Sender<(bool, Gd<Image>)>,
-            Gd<Image>,
-            PackedByteArray,
-        ))
-        .as_mut()
-        .unwrap();
-    let buffer_ptr = buffer.as_mut_slice().as_mut_ptr();
-    *planes = buffer_ptr as *mut c_void;
-    ptr::null_mut()
-}
-
-unsafe extern "C" fn video_unlock_callback(
-    opaque: *mut c_void,
-    _picture: *mut c_void,
-    _planes: *const *mut c_void,
-) {
-    let (_tx, img, buffer) = (opaque
-        as *mut (
-            *mut mpsc::Sender<(bool, Gd<Image>)>,
-            Gd<Image>,
-            PackedByteArray,
-        ))
-        .as_mut()
-        .unwrap();
-    let width = img.get_width();
-    let height = img.get_height();
-    let format = img.get_format();
-    img.set_data(width, height, false, format, buffer);
-}
-
-unsafe extern "C" fn video_display_callback(opaque: *mut c_void, _picture: *mut c_void) {
-    let (tx, img, _buffer) = (opaque
-        as *mut (
-            *mut mpsc::Sender<(bool, Gd<Image>)>,
-            Gd<Image>,
-            PackedByteArray,
-        ))
-        .as_mut()
-        .unwrap();
-    _ = tx
-        .as_mut()
-        .unwrap()
-        .send((false, img.duplicate().unwrap().cast()));
-}
-
-unsafe extern "C" fn video_format_callback(
-    opaque: *mut *mut c_void,
-    chroma: *mut c_char,
-    width: *mut c_uint,
-    height: *mut c_uint,
-    pitches: *mut c_uint,
-    lines: *mut c_uint,
-) -> c_uint {
-    let tx: *mut mpsc::Sender<(bool, Gd<Image>)> = *opaque as *mut mpsc::Sender<(bool, Gd<Image>)>;
-    let img = match Image::create_empty(*width as i32, *height as i32, false, image::Format::RGB8) {
-        Some(img) => img,
-        None => {
-            return 0;
-        }
-    };
-    let buffer = img.get_data();
-    chroma.copy_from(c"RV24".as_ptr(), 5);
-    *pitches = *width * 3;
-    *lines = *height;
-    if tx.as_mut().unwrap().send((true, img.clone())).is_err() {
-        return 0;
-    }
-    *opaque = Box::into_raw(Box::new((tx, img, buffer))) as *mut c_void;
-    1
-}
-unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) {
-    let (_tx, _img, _buffer) = *Box::from_raw(
-        opaque
-            as *mut (
-                *mut mpsc::Sender<(bool, Gd<Image>)>,
-                Gd<Image>,
-                PackedByteArray,
-            ),
-    );
 }
 
 unsafe extern "C" fn audio_play_callback(
