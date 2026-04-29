@@ -626,6 +626,14 @@ typedef struct libvlc_video_output_cfg_t
         int opengl_format;
         /** currently unused */
         void *p_surface;
+        struct {
+            /** Pointer to an ANativeWindow, used for video rendering */
+            void *video;
+            /** Pointer to an ANativeWindow, used for subtitles rendering, if
+             * blending subtitles into the video surface is not possible (when
+             * using MediaCodec with direct hw rendering) */
+            void *subtitle;
+        } anw;
     };
     /** Video is full range or studio/limited range. */
     bool full_range;
@@ -652,9 +660,9 @@ typedef struct libvlc_video_output_cfg_t
  *       uses to render. The host must set a Render target and call Present()
  *       when it needs the drawing from VLC to be done. This object is not valid
  *       anymore after Cleanup is called.
- *
- * Tone mapping, range and color conversion will be done depending on the values
- * set in the output structure.
+ * Tone mapping, range and color conversion will be done depending on the
+ * values set in the output structure. It can be ignored in the \ref
+ * libvlc_video_engine_anw case.
  */
 typedef bool (*libvlc_video_update_output_cb)(void* opaque, const libvlc_video_render_cfg_t *cfg,
                                               libvlc_video_output_cfg_t *output );
@@ -709,15 +717,15 @@ typedef void* (*libvlc_video_getProcAddress_cb)(void* opaque, const char* fct_na
 
 typedef struct libvlc_video_frame_hdr10_metadata_t
 {
-    /* similar to SMPTE ST 2086 mastering display color volume */
-    uint16_t RedPrimary[2];
-    uint16_t GreenPrimary[2];
-    uint16_t BluePrimary[2];
-    uint16_t WhitePoint[2];
-    unsigned int MaxMasteringLuminance;
-    unsigned int MinMasteringLuminance;
-    uint16_t MaxContentLightLevel;
-    uint16_t MaxFrameAverageLightLevel;
+    /* similar to CTA-861-G with ranges from H265, based on SMPTE ST 2086 mastering display color volume */
+    uint16_t RedPrimary[2];   /**< [5,37 000] normalized x / [5,42 000] y chromacity in increments of 0.00002, 0=unknown */
+    uint16_t GreenPrimary[2]; /**< [5,37 000] normalized x / [5,42 000] y chromacity in increments of 0.00002, 0=unknown */
+    uint16_t BluePrimary[2];  /**< [5,37 000] normalized x / [5,42 000] y chromacity in increments of 0.00002, 0=unknown */
+    uint16_t WhitePoint[2];   /**< [5,37 000] normalized x / [5,42 000] y white point in increments of 0.00002, 0=unknown */
+    unsigned int MaxMasteringLuminance; /**< [50 000, 100 000 000] maximum luminance in 0.0001 cd/m², 0=unknown */
+    unsigned int MinMasteringLuminance; /**< [1, 50 000] minimum luminance in 0.0001 cd/m², 0=unknown */
+    uint16_t MaxContentLightLevel;      /**< [1, 50 000] Maximum Content Light Level in cd/m², 0=unknown */
+    uint16_t MaxFrameAverageLightLevel; /**< [1, 50 000] Maximum Frame-Average Light Level in cd/m², 0=unknown */
 } libvlc_video_frame_hdr10_metadata_t;
 
 typedef enum libvlc_video_metadata_type_t {
@@ -747,6 +755,23 @@ typedef enum libvlc_video_engine_t {
     libvlc_video_engine_d3d11,
     /** Direct3D9 rendering engine */
     libvlc_video_engine_d3d9,
+
+    /**
+     * Android ANativeWindow. It can be set in \ref libvlc_video_output_cfg_t
+     * from the \ref libvlc_video_update_output_cb callback. The ANativeWindow
+     * can be created via:
+     *  - 'ANativeWindow_fromSurface': from a JAVA SurfaceView
+     *  - 'AImageReader_getWindow()': from an 'AImageReader' created with the
+     *  following arguments: \verbatim
+     AImageReader_newWithUsage(1, 1 AIMAGE_FORMAT_PRIVATE,
+                               AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+                               maxImages, &reader);
+     \endverbatim
+     * The width and height from \ref libvlc_video_render_cfg_t should be
+     * ignored as the video size is overridden by the producer (MediaCodec or
+     * EGL vout).
+     */
+    libvlc_video_engine_anw,
 } libvlc_video_engine_t;
 
 
@@ -876,9 +901,12 @@ typedef bool( *libvlc_video_output_select_plane_cb )( void *opaque, size_t plane
  * \param cleanup_cb callback called to clean up user data
  * \param window_cb callback called to setup the window
  * \param update_output_cb callback to get the rendering format of the host (cannot be NULL)
- * \param swap_cb callback called after rendering a video frame (cannot be NULL)
- * \param makeCurrent_cb callback called to enter/leave the rendering context (cannot be NULL)
- * \param getProcAddress_cb opengl function loading callback (cannot be NULL for \ref libvlc_video_engine_opengl and for \ref libvlc_video_engine_gles2)
+ * \param swap_cb callback called after rendering a video frame (can only be
+ * NULL when using \ref libvlc_video_engine_anw)
+ * \param makeCurrent_cb callback called to enter/leave the rendering context
+ * (can only be NULL when using \ref libvlc_video_engine_anw)
+ * \param getProcAddress_cb opengl function loading callback (cannot be NULL
+ * for \ref libvlc_video_engine_opengl and for \ref libvlc_video_engine_gles2)
  * \param metadata_cb callback to provide frame metadata (D3D11 only)
  * \param select_plane_cb callback to select different D3D11 rendering targets
  * \param opaque private pointer passed to callbacks
@@ -905,6 +933,22 @@ bool libvlc_video_set_output_callbacks( libvlc_media_player_t *mp,
                                         void* opaque );
 
 /**
+ * Helper to setup output_callbacks for \ref libvlc_video_engine_anw
+ */
+static inline bool
+libvlc_video_set_anw_callbacks( libvlc_media_player_t *mp,
+                                libvlc_video_output_setup_cb setup_cb,
+                                libvlc_video_output_cleanup_cb cleanup_cb,
+                                libvlc_video_update_output_cb update_output_cb,
+                                void *opaque )
+{
+    return libvlc_video_set_output_callbacks( mp, libvlc_video_engine_anw,
+                                              setup_cb, cleanup_cb, NULL,
+                                              update_output_cb, NULL, NULL,
+                                              NULL, NULL, NULL, opaque );
+}
+
+/**
  * Set the handler where the media player should display its video output.
  *
  * The drawable is an `NSObject` that require responding to two selectors
@@ -921,10 +965,10 @@ bool libvlc_video_set_output_callbacks( libvlc_media_player_t *mp,
  * class.
  * VLCDrawable protocol conformance isn't mandatory but a drawable must respond
  * to both `addSubview:` and `bounds` selectors.
- * 
+ *
  * Additionally, a drawable can also conform to the `VLCPictureInPictureDrawable`
  * protocol to allow picture in picture support :
- * 
+ *
  * @code{.m}
  * @protocol VLCPictureInPictureMediaControlling <NSObject>
  * - (void)play;
@@ -935,23 +979,23 @@ bool libvlc_video_set_output_callbacks( libvlc_media_player_t *mp,
  * - (BOOL)isMediaSeekable;
  * - (BOOL)isMediaPlaying;
  * @end
- * 
+ *
  * @protocol VLCPictureInPictureWindowControlling <NSObject>
  * - (void)startPictureInPicture;
  * - (void)stopPictureInPicture;
  * - (void)invalidatePlaybackState;
  * @end
- * 
+ *
  * @protocol VLCPictureInPictureDrawable <NSObject>
  * - (id<VLCPictureInPictureMediaControlling>) mediaController;
  * - (void (^)(id<VLCPictureInPictureWindowControlling>)) pictureInPictureReady;
  * @end
  * @endcode
- * 
+ *
  * Be aware that full `VLCPictureInPictureDrawable` conformance is mandatory to
  * enable picture in picture support and that time values in
  * `VLCPictureInPictureMediaControlling` methods are expressed in milliseconds.
- * 
+ *
  * If you want to use it along with Qt see the QMacCocoaViewContainer. Then
  * the following code should work:
  * @code{.mm}
@@ -966,7 +1010,7 @@ bool libvlc_video_set_output_callbacks( libvlc_media_player_t *mp,
  * You can find a live example in VLCVideoView in VLCKit.framework.
  *
  * \param p_mi the Media Player
- * \param drawable the drawable that is either an NSView, a UIView or any 
+ * \param drawable the drawable that is either an NSView, a UIView or any
  * NSObject responding to `addSubview:` and `bounds` selectors
  */
 LIBVLC_API void libvlc_media_player_set_nsobject ( libvlc_media_player_t *p_mi, void * drawable );
@@ -2010,7 +2054,7 @@ LIBVLC_API char *libvlc_video_get_aspect_ratio( libvlc_media_player_t *p_mi );
  * Set new video aspect ratio.
  *
  * \param p_mi the media player
- * \param psz_aspect new video aspect-ratio or NULL to reset to source aspect ratio
+ * \param psz_aspect new video aspect-ratio, "fill" to fill the window or NULL to reset to source aspect ratio
  * \note Invalid aspect ratios are ignored.
  */
 LIBVLC_API void libvlc_video_set_aspect_ratio( libvlc_media_player_t *p_mi, const char *psz_aspect );
@@ -2343,14 +2387,33 @@ int libvlc_video_take_snapshot( libvlc_media_player_t *p_mi, unsigned num,
                                 unsigned int i_height );
 
 /**
+ * Gets the deinterlacing parameters.
+ *
+ * If \p modep is not NULL, it will be set to a heap-allocated nul-terminated
+ * character string indicating the current deinterlacing algorithm name.
+ * If no algorithm is selected or if allocation fails, it be set to NULL.
+ * The value should be freed with the C run-time's free() function to avoid
+ * leaking.
+ *
+ * \param mpi media player instance
+ * \param modep storage space for hold the mode name (or NULL) [OUT]
+ * \retval -1 deinterlacing is selected automatically
+ * \retval 0 deinterlacing is forcefully disabled
+ * \retval 1 deinterlacing is forcefully enabled
+ */
+LIBVLC_API int libvlc_video_get_deinterlace(libvlc_media_player_t *mp,
+                                            char **modep);
+
+/**
  * Enable or disable deinterlace filter
  *
  * \param p_mi libvlc media player
  * \param deinterlace state -1: auto (default), 0: disabled, 1: enabled
  * \param psz_mode type of deinterlace filter, NULL for current/default filter
  * \version LibVLC 4.0.0 and later
+ * \return 0 on success, -1 if the mode was not recognised
  */
-LIBVLC_API void libvlc_video_set_deinterlace( libvlc_media_player_t *p_mi,
+LIBVLC_API int libvlc_video_set_deinterlace( libvlc_media_player_t *p_mi,
                                               int deinterlace,
                                               const char *psz_mode );
 
