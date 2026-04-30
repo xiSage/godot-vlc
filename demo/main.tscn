@@ -28,6 +28,7 @@ func _process(_delta: float) -> void:
 	%Time.text = \"time: {0} / {1}\".format([get_time(), get_length()])
 	var pos = get_position()
 	%Position.text = \"position: %.6f\" % pos
+	%GPUOutput.text = \"gpu output: \" + str(is_gpu_output_active())
 	if not dragging:
 		%HSlider.value = pos
 
@@ -236,6 +237,11 @@ text = "position:"
 unique_name_in_owner = true
 layout_mode = 2
 text = "state:"
+
+[node name="GPUOutput" type="Label" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "gpu output:"
 
 [node name="Statics" type="Button" parent="VBoxContainer"]
 layout_mode = 2

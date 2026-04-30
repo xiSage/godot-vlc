@@ -328,6 +328,22 @@ impl VlcMediaPlayer {
         self.texture.clone().upcast()
     }
 
+    /// Whether the GPU output backend is currently driving this player.
+    /// Reflects the *actual* state after `try_init_gpu_backend()`: if
+    /// `force_hardware` was set but init failed and we fell back to the
+    /// software path, this returns `false`.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn is_gpu_output_active(&self) -> bool {
+        self.gpu_backend.is_some()
+    }
+
+    #[cfg(not(all(feature = "gpu", windows)))]
+    #[func]
+    fn is_gpu_output_active(&self) -> bool {
+        false
+    }
+
     /// Pop the pending GPU output event from the mailbox, returning the
     /// texture's `(width, height)` or `(0, 0)` if empty. Drains the mailbox.
     #[cfg(all(feature = "gpu", windows))]
