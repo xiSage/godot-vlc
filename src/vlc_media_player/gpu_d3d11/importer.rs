@@ -12,7 +12,7 @@ use std::sync::{
 use godot::classes::rendering_device::{DataFormat, TextureSamples, TextureType, TextureUsageBits};
 use godot::classes::{RdTextureFormat, RdTextureView, RenderingServer, Texture2Drd};
 use godot::obj::NewGd;
-use godot::prelude::{Gd, Rid};
+use godot::prelude::*;
 
 use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Fence, ID3D12Resource};
 

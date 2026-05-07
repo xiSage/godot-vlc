@@ -438,9 +438,9 @@ impl VlcMediaPlayer {
     /// and the LUIDs match, or `{error}` otherwise.
     #[cfg(all(feature = "gpu", windows))]
     #[func]
-    fn _debug_get_adapter_luids(&self) -> Dictionary {
+    fn _debug_get_adapter_luids(&self) -> VarDictionary {
         use gpu_d3d11::adapter::{dxgi_adapter_luid_for, godot_d3d12_luid};
-        let mut dict = Dictionary::new();
+        let mut dict = VarDictionary::new();
         match godot_d3d12_luid() {
             Err(e) => {
                 let _ = dict.insert("error", e.to_string());
@@ -901,10 +901,10 @@ impl VlcMediaPlayer {
             let render_callable =
                 Callable::from_sync_fn("godot_vlc_per_frame_render", move |_args| {
                     gpu_d3d11::importer::run_frame(&task);
-                    Ok(Variant::nil())
+                    Variant::nil()
                 });
             RenderingServer::singleton().call_on_render_thread(&render_callable);
-            Ok(Variant::nil())
+            Variant::nil()
         });
         // Untyped Object::connect: godot-rust 0.3.5's typed-signal accessor
         // takes a closure with no disconnect path; we need a Callable handle
@@ -980,7 +980,7 @@ impl VlcMediaPlayer {
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from(c"openning").to_variant()]);
+                    .call_deferred("emit_signal", &[StringName::from("openning").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
@@ -995,7 +995,7 @@ impl VlcMediaPlayer {
             ) {
                 get_player(user_data).call_deferred(
                     "emit_signal",
-                    &[StringName::from(c"buffering").to_variant()],
+                    &[StringName::from("buffering").to_variant()],
                 );
             }
             libvlc_event_attach(
@@ -1010,7 +1010,7 @@ impl VlcMediaPlayer {
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from(c"playing").to_variant()]);
+                    .call_deferred("emit_signal", &[StringName::from("playing").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
@@ -1024,7 +1024,7 @@ impl VlcMediaPlayer {
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from(c"paused").to_variant()]);
+                    .call_deferred("emit_signal", &[StringName::from("paused").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
@@ -1038,7 +1038,7 @@ impl VlcMediaPlayer {
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from(c"stopped").to_variant()]);
+                    .call_deferred("emit_signal", &[StringName::from("stopped").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
@@ -1052,7 +1052,7 @@ impl VlcMediaPlayer {
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from(c"forward").to_variant()]);
+                    .call_deferred("emit_signal", &[StringName::from("forward").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
@@ -1066,7 +1066,7 @@ impl VlcMediaPlayer {
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from(c"backward").to_variant()]);
+                    .call_deferred("emit_signal", &[StringName::from("backward").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
@@ -1080,7 +1080,7 @@ impl VlcMediaPlayer {
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from(c"stopping").to_variant()]);
+                    .call_deferred("emit_signal", &[StringName::from("stopping").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,

@@ -52,7 +52,7 @@ impl IObject for VLCInstance {
             ProjectSettings::singleton().set_setting("vlc/log_level", &Variant::from(4));
         }
         ProjectSettings::singleton().set_initial_value("vlc/log_level", &Variant::from(4));
-        let mut info = Dictionary::new();
+        let mut info = VarDictionary::new();
         let _ = info.insert("name", "vlc/log_level");
         let _ = info.insert("type", VariantType::INT);
         let _ = info.insert("hint", PropertyHint::ENUM);
@@ -68,7 +68,7 @@ impl IObject for VLCInstance {
             ProjectSettings::singleton().set_setting("vlc/arguments", &Variant::from(Array::<GString>::new()));
         }
         ProjectSettings::singleton().set_initial_value("vlc/arguments", &Variant::from(Array::<GString>::new()));
-        let mut info = Dictionary::new();
+        let mut info = VarDictionary::new();
         let _ = info.insert("name", "vlc/arguments");
         let _ = info.insert("type", VariantType::ARRAY);
         let _ = info.insert("hint", PropertyHint::TYPE_STRING);
