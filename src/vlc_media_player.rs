@@ -46,7 +46,7 @@ use godot::{
         notify::ControlNotification,
         texture_rect::{ExpandMode, StretchMode as TextureRectStretchMode},
         AudioServer, AudioStream, AudioStreamPlayer, Control, IControl, Image, ImageTexture,
-        RenderingServer, Texture2D, TextureRect,
+        Texture2D, TextureRect,
     },
     obj::NewAlloc,
     prelude::*,
@@ -55,6 +55,9 @@ use ringbuf::{
     traits::{Producer, Split},
     HeapProd, HeapRb,
 };
+
+#[cfg(all(feature = "gpu", windows))]
+use godot::classes::RenderingServer;
 
 #[derive(GodotConvert, Var, Export, Clone, Debug)]
 #[godot(via=i64)]
