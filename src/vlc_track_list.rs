@@ -73,7 +73,7 @@ impl VlcTrackList {
         let count = self.tracklist_count();
         let mut tracks = Array::new();
         for i in 0..count {
-            tracks.push(&self.tracklist_at(i));
+            tracks.push(self.tracklist_at(i).as_ref());
         }
         tracks
     }

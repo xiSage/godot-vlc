@@ -218,7 +218,7 @@ impl VlcMedia {
                 media.call_deferred(
                     "emit_signal",
                     &[
-                        StringName::from(c"parsed_changed").to_variant(),
+                        StringName::from("parsed_changed").to_variant(),
                         status.to_variant(),
                     ],
                 );
@@ -327,7 +327,7 @@ impl VlcMedia {
     /// - `played_abuffers`: int
     /// - `lost_abuffers`: int
     #[func]
-    fn get_stats(&self) -> Dictionary {
+    fn get_stats(&self) -> VarDictionary {
         let mut stats = libvlc_media_stats_t {
             i_read_bytes: 0,
             f_input_bitrate: 0.0,
@@ -345,7 +345,7 @@ impl VlcMedia {
         };
         let available = unsafe { libvlc_media_get_stats(self.media_ptr, &mut stats) };
         if available {
-            let mut dict = Dictionary::new();
+            let mut dict = VarDictionary::new();
             dict.set("read_bytes", stats.i_read_bytes);
             dict.set("input_bitrate", stats.f_input_bitrate);
             dict.set("demux_read_bytes", stats.i_demux_read_bytes);
@@ -361,7 +361,7 @@ impl VlcMedia {
             dict.set("lost_abuffers", stats.i_lost_abuffers);
             dict
         } else {
-            Dictionary::default()
+            VarDictionary::default()
         }
     }
 
