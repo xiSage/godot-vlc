@@ -9,7 +9,7 @@ Put media files into `res://` and they will be loaded as `VLCMedia`. Then you ca
 
 You can alse use `VLCMedia.load_from_file()` to load media from disk or `VLCMedia.load_from_mrl()` to load media from a [media resource locator](https://wiki.videolan.org/Media_resource_locator).
 
-There are some other features, such as subtitles and chapters, can be accessed through scripts. For more information, see the ingame documentation.
+There are some other features, such as subtitles and chapters, can be accessed through scripts. For more information, see the in-editor documentation.
 
 ## Screenshot
 <img src="img/screenshot.png" alt="screenshot">
