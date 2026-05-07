@@ -1,4 +1,4 @@
-[gd_scene load_steps=3 format=3 uid="uid://dakfnot14s0bk"]
+[gd_scene format=3 uid="uid://dakfnot14s0bk"]
 
 [ext_resource type="VLCMedia" uid="uid://n41raqiv2ion" path="res://test.mp4" id="1_ig7tw"]
 
@@ -133,9 +133,10 @@ func _on_file_dialog_file_selected(path: String) -> void:
 	media = VLCMedia.load_from_file(path)
 "
 
-[node name="VLCMediaPlayer" type="VLCMediaPlayer"]
+[node name="VLCMediaPlayer" type="VLCMediaPlayer" unique_id=730198423]
 media = ExtResource("1_ig7tw")
 autoplay = true
+force_hardware = true
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -143,116 +144,116 @@ grow_horizontal = 2
 grow_vertical = 2
 script = SubResource("GDScript_sho2u")
 
-[node name="VBoxContainer" type="VBoxContainer" parent="."]
+[node name="VBoxContainer" type="VBoxContainer" parent="." unique_id=1019291764]
 layout_mode = 0
 offset_right = 201.0
 offset_bottom = 423.0
 
-[node name="Load" type="Button" parent="VBoxContainer"]
+[node name="Load" type="Button" parent="VBoxContainer" unique_id=1622925181]
 layout_mode = 2
 text = "Load File"
 
-[node name="LoadMRL" type="Button" parent="VBoxContainer"]
+[node name="LoadMRL" type="Button" parent="VBoxContainer" unique_id=1768275571]
 layout_mode = 2
 text = "Load MRL"
 
-[node name="Play" type="Button" parent="VBoxContainer"]
+[node name="Play" type="Button" parent="VBoxContainer" unique_id=579525422]
 layout_mode = 2
 text = "Play"
 
-[node name="Pause" type="Button" parent="VBoxContainer"]
+[node name="Pause" type="Button" parent="VBoxContainer" unique_id=1194589017]
 layout_mode = 2
 text = "Pause"
 
-[node name="Resume" type="Button" parent="VBoxContainer"]
+[node name="Resume" type="Button" parent="VBoxContainer" unique_id=1443128239]
 layout_mode = 2
 text = "Resume"
 
-[node name="Stop" type="Button" parent="VBoxContainer"]
+[node name="Stop" type="Button" parent="VBoxContainer" unique_id=862739439]
 layout_mode = 2
 text = "Stop"
 
-[node name="VideoTrack" type="HBoxContainer" parent="VBoxContainer"]
+[node name="VideoTrack" type="HBoxContainer" parent="VBoxContainer" unique_id=845744760]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="Label" type="Label" parent="VBoxContainer/VideoTrack"]
+[node name="Label" type="Label" parent="VBoxContainer/VideoTrack" unique_id=1181952693]
 custom_minimum_size = Vector2(100, 0)
 layout_mode = 2
 size_flags_horizontal = 0
 text = "video track:"
 
-[node name="OptionButton" type="OptionButton" parent="VBoxContainer/VideoTrack"]
+[node name="OptionButton" type="OptionButton" parent="VBoxContainer/VideoTrack" unique_id=648899412]
 layout_mode = 2
 size_flags_horizontal = 3
 clip_text = true
 
-[node name="AudioTrack" type="HBoxContainer" parent="VBoxContainer"]
+[node name="AudioTrack" type="HBoxContainer" parent="VBoxContainer" unique_id=1245605106]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="Label" type="Label" parent="VBoxContainer/AudioTrack"]
+[node name="Label" type="Label" parent="VBoxContainer/AudioTrack" unique_id=1882200494]
 custom_minimum_size = Vector2(100, 0)
 layout_mode = 2
 size_flags_horizontal = 0
 text = "audio track:"
 
-[node name="OptionButton" type="OptionButton" parent="VBoxContainer/AudioTrack"]
+[node name="OptionButton" type="OptionButton" parent="VBoxContainer/AudioTrack" unique_id=1194551680]
 layout_mode = 2
 size_flags_horizontal = 3
 clip_text = true
 
-[node name="TextTrack" type="HBoxContainer" parent="VBoxContainer"]
+[node name="TextTrack" type="HBoxContainer" parent="VBoxContainer" unique_id=862653139]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="Label" type="Label" parent="VBoxContainer/TextTrack"]
+[node name="Label" type="Label" parent="VBoxContainer/TextTrack" unique_id=1245940908]
 custom_minimum_size = Vector2(100, 0)
 layout_mode = 2
 size_flags_horizontal = 0
 text = "text track:"
 
-[node name="OptionButton" type="OptionButton" parent="VBoxContainer/TextTrack"]
+[node name="OptionButton" type="OptionButton" parent="VBoxContainer/TextTrack" unique_id=917506089]
 layout_mode = 2
 size_flags_horizontal = 3
 clip_text = true
 
-[node name="HSlider" type="HSlider" parent="VBoxContainer"]
+[node name="HSlider" type="HSlider" parent="VBoxContainer" unique_id=499565026]
 unique_name_in_owner = true
 layout_mode = 2
 max_value = 1.0
 step = 0.0
 
-[node name="Time" type="Label" parent="VBoxContainer"]
+[node name="Time" type="Label" parent="VBoxContainer" unique_id=1802034036]
 unique_name_in_owner = true
 layout_mode = 2
 text = "time:"
 
-[node name="Position" type="Label" parent="VBoxContainer"]
+[node name="Position" type="Label" parent="VBoxContainer" unique_id=1776050882]
 unique_name_in_owner = true
 layout_mode = 2
 text = "position:"
 
-[node name="State" type="Label" parent="VBoxContainer"]
+[node name="State" type="Label" parent="VBoxContainer" unique_id=552890077]
 unique_name_in_owner = true
 layout_mode = 2
 text = "state:"
 
-[node name="GPUOutput" type="Label" parent="VBoxContainer"]
+[node name="GPUOutput" type="Label" parent="VBoxContainer" unique_id=266504373]
 unique_name_in_owner = true
 layout_mode = 2
 text = "gpu output:"
 
-[node name="Statics" type="Button" parent="VBoxContainer"]
+[node name="Statics" type="Button" parent="VBoxContainer" unique_id=1509434665]
 layout_mode = 2
 text = "Statics"
 
-[node name="InputMRLDialog" type="ConfirmationDialog" parent="."]
+[node name="InputMRLDialog" type="ConfirmationDialog" parent="." unique_id=1361761297]
 unique_name_in_owner = true
 title = "Input MRL"
 size = Vector2i(600, 100)
 
-[node name="MRL" type="TextEdit" parent="InputMRLDialog"]
+[node name="MRL" type="TextEdit" parent="InputMRLDialog" unique_id=1358275267]
 unique_name_in_owner = true
 offset_left = 8.0
 offset_top = 8.0
@@ -260,7 +261,7 @@ offset_right = 592.0
 offset_bottom = 51.0
 text = "https://github.com/xiSage/godot-vlc/raw/refs/heads/master/demo/test.mp4"
 
-[node name="FileDialog" type="FileDialog" parent="."]
+[node name="FileDialog" type="FileDialog" parent="." unique_id=683630440]
 title = "Open a File"
 initial_position = 2
 ok_button_text = "Open"
