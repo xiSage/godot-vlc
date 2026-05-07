@@ -21,7 +21,7 @@ impl OutputEvent {
     /// closing it (or letting the dropped event close it).
     #[allow(dead_code)]
     pub fn into_parts(mut self) -> (HANDLE, u32, u32) {
-        let handle = std::mem::replace(&mut self.handle, HANDLE::default());
+        let handle = std::mem::take(&mut self.handle);
         (handle, self.width, self.height)
     }
 }
