@@ -19,9 +19,8 @@
 
 use crate::{util::cstring_from_gstring, vlc};
 use godot::{
-    classes::{class_macros::sys::GDEXTENSION_VARIANT_TYPE_STRING, notify::ObjectNotification, Engine, ProjectSettings},
-    global::PropertyHint,
-    prelude::*,
+    classes::{Engine, ProjectSettings, class_macros::sys::GDEXTENSION_VARIANT_TYPE_STRING, notify::ObjectNotification},
+    prelude::*, register::info::PropertyHint,
 };
 use printf::printf;
 use std::{
@@ -134,7 +133,7 @@ impl VLCInstance {
         _ctx: *const vlc::libvlc_log_t,
         fmt: *const c_char,
         args: *mut c_void,
-    ) {
+    ) { unsafe {
         let s: String = printf(fmt, args);
         match level as vlc::libvlc_log_level {
             vlc::libvlc_log_level_LIBVLC_NOTICE => {
@@ -151,7 +150,7 @@ impl VLCInstance {
             }
             _ => {}
         }
-    }
+    }}
 
     unsafe extern "C" fn log_callback_info(
         _data: *mut c_void,
@@ -159,7 +158,7 @@ impl VLCInstance {
         _ctx: *const vlc::libvlc_log_t,
         fmt: *const c_char,
         args: *mut c_void,
-    ) {
+    ) { unsafe {
         let s: String = printf(fmt, args);
         match level as vlc::libvlc_log_level {
             vlc::libvlc_log_level_LIBVLC_NOTICE => {
@@ -173,7 +172,7 @@ impl VLCInstance {
             }
             _ => {}
         }
-    }
+    }}
 
     unsafe extern "C" fn log_callback_warning(
         _data: *mut c_void,
@@ -181,7 +180,7 @@ impl VLCInstance {
         _ctx: *const vlc::libvlc_log_t,
         fmt: *const c_char,
         args: *mut c_void,
-    ) {
+    ) { unsafe {
         let s: String = printf(fmt, args);
         match level as vlc::libvlc_log_level {
             vlc::libvlc_log_level_LIBVLC_WARNING => {
@@ -192,7 +191,7 @@ impl VLCInstance {
             }
             _ => {}
         }
-    }
+    }}
 
     unsafe extern "C" fn log_callback_error(
         _data: *mut c_void,
@@ -200,10 +199,10 @@ impl VLCInstance {
         _ctx: *const vlc::libvlc_log_t,
         fmt: *const c_char,
         args: *mut c_void,
-    ) {
+    ) { unsafe {
         let s: String = printf(fmt, args);
         if level as vlc::libvlc_log_level == vlc::libvlc_log_level_LIBVLC_ERROR {
             godot_error!("LibVLC: {}", s);
         }
-    }
+    }}
 }

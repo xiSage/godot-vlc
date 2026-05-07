@@ -44,8 +44,8 @@ impl InternalAudioStreamPlayback {
 
 #[godot_api]
 impl IAudioStreamPlayback for InternalAudioStreamPlayback {
-    unsafe fn mix_rawptr(&mut self, buffer: *mut AudioFrame, _rate_scale: f32, frames: i32) -> i32 {
-        let buffer_slice = slice_from_raw_parts_mut(buffer, frames as usize)
+    unsafe fn mix_rawptr(&mut self, buffer: godot::meta::conv::RawPtr<*mut godot::classes::native::AudioFrame>, _rate_scale: f32, frames: i32) -> i32 { unsafe {
+        let buffer_slice = slice_from_raw_parts_mut(buffer.ptr(), frames as usize)
             .as_mut()
             .unwrap();
         for (i, item) in buffer_slice.iter_mut().enumerate() {
@@ -56,7 +56,7 @@ impl IAudioStreamPlayback for InternalAudioStreamPlayback {
             }
         }
         frames
-    }
+    }}
 
     fn start(&mut self, _from_pos: f64) {
         // do nothing

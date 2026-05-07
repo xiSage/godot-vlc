@@ -31,7 +31,7 @@ use godot::{
 pub(super) unsafe extern "C" fn video_lock_callback(
     opaque: *mut c_void,
     planes: *mut *mut c_void,
-) -> *mut c_void {
+) -> *mut c_void { unsafe {
     let (_tx, _img, buffer) = (opaque
         as *mut (
             *mut mpsc::Sender<(bool, Gd<Image>)>,
@@ -43,13 +43,13 @@ pub(super) unsafe extern "C" fn video_lock_callback(
     let buffer_ptr = buffer.as_mut_slice().as_mut_ptr();
     *planes = buffer_ptr as *mut c_void;
     ptr::null_mut()
-}
+}}
 
 pub(super) unsafe extern "C" fn video_unlock_callback(
     opaque: *mut c_void,
     _picture: *mut c_void,
     _planes: *const *mut c_void,
-) {
+) { unsafe {
     let (_tx, img, buffer) = (opaque
         as *mut (
             *mut mpsc::Sender<(bool, Gd<Image>)>,
@@ -62,12 +62,12 @@ pub(super) unsafe extern "C" fn video_unlock_callback(
     let height = img.get_height();
     let format = img.get_format();
     img.set_data(width, height, false, format, buffer);
-}
+}}
 
 pub(super) unsafe extern "C" fn video_display_callback(
     opaque: *mut c_void,
     _picture: *mut c_void,
-) {
+) { unsafe {
     let (tx, img, _buffer) = (opaque
         as *mut (
             *mut mpsc::Sender<(bool, Gd<Image>)>,
@@ -79,8 +79,8 @@ pub(super) unsafe extern "C" fn video_display_callback(
     _ = tx
         .as_mut()
         .unwrap()
-        .send((false, img.duplicate().unwrap().cast()));
-}
+        .send((false, Gd::duplicate_resource(img).cast()));
+}}
 
 pub(super) unsafe extern "C" fn video_format_callback(
     opaque: *mut *mut c_void,
@@ -89,7 +89,7 @@ pub(super) unsafe extern "C" fn video_format_callback(
     height: *mut c_uint,
     pitches: *mut c_uint,
     lines: *mut c_uint,
-) -> c_uint {
+) -> c_uint { unsafe {
     let tx: *mut mpsc::Sender<(bool, Gd<Image>)> = *opaque as *mut mpsc::Sender<(bool, Gd<Image>)>;
     let img = match Image::create_empty(*width as i32, *height as i32, false, image::Format::RGB8) {
         Some(img) => img,
@@ -106,9 +106,9 @@ pub(super) unsafe extern "C" fn video_format_callback(
     }
     *opaque = Box::into_raw(Box::new((tx, img, buffer))) as *mut c_void;
     1
-}
+}}
 
-pub(super) unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) {
+pub(super) unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) { unsafe {
     let (_tx, _img, _buffer) = *Box::from_raw(
         opaque
             as *mut (
@@ -117,4 +117,4 @@ pub(super) unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) {
                 PackedByteArray,
             ),
     );
-}
+}}
