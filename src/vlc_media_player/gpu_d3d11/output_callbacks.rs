@@ -221,15 +221,15 @@ pub fn register(
     Ok(())
 }
 
-unsafe fn backend_ref<'a>(opaque: *mut c_void) -> &'a Backend {
+unsafe fn backend_ref<'a>(opaque: *mut c_void) -> &'a Backend { unsafe {
     &*(opaque as *const Backend)
-}
+}}
 
 unsafe extern "C" fn setup_cb(
     opaque: *mut *mut c_void,
     _cfg: *const libvlc_video_setup_device_cfg_t,
     out: *mut libvlc_video_setup_device_info_t,
-) -> bool {
+) -> bool { unsafe {
     if opaque.is_null() || (*opaque).is_null() || out.is_null() {
         return false;
     }
@@ -239,20 +239,20 @@ unsafe extern "C" fn setup_cb(
     (*out).__bindgen_anon_1.d3d11.device_context = backend.context.as_raw();
     (*out).__bindgen_anon_1.d3d11.context_mutex = std::ptr::null_mut();
     true
-}
+}}
 
-unsafe extern "C" fn cleanup_cb(opaque: *mut c_void) {
+unsafe extern "C" fn cleanup_cb(opaque: *mut c_void) { unsafe {
     if opaque.is_null() {
         return;
     }
     let _ = Arc::from_raw(opaque as *const Backend);
-}
+}}
 
 unsafe extern "C" fn update_output_cb(
     opaque: *mut c_void,
     cfg: *const libvlc_video_render_cfg_t,
     output: *mut libvlc_video_output_cfg_t,
-) -> bool {
+) -> bool { unsafe {
     if opaque.is_null() || cfg.is_null() || output.is_null() {
         return false;
     }
@@ -279,9 +279,9 @@ unsafe extern "C" fn update_output_cb(
     (*output).transfer = libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB;
     (*output).orientation = libvlc_video_orient_t_libvlc_video_orient_top_left;
     true
-}
+}}
 
-unsafe extern "C" fn swap_cb(opaque: *mut c_void) {
+unsafe extern "C" fn swap_cb(opaque: *mut c_void) { unsafe {
     if opaque.is_null() {
         return;
     }
@@ -290,16 +290,16 @@ unsafe extern "C" fn swap_cb(opaque: *mut c_void) {
     if let Err(e) = backend.fence.signal_next(&backend.context) {
         eprintln!("godot-vlc: swap_cb fence signal failed: {e}");
     }
-}
+}}
 
-unsafe extern "C" fn make_current_cb(opaque: *mut c_void, _enter: bool) -> bool {
+unsafe extern "C" fn make_current_cb(opaque: *mut c_void, _enter: bool) -> bool { unsafe {
     // Stub: RTV pre-bound in update_output_cb. Cannot be NULL — libvlc
     // requires it for the d3d11 engine.
     if !opaque.is_null() {
         backend_ref(opaque).make_current_calls.fetch_add(1, Ordering::SeqCst);
     }
     true
-}
+}}
 
 unsafe extern "C" fn select_plane_cb(
     _opaque: *mut c_void,

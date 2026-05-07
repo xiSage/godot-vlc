@@ -42,7 +42,7 @@ impl std::error::Error for ImportError {}
 
 /// Godot's `ID3D12Device`, AddRef'd. Caller's Drop will Release.
 pub fn godot_d3d12_device() -> Result<ID3D12Device, ImportError> {
-    let mut rd = RenderingServer::singleton()
+    let rd = RenderingServer::singleton()
         .get_rendering_device()
         .ok_or(ImportError::NoRenderingDevice)?;
     let raw_handle = rd.get_driver_resource(DriverResource::LOGICAL_DEVICE, Rid::Invalid, 0);
@@ -85,7 +85,7 @@ pub fn open_shared_fence(
 /// views). `TEXTURE_VIEW` returns `tex_info->resource` and works on both
 /// 4.5.2 and 4.7+.
 pub fn godot_rd_texture_native(rid: Rid) -> Result<ID3D12Resource, ImportError> {
-    let mut rd = RenderingServer::singleton()
+    let rd = RenderingServer::singleton()
         .get_rendering_device()
         .ok_or(ImportError::NoRenderingDevice)?;
     let raw_handle = rd.get_driver_resource(DriverResource::TEXTURE_VIEW, rid, 0);

@@ -56,7 +56,7 @@ use ringbuf::{
     HeapProd, HeapRb,
 };
 
-#[derive(GodotConvert, Var, Export)]
+#[derive(GodotConvert, Var, Export, Clone, Debug)]
 #[godot(via=i64)]
 pub enum StretchMode {
     Scale,
@@ -68,7 +68,7 @@ pub enum StretchMode {
     KeepAspectCovered,
 }
 
-#[derive(GodotConvert, Var, Export)]
+#[derive(GodotConvert, Var, Export, Clone, Debug)]
 #[godot(via=i64)]
 pub enum MixTarget {
     Stereo,
@@ -83,7 +83,7 @@ pub enum MixTarget {
 struct VlcMediaPlayer {
     base: Base<Control>,
     #[export]
-    #[var(get, set=set_media)]
+    #[var(set=set_media)]
     media: Option<Gd<VlcMedia>>,
     #[export]
     autoplay: bool,
@@ -95,16 +95,16 @@ struct VlcMediaPlayer {
     #[export]
     force_hardware: bool,
     #[export]
-    #[var(get, set=set_stretch_mode)]
+    #[var(set=set_stretch_mode)]
     stretch_mode: StretchMode,
     #[export(range = (-80.0, 24.0, suffix="db"))]
-    #[var(get, set=set_volume_db)]
+    #[var(set=set_volume_db)]
     volume_db: f32,
     #[export]
-    #[var(get, set=set_mix_target)]
+    #[var(set=set_mix_target)]
     mix_target: MixTarget,
     #[export]
-    #[var(get, set=set_bus)]
+    #[var(set=set_bus)]
     bus: StringName,
     player_ptr: *mut libvlc_media_player_t,
     self_gd: Option<Box<Gd<Self>>>,
@@ -178,8 +178,8 @@ impl IControl for VlcMediaPlayer {
 
     fn on_notification(&mut self, what: ControlNotification) {
         if what == ControlNotification::INTERNAL_PROCESS {
-            if let Ok(data) = self.video_rx.try_recv() {
-                if data.1.is_instance_valid() && !data.1.is_empty() && data.1.get_data_size() > 0 {
+            if let Ok(data) = self.video_rx.try_recv()
+                && data.1.is_instance_valid() && !data.1.is_empty() && data.1.get_data_size() > 0 {
                     if data.0 {
                         self.texture.set_image(&data.1);
                     } else {
@@ -187,7 +187,6 @@ impl IControl for VlcMediaPlayer {
                     }
                     self.signals().video_frame().emit();
                 }
-            }
         } else if what == ControlNotification::READY {
             self.self_gd = Some(Box::new(self.to_gd()));
             self.register_player_callbacks();
@@ -773,17 +772,8 @@ impl VlcMediaPlayer {
     }
 
     #[func]
-    fn set_stretch_mode(&mut self, stretch_mode: i64) {
-        self.stretch_mode = match stretch_mode {
-            0 => StretchMode::Scale,
-            1 => StretchMode::Tile,
-            2 => StretchMode::Keep,
-            3 => StretchMode::KeepCenterd,
-            4 => StretchMode::KeepAspect,
-            5 => StretchMode::KeepAspectCenterd,
-            6 => StretchMode::KeepAspectCovered,
-            _ => StretchMode::KeepAspectCenterd,
-        };
+    fn set_stretch_mode(&mut self, stretch_mode: StretchMode) {
+        self.stretch_mode = stretch_mode;
         self.update_stretch_mode();
     }
 
@@ -794,13 +784,8 @@ impl VlcMediaPlayer {
     }
 
     #[func]
-    fn set_mix_target(&mut self, mix_target: i64) {
-        self.mix_target = match mix_target {
-            0 => MixTarget::Stereo,
-            1 => MixTarget::Surround,
-            2 => MixTarget::Center,
-            _ => MixTarget::Stereo,
-        };
+    fn set_mix_target(&mut self, mix_target: MixTarget) {
+        self.mix_target = mix_target;
         self.update_mix_target();
     }
 
@@ -1097,7 +1082,7 @@ unsafe extern "C" fn audio_play_callback(
     samples: *const c_void,
     count: c_uint,
     _pts: i64,
-) {
+) { unsafe {
     let (rb_prod, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
         .as_mut()
         .unwrap();
@@ -1119,39 +1104,38 @@ unsafe extern "C" fn audio_play_callback(
     if !player.is_playing() {
         player.call_thread_safe("play", &[]);
     }
-}
+}}
 
-unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) {
+unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) { unsafe {
     let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
         .as_mut()
         .unwrap();
     player.set_stream_paused(true);
-}
+}}
 
-unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) {
+unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) { unsafe {
     let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
         .as_mut()
         .unwrap();
     player.set_stream_paused(false);
-}
+}}
 
-unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
+unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) { unsafe {
     let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
         .as_mut()
         .unwrap();
     if player.is_instance_valid() {
         player.call_thread_safe("stop", &[]);
-        if let Some(stream) = player.get_stream() {
-            if let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>() {
+        if let Some(stream) = player.get_stream()
+            && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>() {
                 internal_stream
                     .bind_mut()
                     .playback
                     .bind_mut()
                     .clear_buffer();
             }
-        }
     }
-}
+}}
 
 unsafe extern "C" fn audio_drain_callback(_data: *mut c_void) {
     // do nothing
@@ -1162,12 +1146,12 @@ unsafe extern "C" fn audio_setup_callback(
     format: *mut c_char,
     rate: *mut c_uint,
     channels: *mut c_uint,
-) -> c_int {
+) -> c_int { unsafe {
     format.copy_from(c"FL32".as_ptr(), 5);
     *rate = AudioServer::singleton().get_mix_rate() as c_uint;
     *channels = 2;
     0
-}
+}}
 
 unsafe extern "C" fn audio_cleanup_callback(_opaque: *mut c_void) {
     // do nothing

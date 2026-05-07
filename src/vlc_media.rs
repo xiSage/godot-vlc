@@ -212,7 +212,7 @@ impl VlcMedia {
             unsafe extern "C" fn parsed_changed_callback(
                 _event: *const libvlc_event_t,
                 user_data: *mut c_void,
-            ) {
+            ) { unsafe {
                 let mut media = get_media(user_data);
                 let status = libvlc_media_get_parsed_status(media.bind().media_ptr);
                 media.call_deferred(
@@ -222,7 +222,7 @@ impl VlcMedia {
                         status.to_variant(),
                     ],
                 );
-            }
+            }}
             libvlc_event_attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
@@ -346,19 +346,19 @@ impl VlcMedia {
         let available = unsafe { libvlc_media_get_stats(self.media_ptr, &mut stats) };
         if available {
             let mut dict = VarDictionary::new();
-            dict.set("read_bytes", stats.i_read_bytes);
+            dict.set("read_bytes", stats.i_read_bytes as i64);
             dict.set("input_bitrate", stats.f_input_bitrate);
-            dict.set("demux_read_bytes", stats.i_demux_read_bytes);
+            dict.set("demux_read_bytes", stats.i_demux_read_bytes as i64);
             dict.set("demux_bitrate", stats.f_demux_bitrate);
-            dict.set("demux_corrupted", stats.i_demux_corrupted);
-            dict.set("demux_discontinuity", stats.i_demux_discontinuity);
-            dict.set("decoded_video", stats.i_decoded_video);
-            dict.set("decoded_audio", stats.i_decoded_audio);
-            dict.set("displayed_pictures", stats.i_displayed_pictures);
-            dict.set("late_pictures", stats.i_late_pictures);
-            dict.set("lost_pictures", stats.i_lost_pictures);
-            dict.set("played_abuffers", stats.i_played_abuffers);
-            dict.set("lost_abuffers", stats.i_lost_abuffers);
+            dict.set("demux_corrupted", stats.i_demux_corrupted as i64);
+            dict.set("demux_discontinuity", stats.i_demux_discontinuity as i64);
+            dict.set("decoded_video", stats.i_decoded_video as i64);
+            dict.set("decoded_audio", stats.i_decoded_audio as i64);
+            dict.set("displayed_pictures", stats.i_displayed_pictures as i64);
+            dict.set("late_pictures", stats.i_late_pictures as i64);
+            dict.set("lost_pictures", stats.i_lost_pictures as i64);
+            dict.set("played_abuffers", stats.i_played_abuffers as i64);
+            dict.set("lost_abuffers", stats.i_lost_abuffers as i64);
             dict
         } else {
             VarDictionary::default()
@@ -431,24 +431,23 @@ unsafe extern "C" fn media_open_callback(
     opaque: *mut c_void,
     datap: *mut *mut c_void,
     sizep: *mut u64,
-) -> c_int {
-    if let Some(path) = (opaque as *mut GString).as_ref() {
-        if let Ok(mut file) = GFile::open(path, ModeFlags::READ) {
+) -> c_int { unsafe {
+    if let Some(path) = (opaque as *mut GString).as_ref()
+        && let Ok(mut file) = GFile::open(path, ModeFlags::READ) {
             *sizep = file.length();
             let _ = file.seek(SeekFrom::Start(0));
             *datap = Box::into_raw(Box::new(file)) as *mut c_void;
             return 0;
         }
-    }
     godot_error!("godot-vlc: unable to open media file");
     -1
-}
+}}
 
 unsafe extern "C" fn media_read_callback(
     opaque: *mut c_void,
     buf: *mut c_uchar,
     len: usize,
-) -> isize {
+) -> isize { unsafe {
     if let Some(file) = (opaque as *mut GFile).as_mut() {
         let buf = std::slice::from_raw_parts_mut(buf, len);
         match file.read(buf) {
@@ -458,9 +457,9 @@ unsafe extern "C" fn media_read_callback(
     } else {
         -1
     }
-}
+}}
 
-unsafe extern "C" fn media_seek_callback(opaque: *mut c_void, offset: u64) -> c_int {
+unsafe extern "C" fn media_seek_callback(opaque: *mut c_void, offset: u64) -> c_int { unsafe {
     if let Some(file) = (opaque as *mut GFile).as_mut() {
         match file.seek(SeekFrom::Start(offset)) {
             Ok(_) => 0,
@@ -469,10 +468,10 @@ unsafe extern "C" fn media_seek_callback(opaque: *mut c_void, offset: u64) -> c_
     } else {
         -1
     }
-}
+}}
 
-unsafe extern "C" fn media_close_cb(opaque: *mut ::std::os::raw::c_void) {
+unsafe extern "C" fn media_close_cb(opaque: *mut ::std::os::raw::c_void) { unsafe {
     if !opaque.is_null() {
         drop(Box::from_raw(opaque as *mut GFile));
     }
-}
+}}

@@ -129,7 +129,7 @@ pub fn godot_d3d12_luid() -> Result<i64, AdapterError> {
         return Err(AdapterError::NotD3D12(api));
     }
 
-    let mut rd = rs
+    let rd = rs
         .get_rendering_device()
         .ok_or(AdapterError::NoRenderingDevice)?;
 

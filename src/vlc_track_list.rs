@@ -49,7 +49,7 @@ impl VlcTrackList {
     /// # Returns
     /// a valid [VLCTrack], or null if the index is out of range.
     #[func]
-    fn tracklist_at(&self, index: u64) -> Option<Gd<VlcTrack>> {
+    fn tracklist_at(&self, index: u32) -> Option<Gd<VlcTrack>> {
         if index >= self.tracklist_count() {
             return None;
         }
@@ -63,8 +63,8 @@ impl VlcTrackList {
     /// # Returns
     /// number of tracks, or 0 if the list is empty
     #[func]
-    fn tracklist_count(&self) -> u64 {
-        unsafe { libvlc_media_tracklist_count(self.ptr) as u64 }
+    fn tracklist_count(&self) -> u32 {
+        unsafe { libvlc_media_tracklist_count(self.ptr) as u32 }
     }
 
     /// Get all tracks in the tracklist.
