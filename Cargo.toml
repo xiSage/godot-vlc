@@ -25,7 +25,7 @@ windows = { version = "0.61", optional = true, features = [
 ] }
 
 [features]
-default = []
+default = ["gpu"]
 gpu = ["dep:windows"]
 
 [build-dependencies]
