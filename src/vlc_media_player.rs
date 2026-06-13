@@ -825,8 +825,8 @@ impl VlcMediaPlayer {
     fn update_mix_target(&mut self) {
         self.audio_player.set_mix_target(match self.mix_target {
             MixTarget::Stereo => godot::classes::audio_stream_player::MixTarget::STEREO,
-            MixTarget::Surround => godot::classes::audio_stream_player::MixTarget::STEREO,
-            MixTarget::Center => godot::classes::audio_stream_player::MixTarget::STEREO,
+            MixTarget::Surround => godot::classes::audio_stream_player::MixTarget::SURROUND,
+            MixTarget::Center => godot::classes::audio_stream_player::MixTarget::CENTER,
         })
     }
 
