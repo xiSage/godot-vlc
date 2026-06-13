@@ -1,3 +1,7 @@
 /target
 .vscode
 .env
+.doc
+.claude
+CLAUDE.md
+AGENTS.md
