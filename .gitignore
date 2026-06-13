@@ -3,5 +3,6 @@
 .env
 .doc
 .claude
+.trae
 CLAUDE.md
 AGENTS.md
