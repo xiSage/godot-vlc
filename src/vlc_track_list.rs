@@ -44,7 +44,7 @@ impl VlcTrackList {
         }
     }
 
-    /// Get a track at a specific index.\
+    /// Get a track at a specific index.
     ///
     /// # Returns
     /// a valid [VLCTrack], or null if the index is out of range.

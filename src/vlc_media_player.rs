@@ -338,7 +338,7 @@ impl VlcMediaPlayer {
 
     /// Whether the GPU output backend is currently driving this player.
     /// Reflects the *actual* state after `try_init_gpu_backend()`: if
-    /// `force_hardware` was set but init failed and we fell back to the
+    /// [member force_hardware] was set but init failed and we fell back to the
     /// software path, this returns `false`.
     #[cfg(all(feature = "gpu", windows))]
     #[func]
