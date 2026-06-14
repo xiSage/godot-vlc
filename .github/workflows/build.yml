@@ -17,7 +17,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Rustfmt Check
       run: cargo fmt --all -- --check
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Build Debug
       run: ./scripts/build_debug.ps1
@@ -44,7 +44,7 @@ jobs:
         Copy-Item -Path "target/debug/libgodot_vlc.so" -Destination "bin/libgodot_vlc_debug.so"
         Copy-Item -Path "target/release/libgodot_vlc.so" -Destination "bin/libgodot_vlc.so"
     
-    - uses: actions/upload-artifact@v4.6.2
+    - uses: actions/upload-artifact@v7
       with:
         name: linux64
         path: bin/*
@@ -54,12 +54,12 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Install LLVM and Clang # required for bindgen to work, see https://github.com/rust-lang/rust-bindgen/issues/1797
-      uses: KyleMayes/install-llvm-action@v2.0.7
+      uses: KyleMayes/install-llvm-action@v2
       with:
-        version: "11.0"
+        version: "22.1"
         directory: ${{ runner.temp }}/llvm
 
     - name: Set LIBCLANG_PATH
@@ -78,7 +78,7 @@ jobs:
         Copy-Item -Path "target/debug/godot_vlc.pdb" -Destination "bin/godot_vlc_debug.pdb"
         Copy-Item -Path "target/release/godot_vlc.dll" -Destination "bin/godot_vlc.dll"
     
-    - uses: actions/upload-artifact@v4.6.2
+    - uses: actions/upload-artifact@v7
       with:
         name: win64
         path: bin/*
