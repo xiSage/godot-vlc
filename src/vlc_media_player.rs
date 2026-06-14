@@ -40,20 +40,20 @@ use crate::{
 };
 use godot::{
     classes::{
+        AudioServer, AudioStream, AudioStreamPlayer, Control, IControl, Image, ImageTexture,
+        Texture2D, TextureRect,
         control::{LayoutPreset, LayoutPresetMode},
         native::AudioFrame,
         node::InternalMode,
         notify::ControlNotification,
         texture_rect::{ExpandMode, StretchMode as TextureRectStretchMode},
-        AudioServer, AudioStream, AudioStreamPlayer, Control, IControl, Image, ImageTexture,
-        Texture2D, TextureRect,
     },
     obj::NewAlloc,
     prelude::*,
 };
 use ringbuf::{
-    traits::{Producer, Split},
     HeapProd, HeapRb,
+    traits::{Producer, Split},
 };
 
 #[cfg(all(feature = "gpu", windows))]
@@ -182,14 +182,17 @@ impl IControl for VlcMediaPlayer {
     fn on_notification(&mut self, what: ControlNotification) {
         if what == ControlNotification::INTERNAL_PROCESS {
             if let Ok(data) = self.video_rx.try_recv()
-                && data.1.is_instance_valid() && !data.1.is_empty() && data.1.get_data_size() > 0 {
-                    if data.0 {
-                        self.texture.set_image(&data.1);
-                    } else {
-                        self.texture.update(&data.1);
-                    }
-                    self.signals().video_frame().emit();
+                && data.1.is_instance_valid()
+                && !data.1.is_empty()
+                && data.1.get_data_size() > 0
+            {
+                if data.0 {
+                    self.texture.set_image(&data.1);
+                } else {
+                    self.texture.update(&data.1);
                 }
+                self.signals().video_frame().emit();
+            }
         } else if what == ControlNotification::READY {
             self.self_gd = Some(Box::new(self.to_gd()));
             self.register_player_callbacks();
@@ -231,8 +234,7 @@ impl Drop for VlcMediaPlayer {
         // ImporterTask.
         #[cfg(all(feature = "gpu", windows))]
         if let Some(c) = self.gpu_frame_callable.take() {
-            RenderingServer::singleton()
-                .disconnect(&StringName::from("frame_pre_draw"), &c);
+            RenderingServer::singleton().disconnect(&StringName::from("frame_pre_draw"), &c);
         }
         unsafe {
             libvlc_media_player_release(self.player_ptr);
@@ -300,8 +302,12 @@ impl VlcMediaPlayer {
     #[constant]
     const POSITION_BOTTOM_RIGHT: c_int = libvlc_position_t_libvlc_position_bottom_right;
 
+    /// @deprecated: use [signal opening] instead.
+    #[deprecated]
     #[signal]
     fn openning();
+    #[signal]
+    fn opening();
     #[signal]
     fn buffering();
     #[signal]
@@ -374,9 +380,7 @@ impl VlcMediaPlayer {
     fn _debug_frames_copied(&self) -> i64 {
         match &self.gpu_importer {
             None => 0,
-            Some(t) => t
-                .frames_copied
-                .load(std::sync::atomic::Ordering::SeqCst) as i64,
+            Some(t) => t.frames_copied.load(std::sync::atomic::Ordering::SeqCst) as i64,
         }
     }
 
@@ -388,9 +392,11 @@ impl VlcMediaPlayer {
             return Vector3i::new(0, 0, 0);
         };
         Vector3i::new(
-            b.update_output_calls.load(std::sync::atomic::Ordering::SeqCst) as i32,
+            b.update_output_calls
+                .load(std::sync::atomic::Ordering::SeqCst) as i32,
             b.swap_calls.load(std::sync::atomic::Ordering::SeqCst) as i32,
-            b.make_current_calls.load(std::sync::atomic::Ordering::SeqCst) as i32,
+            b.make_current_calls
+                .load(std::sync::atomic::Ordering::SeqCst) as i32,
         )
     }
 
@@ -897,8 +903,7 @@ impl VlcMediaPlayer {
         // Untyped Object::connect: godot-rust 0.3.5's typed-signal accessor
         // takes a closure with no disconnect path; we need a Callable handle
         // to disconnect on Drop.
-        RenderingServer::singleton()
-            .connect(&StringName::from("frame_pre_draw"), &frame_callable);
+        RenderingServer::singleton().connect(&StringName::from("frame_pre_draw"), &frame_callable);
         if let Err(e) = gpu_d3d11::output_callbacks::register(self.player_ptr, backend.clone()) {
             godot_error!("godot-vlc: GPU init failed ({e})");
             RenderingServer::singleton()
@@ -963,17 +968,19 @@ impl VlcMediaPlayer {
             }
             let event_manager = libvlc_media_player_event_manager(self.player_ptr);
 
-            unsafe extern "C" fn openning_callback(
+            unsafe extern "C" fn opening_callback(
                 _event: *const libvlc_event_t,
                 user_data: *mut c_void,
             ) {
                 get_player(user_data)
                     .call_deferred("emit_signal", &[StringName::from("openning").to_variant()]);
+                get_player(user_data)
+                    .call_deferred("emit_signal", &[StringName::from("opening").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerOpening as libvlc_event_type_t,
-                Some(openning_callback),
+                Some(opening_callback),
                 self_ptr as *mut c_void,
             );
 
@@ -981,10 +988,8 @@ impl VlcMediaPlayer {
                 _event: *const libvlc_event_t,
                 user_data: *mut c_void,
             ) {
-                get_player(user_data).call_deferred(
-                    "emit_signal",
-                    &[StringName::from("buffering").to_variant()],
-                );
+                get_player(user_data)
+                    .call_deferred("emit_signal", &[StringName::from("buffering").to_variant()]);
             }
             libvlc_event_attach(
                 event_manager,
@@ -1085,60 +1090,69 @@ unsafe extern "C" fn audio_play_callback(
     samples: *const c_void,
     count: c_uint,
     _pts: i64,
-) { unsafe {
-    let (rb_prod, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-        .as_mut()
-        .unwrap();
+) {
+    unsafe {
+        let (rb_prod, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
+            .as_mut()
+            .unwrap();
 
-    let samples_slice = slice_from_raw_parts(samples as *const f32, count as usize * 2)
-        .as_ref()
-        .unwrap();
+        let samples_slice = slice_from_raw_parts(samples as *const f32, count as usize * 2)
+            .as_ref()
+            .unwrap();
 
-    for i in 0..count as usize {
-        let left = samples_slice[i * 2];
-        let right = samples_slice[i * 2 + 1];
-        let frame = AudioFrame { left, right };
-        if rb_prod.try_push(frame).is_err() {
-            godot_error!("godot-vlc: audio buffer full");
-            break;
+        for i in 0..count as usize {
+            let left = samples_slice[i * 2];
+            let right = samples_slice[i * 2 + 1];
+            let frame = AudioFrame { left, right };
+            if rb_prod.try_push(frame).is_err() {
+                godot_error!("godot-vlc: audio buffer full");
+                break;
+            }
+        }
+
+        if !player.is_playing() {
+            player.call_thread_safe("play", &[]);
         }
     }
+}
 
-    if !player.is_playing() {
-        player.call_thread_safe("play", &[]);
+unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) {
+    unsafe {
+        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
+            .as_mut()
+            .unwrap();
+        player.set_stream_paused(true);
     }
-}}
+}
 
-unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) { unsafe {
-    let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-        .as_mut()
-        .unwrap();
-    player.set_stream_paused(true);
-}}
+unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) {
+    unsafe {
+        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
+            .as_mut()
+            .unwrap();
+        player.set_stream_paused(false);
+    }
+}
 
-unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) { unsafe {
-    let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-        .as_mut()
-        .unwrap();
-    player.set_stream_paused(false);
-}}
-
-unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) { unsafe {
-    let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-        .as_mut()
-        .unwrap();
-    if player.is_instance_valid() {
-        player.call_thread_safe("stop", &[]);
-        if let Some(stream) = player.get_stream()
-            && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>() {
+unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
+    unsafe {
+        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
+            .as_mut()
+            .unwrap();
+        if player.is_instance_valid() {
+            player.call_thread_safe("stop", &[]);
+            if let Some(stream) = player.get_stream()
+                && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>()
+            {
                 internal_stream
                     .bind_mut()
                     .playback
                     .bind_mut()
                     .clear_buffer();
             }
+        }
     }
-}}
+}
 
 unsafe extern "C" fn audio_drain_callback(_data: *mut c_void) {
     // do nothing
@@ -1149,12 +1163,14 @@ unsafe extern "C" fn audio_setup_callback(
     format: *mut c_char,
     rate: *mut c_uint,
     channels: *mut c_uint,
-) -> c_int { unsafe {
-    format.copy_from(c"FL32".as_ptr(), 5);
-    *rate = AudioServer::singleton().get_mix_rate() as c_uint;
-    *channels = 2;
-    0
-}}
+) -> c_int {
+    unsafe {
+        format.copy_from(c"FL32".as_ptr(), 5);
+        *rate = AudioServer::singleton().get_mix_rate() as c_uint;
+        *channels = 2;
+        0
+    }
+}
 
 unsafe extern "C" fn audio_cleanup_callback(_opaque: *mut c_void) {
     // do nothing
