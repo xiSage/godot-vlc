@@ -8,9 +8,9 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = {version = "0.5.2", features = ["experimental-threads", "register-docs", "api-4-3"]}
-printf = "0.1.0"
-ringbuf = "0.5.0"
+godot = {version = "0.5", features = ["experimental-threads", "register-docs", "api-4-3"]}
+printf = "0.1"
+ringbuf = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", optional = true, features = [
@@ -29,4 +29,4 @@ default = ["gpu"]
 gpu = ["dep:windows"]
 
 [build-dependencies]
-bindgen = "0.72.1"
+bindgen = "0.72"
