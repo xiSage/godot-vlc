@@ -17,6 +17,8 @@
 * USA
 */
 
+mod audio_callbacks;
+mod events;
 mod internal_audio_stream;
 pub mod internal_audio_stream_playback;
 mod software_video;
@@ -24,11 +26,7 @@ mod software_video;
 #[cfg(all(feature = "gpu", windows))]
 mod gpu_d3d11;
 
-use std::{
-    ffi::{c_char, c_int, c_uint, c_void},
-    ptr::slice_from_raw_parts,
-    sync::mpsc,
-};
+use std::{ffi::c_int, sync::mpsc};
 
 use crate::{
     vlc::*,
@@ -51,10 +49,7 @@ use godot::{
     obj::NewAlloc,
     prelude::*,
 };
-use ringbuf::{
-    HeapProd, HeapRb,
-    traits::{Producer, Split},
-};
+use ringbuf::{HeapProd, HeapRb, traits::Split};
 
 #[cfg(all(feature = "gpu", windows))]
 use godot::classes::RenderingServer;
@@ -325,6 +320,8 @@ impl VlcMediaPlayer {
     #[signal]
     fn video_frame();
 
+    // ── media / texture / GPU ──
+
     #[func]
     pub fn set_media(&mut self, media: Option<Gd<VlcMedia>>) {
         self.media = media;
@@ -351,6 +348,8 @@ impl VlcMediaPlayer {
     fn is_gpu_output_active(&self) -> bool {
         false
     }
+
+    // ── debug functions ──
 
     /// Pop the pending GPU output event from the mailbox, returning the
     /// texture's `(width, height)` or `(0, 0)` if empty. Drains the mailbox.
@@ -467,6 +466,34 @@ impl VlcMediaPlayer {
         }
         dict
     }
+
+    // ── property setters ──
+
+    #[func]
+    fn set_stretch_mode(&mut self, stretch_mode: StretchMode) {
+        self.stretch_mode = stretch_mode;
+        self.update_stretch_mode();
+    }
+
+    #[func]
+    fn set_volume_db(&mut self, volume_db: f32) {
+        self.volume_db = volume_db;
+        self.update_volume_db();
+    }
+
+    #[func]
+    fn set_mix_target(&mut self, mix_target: MixTarget) {
+        self.mix_target = mix_target;
+        self.update_mix_target();
+    }
+
+    #[func]
+    fn set_bus(&mut self, bus: StringName) {
+        self.bus = bus;
+        self.update_bus();
+    }
+
+    // ── playback controls ──
 
     /// Can this media player be paused?
     ///
@@ -613,19 +640,6 @@ impl VlcMediaPlayer {
     fn is_seekable(&self) -> bool {
         unsafe { libvlc_media_player_is_seekable(self.player_ptr) }
     }
-
-    // /// Jump the movie time (in ms).\
-    // /// This will trigger a precise and relative seek (from the current time). This has no effect if no media is being played. Not all formats and protocols support this.
-    // ///
-    // /// # Parameters
-    // /// - [param time] the movie time (in ms).
-    // ///
-    // /// # Returns
-    // /// 0 on success, -1 on error.
-    // #[func()]
-    // fn jump_time(&mut self, time: i64) -> i32 {
-    //     unsafe { libvlc_media_player_jump_time(self.player_ptr, time) }
-    // }
 
     /// Navigate through DVD Menu.
     ///
@@ -779,31 +793,9 @@ impl VlcMediaPlayer {
     fn unselect_track_type(&mut self, track_type: i32) {
         unsafe { libvlc_media_player_unselect_track_type(self.player_ptr, track_type) }
     }
+}
 
-    #[func]
-    fn set_stretch_mode(&mut self, stretch_mode: StretchMode) {
-        self.stretch_mode = stretch_mode;
-        self.update_stretch_mode();
-    }
-
-    #[func]
-    fn set_volume_db(&mut self, volume_db: f32) {
-        self.volume_db = volume_db;
-        self.update_volume_db();
-    }
-
-    #[func]
-    fn set_mix_target(&mut self, mix_target: MixTarget) {
-        self.mix_target = mix_target;
-        self.update_mix_target();
-    }
-
-    #[func]
-    fn set_bus(&mut self, bus: StringName) {
-        self.bus = bus;
-        self.update_bus();
-    }
-
+impl VlcMediaPlayer {
     fn update_media(&self) {
         if let Some(media_ptr) = self.get_media_ptr() {
             unsafe {
@@ -848,7 +840,7 @@ impl VlcMediaPlayer {
     /// means the caller should register the software callbacks instead.
     /// Failures are logged via `godot_error!`; no panics.
     #[cfg(all(feature = "gpu", windows))]
-    fn try_init_gpu_backend(&mut self) -> bool {
+    pub(crate) fn try_init_gpu_backend(&mut self) -> bool {
         if !self.force_hardware {
             return false;
         }
@@ -921,257 +913,7 @@ impl VlcMediaPlayer {
     /// Stub for non-GPU builds. Always returns false so the software path
     /// runs.
     #[cfg(not(all(feature = "gpu", windows)))]
-    fn try_init_gpu_backend(&mut self) -> bool {
+    pub(crate) fn try_init_gpu_backend(&mut self) -> bool {
         false
     }
-
-    fn register_player_callbacks(&mut self) {
-        unsafe {
-            let self_ptr = self.self_gd.as_mut().unwrap().as_mut() as *mut _;
-
-            // The GPU output-callbacks API and the software callbacks API
-            // are mutually exclusive at the libvlc level: register one or
-            // the other, never both. On any GPU init failure we fall
-            // through to the software path.
-            let gpu_active = self.try_init_gpu_backend();
-            if !gpu_active {
-                libvlc_video_set_callbacks(
-                    self.player_ptr,
-                    Some(software_video::video_lock_callback),
-                    Some(software_video::video_unlock_callback),
-                    Some(software_video::video_display_callback),
-                    self.video_tx.as_mut() as *mut _ as *mut c_void,
-                );
-                libvlc_video_set_format_callbacks(
-                    self.player_ptr,
-                    Some(software_video::video_format_callback),
-                    Some(software_video::video_cleanup_callback),
-                );
-            }
-            libvlc_audio_set_callbacks(
-                self.player_ptr,
-                Some(audio_play_callback),
-                Some(audio_pause_callback),
-                Some(audio_resume_callback),
-                Some(audio_flush_callback),
-                Some(audio_drain_callback),
-                self.audio_prod.as_mut() as *mut _ as *mut c_void,
-            );
-            libvlc_audio_set_format_callbacks(
-                self.player_ptr,
-                Some(audio_setup_callback),
-                Some(audio_cleanup_callback),
-            );
-
-            fn get_player(ptr: *mut c_void) -> Gd<VlcMediaPlayer> {
-                unsafe { (ptr as *mut Gd<VlcMediaPlayer>).as_mut().unwrap().clone() }
-            }
-            let event_manager = libvlc_media_player_event_manager(self.player_ptr);
-
-            unsafe extern "C" fn opening_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("openning").to_variant()]);
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("opening").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerOpening as libvlc_event_type_t,
-                Some(opening_callback),
-                self_ptr as *mut c_void,
-            );
-
-            unsafe extern "C" fn buffering_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("buffering").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerBuffering as libvlc_event_type_t,
-                Some(buffering_callback),
-                self_ptr as *mut c_void,
-            );
-
-            unsafe extern "C" fn playing_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("playing").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerPlaying as libvlc_event_type_t,
-                Some(playing_callback),
-                self_ptr as *mut c_void,
-            );
-
-            unsafe extern "C" fn paused_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("paused").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerPaused as libvlc_event_type_t,
-                Some(paused_callback),
-                self_ptr as *mut c_void,
-            );
-
-            unsafe extern "C" fn stopped_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("stopped").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerStopped as libvlc_event_type_t,
-                Some(stopped_callback),
-                self_ptr as *mut c_void,
-            );
-
-            unsafe extern "C" fn forward_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("forward").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerForward as libvlc_event_type_t,
-                Some(forward_callback),
-                self_ptr as *mut c_void,
-            );
-
-            unsafe extern "C" fn backward_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("backward").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerBackward as libvlc_event_type_t,
-                Some(backward_callback),
-                self_ptr as *mut c_void,
-            );
-
-            unsafe extern "C" fn stopping_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                get_player(user_data)
-                    .call_deferred("emit_signal", &[StringName::from("stopping").to_variant()]);
-            }
-            libvlc_event_attach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaPlayerStopping as libvlc_event_type_t,
-                Some(stopping_callback),
-                self_ptr as *mut c_void,
-            );
-        }
-    }
-}
-
-unsafe extern "C" fn audio_play_callback(
-    data: *mut c_void,
-    samples: *const c_void,
-    count: c_uint,
-    _pts: i64,
-) {
-    unsafe {
-        let (rb_prod, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
-
-        let samples_slice = slice_from_raw_parts(samples as *const f32, count as usize * 2)
-            .as_ref()
-            .unwrap();
-
-        for i in 0..count as usize {
-            let left = samples_slice[i * 2];
-            let right = samples_slice[i * 2 + 1];
-            let frame = AudioFrame { left, right };
-            if rb_prod.try_push(frame).is_err() {
-                godot_error!("godot-vlc: audio buffer full");
-                break;
-            }
-        }
-
-        if !player.is_playing() {
-            player.call_thread_safe("play", &[]);
-        }
-    }
-}
-
-unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) {
-    unsafe {
-        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
-        player.set_stream_paused(true);
-    }
-}
-
-unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) {
-    unsafe {
-        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
-        player.set_stream_paused(false);
-    }
-}
-
-unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
-    unsafe {
-        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
-        if player.is_instance_valid() {
-            player.call_thread_safe("stop", &[]);
-            if let Some(stream) = player.get_stream()
-                && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>()
-            {
-                internal_stream
-                    .bind_mut()
-                    .playback
-                    .bind_mut()
-                    .clear_buffer();
-            }
-        }
-    }
-}
-
-unsafe extern "C" fn audio_drain_callback(_data: *mut c_void) {
-    // do nothing
-}
-
-unsafe extern "C" fn audio_setup_callback(
-    _opaque: *mut *mut c_void,
-    format: *mut c_char,
-    rate: *mut c_uint,
-    channels: *mut c_uint,
-) -> c_int {
-    unsafe {
-        format.copy_from(c"FL32".as_ptr(), 5);
-        *rate = AudioServer::singleton().get_mix_rate() as c_uint;
-        *channels = 2;
-        0
-    }
-}
-
-unsafe extern "C" fn audio_cleanup_callback(_opaque: *mut c_void) {
-    // do nothing
 }
