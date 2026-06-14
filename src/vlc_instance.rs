@@ -25,7 +25,7 @@ use godot::{
 use printf::printf;
 use std::{
     ffi::{c_char, c_int, c_void, CString},
-    mem, ptr,
+    mem,
 };
 
 pub fn get() -> *mut vlc::libvlc_instance_t {
@@ -85,27 +85,9 @@ impl IObject for VLCInstance {
 
         let instance = unsafe { vlc::libvlc_new(argc, argv) };
         #[allow(clippy::missing_transmute_annotations)]
-        let debug_cb =
-            unsafe { Some(mem::transmute(VLCInstance::log_callback_debug as *const ())) };
-        #[allow(clippy::missing_transmute_annotations)]
-        let info_cb = unsafe { Some(mem::transmute(VLCInstance::log_callback_info as *const ())) };
-        #[allow(clippy::missing_transmute_annotations)]
-        let warning_cb = unsafe {
-            Some(mem::transmute(
-                VLCInstance::log_callback_warning as *const (),
-            ))
-        };
-        #[allow(clippy::missing_transmute_annotations)]
-        let error_cb =
-            unsafe { Some(mem::transmute(VLCInstance::log_callback_error as *const ())) };
+        let cb = unsafe { Some(mem::transmute(VLCInstance::log_callback_impl as *const ())) };
         unsafe {
-            match debug_level {
-                0 => vlc::libvlc_log_set(instance, debug_cb, ptr::null_mut()),
-                1 => vlc::libvlc_log_set(instance, info_cb, ptr::null_mut()),
-                2 => vlc::libvlc_log_set(instance, warning_cb, ptr::null_mut()),
-                3 => vlc::libvlc_log_set(instance, error_cb, ptr::null_mut()),
-                _ => {}
-            }
+            vlc::libvlc_log_set(instance, cb, debug_level as *mut c_void);
         }
         let instance = Some(instance);
         Self { instance, base }
@@ -127,82 +109,31 @@ impl VLCInstance {
         self.instance.unwrap()
     }
 
-    unsafe extern "C" fn log_callback_debug(
+    unsafe extern "C" fn log_callback_impl(
         _data: *mut c_void,
         level: c_int,
         _ctx: *const vlc::libvlc_log_t,
         fmt: *const c_char,
         args: *mut c_void,
-    ) { unsafe {
-        let s: String = printf(fmt, args);
-        match level as vlc::libvlc_log_level {
-            vlc::libvlc_log_level_LIBVLC_NOTICE => {
-                godot_print!("LibVLC: {}", s);
+    ) {
+        unsafe {
+            let min_level = _data as i32;
+            let s: String = printf(fmt, args);
+            match level as vlc::libvlc_log_level {
+                vlc::libvlc_log_level_LIBVLC_DEBUG if min_level <= 0 => {
+                    godot_print!("LibVLC: [DEBUG] {}", s);
+                }
+                vlc::libvlc_log_level_LIBVLC_NOTICE if min_level <= 1 => {
+                    godot_print!("LibVLC: {}", s);
+                }
+                vlc::libvlc_log_level_LIBVLC_WARNING if min_level <= 2 => {
+                    godot_warn!("LibVLC: {}", s);
+                }
+                vlc::libvlc_log_level_LIBVLC_ERROR if min_level <= 3 => {
+                    godot_error!("LibVLC: {}", s);
+                }
+                _ => {}
             }
-            vlc::libvlc_log_level_LIBVLC_WARNING => {
-                godot_warn!("LibVLC: {}", s);
-            }
-            vlc::libvlc_log_level_LIBVLC_ERROR => {
-                godot_error!("LibVLC: {}", s);
-            }
-            vlc::libvlc_log_level_LIBVLC_DEBUG => {
-                godot_print!("LibVLC: [DEBUG] {}", s);
-            }
-            _ => {}
         }
-    }}
-
-    unsafe extern "C" fn log_callback_info(
-        _data: *mut c_void,
-        level: c_int,
-        _ctx: *const vlc::libvlc_log_t,
-        fmt: *const c_char,
-        args: *mut c_void,
-    ) { unsafe {
-        let s: String = printf(fmt, args);
-        match level as vlc::libvlc_log_level {
-            vlc::libvlc_log_level_LIBVLC_NOTICE => {
-                godot_print!("LibVLC: {}", s);
-            }
-            vlc::libvlc_log_level_LIBVLC_WARNING => {
-                godot_warn!("LibVLC: {}", s);
-            }
-            vlc::libvlc_log_level_LIBVLC_ERROR => {
-                godot_error!("LibVLC: {}", s);
-            }
-            _ => {}
-        }
-    }}
-
-    unsafe extern "C" fn log_callback_warning(
-        _data: *mut c_void,
-        level: c_int,
-        _ctx: *const vlc::libvlc_log_t,
-        fmt: *const c_char,
-        args: *mut c_void,
-    ) { unsafe {
-        let s: String = printf(fmt, args);
-        match level as vlc::libvlc_log_level {
-            vlc::libvlc_log_level_LIBVLC_WARNING => {
-                godot_warn!("LibVLC: {}", s);
-            }
-            vlc::libvlc_log_level_LIBVLC_ERROR => {
-                godot_error!("LibVLC: {}", s);
-            }
-            _ => {}
-        }
-    }}
-
-    unsafe extern "C" fn log_callback_error(
-        _data: *mut c_void,
-        level: c_int,
-        _ctx: *const vlc::libvlc_log_t,
-        fmt: *const c_char,
-        args: *mut c_void,
-    ) { unsafe {
-        let s: String = printf(fmt, args);
-        if level as vlc::libvlc_log_level == vlc::libvlc_log_level_LIBVLC_ERROR {
-            godot_error!("LibVLC: {}", s);
-        }
-    }}
+    }
 }
