@@ -14,6 +14,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Rustfmt Check
+      run: cargo fmt --all -- --check
+
+    - name: Clippy Check
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
   build_linux64:
   
     runs-on: ubuntu-22.04
