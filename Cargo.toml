@@ -13,7 +13,7 @@ printf = "0.1"
 ringbuf = "0.5"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", optional = true, features = [
+windows = { version = "0.62", optional = true, features = [
   "Win32_Foundation",
   "Win32_Graphics_Direct3D",
   "Win32_Graphics_Direct3D11",
