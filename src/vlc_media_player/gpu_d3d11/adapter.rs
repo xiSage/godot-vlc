@@ -4,21 +4,21 @@
 use std::ffi::c_void;
 use std::fmt;
 
-use godot::classes::rendering_device::DriverResource;
 use godot::classes::RenderingServer;
+use godot::classes::rendering_device::DriverResource;
 use godot::prelude::*;
 
-use windows::core::Interface;
 use windows::Win32::Foundation::{HMODULE, LUID};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
 };
 use windows::Win32::Graphics::Direct3D12::ID3D12Device;
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1};
+use windows::core::Interface;
 
 #[derive(Debug)]
 pub enum AdapterError {
@@ -139,9 +139,8 @@ pub fn godot_d3d12_luid() -> Result<i64, AdapterError> {
     }
 
     let raw = handle as *mut c_void;
-    let device = unsafe {
-        ID3D12Device::from_raw_borrowed(&raw).ok_or(AdapterError::NoLogicalDevice)?
-    };
+    let device =
+        unsafe { ID3D12Device::from_raw_borrowed(&raw).ok_or(AdapterError::NoLogicalDevice)? };
     let luid = unsafe { device.GetAdapterLuid() };
     Ok(luid_to_i64(luid))
 }
@@ -152,7 +151,11 @@ pub fn dxgi_adapter_luid_for(target_luid: i64) -> Result<i64, AdapterError> {
     let enumerator = DxgiAdapterEnumerator;
     let adapter = find_adapter_by_luid(&enumerator, target_luid)
         .ok_or(AdapterError::LuidNotFound(target_luid))?;
-    let desc = unsafe { adapter.GetDesc1().map_err(|e| AdapterError::DxgiFactory(e.message())) }?;
+    let desc = unsafe {
+        adapter
+            .GetDesc1()
+            .map_err(|e| AdapterError::DxgiFactory(e.message()))
+    }?;
     Ok(luid_to_i64(desc.AdapterLuid))
 }
 
@@ -196,9 +199,10 @@ pub fn create_d3d11_device(adapter: &IDXGIAdapter1) -> Result<CreatedD3D11, Adap
         AdapterError::D3D11CreateFailed("D3D11CreateDevice succeeded but context is null".into())
     })?;
     // libvlc's d3d11 output engine requires multithread-protected device.
-    let multithread: windows::Win32::Graphics::Direct3D11::ID3D11Multithread = device
-        .cast()
-        .map_err(|e| AdapterError::D3D11CreateFailed(format!("ID3D11Multithread cast: {}", e.message())))?;
+    let multithread: windows::Win32::Graphics::Direct3D11::ID3D11Multithread =
+        device.cast().map_err(|e| {
+            AdapterError::D3D11CreateFailed(format!("ID3D11Multithread cast: {}", e.message()))
+        })?;
     unsafe {
         let _ = multithread.SetMultithreadProtected(true);
     }

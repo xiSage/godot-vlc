@@ -18,14 +18,14 @@
 */
 
 use std::{
-    ffi::{c_int, c_uchar, c_void, CStr},
+    ffi::{CStr, c_int, c_uchar, c_void},
     io::{Read, Seek, SeekFrom},
     ptr, slice,
 };
 
 use crate::{util::cstring_from_gstring, vlc::*, vlc_instance, vlc_track_list::VlcTrackList};
 use godot::{
-    classes::{file_access::ModeFlags, WeakRef},
+    classes::{WeakRef, file_access::ModeFlags},
     global::weakref,
     prelude::*,
 };
@@ -212,17 +212,19 @@ impl VlcMedia {
             unsafe extern "C" fn parsed_changed_callback(
                 _event: *const libvlc_event_t,
                 user_data: *mut c_void,
-            ) { unsafe {
-                let mut media = get_media(user_data);
-                let status = libvlc_media_get_parsed_status(media.bind().media_ptr);
-                media.call_deferred(
-                    "emit_signal",
-                    &[
-                        StringName::from("parsed_changed").to_variant(),
-                        status.to_variant(),
-                    ],
-                );
-            }}
+            ) {
+                unsafe {
+                    let mut media = get_media(user_data);
+                    let status = libvlc_media_get_parsed_status(media.bind().media_ptr);
+                    media.call_deferred(
+                        "emit_signal",
+                        &[
+                            StringName::from("parsed_changed").to_variant(),
+                            status.to_variant(),
+                        ],
+                    );
+                }
+            }
             libvlc_event_attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
@@ -431,47 +433,56 @@ unsafe extern "C" fn media_open_callback(
     opaque: *mut c_void,
     datap: *mut *mut c_void,
     sizep: *mut u64,
-) -> c_int { unsafe {
-    if let Some(path) = (opaque as *mut GString).as_ref()
-        && let Ok(mut file) = GFile::open(path, ModeFlags::READ) {
+) -> c_int {
+    unsafe {
+        if let Some(path) = (opaque as *mut GString).as_ref()
+            && let Ok(mut file) = GFile::open(path, ModeFlags::READ)
+        {
             *sizep = file.length();
             let _ = file.seek(SeekFrom::Start(0));
             *datap = Box::into_raw(Box::new(file)) as *mut c_void;
             return 0;
         }
-    godot_error!("godot-vlc: unable to open media file");
-    -1
-}}
+        godot_error!("godot-vlc: unable to open media file");
+        -1
+    }
+}
 
 unsafe extern "C" fn media_read_callback(
     opaque: *mut c_void,
     buf: *mut c_uchar,
     len: usize,
-) -> isize { unsafe {
-    if let Some(file) = (opaque as *mut GFile).as_mut() {
-        let buf = std::slice::from_raw_parts_mut(buf, len);
-        match file.read(buf) {
-            Ok(n) => n.try_into().unwrap(),
-            Err(_) => -1,
+) -> isize {
+    unsafe {
+        if let Some(file) = (opaque as *mut GFile).as_mut() {
+            let buf = std::slice::from_raw_parts_mut(buf, len);
+            match file.read(buf) {
+                Ok(n) => n.try_into().unwrap(),
+                Err(_) => -1,
+            }
+        } else {
+            -1
         }
-    } else {
-        -1
     }
-}}
+}
 
-unsafe extern "C" fn media_seek_callback(opaque: *mut c_void, offset: u64) -> c_int { unsafe {
-    if let Some(file) = (opaque as *mut GFile).as_mut() {
-        match file.seek(SeekFrom::Start(offset)) {
-            Ok(_) => 0,
-            Err(_) => -1,
+unsafe extern "C" fn media_seek_callback(opaque: *mut c_void, offset: u64) -> c_int {
+    unsafe {
+        if let Some(file) = (opaque as *mut GFile).as_mut() {
+            match file.seek(SeekFrom::Start(offset)) {
+                Ok(_) => 0,
+                Err(_) => -1,
+            }
+        } else {
+            -1
         }
-    } else {
-        -1
     }
-}}
+}
 
-unsafe extern "C" fn media_close_cb(opaque: *mut ::std::os::raw::c_void) { unsafe {
-    if !opaque.is_null() {
-        drop(Box::from_raw(opaque as *mut GFile));
+unsafe extern "C" fn media_close_cb(opaque: *mut ::std::os::raw::c_void) {
+    unsafe {
+        if !opaque.is_null() {
+            drop(Box::from_raw(opaque as *mut GFile));
+        }
     }
-}}
+}

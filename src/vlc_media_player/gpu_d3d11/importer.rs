@@ -5,8 +5,8 @@
 //! runs `PrivateQueue::copy_and_sync` for the frame.
 
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 
 use godot::classes::rendering_device::{DataFormat, TextureSamples, TextureType, TextureUsageBits};
@@ -18,7 +18,10 @@ use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Fence, ID3D12Reso
 
 use super::output_callbacks::Backend;
 use super::private_queue::PrivateQueue;
-use super::rd_import::{godot_d3d12_device, godot_rd_texture_native, open_shared_fence, open_shared_texture, ImportError};
+use super::rd_import::{
+    ImportError, godot_d3d12_device, godot_rd_texture_native, open_shared_fence,
+    open_shared_texture,
+};
 
 #[derive(Debug)]
 pub enum ImporterError {
@@ -145,8 +148,7 @@ fn rebuild_current(
     height: u32,
 ) -> Result<(), ImporterError> {
     let d3d12_src = open_shared_texture(&task.d3d12_device, handle)?;
-    let new_rid = create_sampled_texture(width, height)
-        .ok_or(ImporterError::AllocateRdDest)?;
+    let new_rid = create_sampled_texture(width, height).ok_or(ImporterError::AllocateRdDest)?;
     let d3d12_dst = godot_rd_texture_native(new_rid)?;
 
     task.texture_2drd
@@ -200,7 +202,12 @@ fn free_rid(rid: Rid) {
 
 impl Drop for ImporterTask {
     fn drop(&mut self) {
-        if let Some(current) = self.current.lock().expect("importer current poisoned").take() {
+        if let Some(current) = self
+            .current
+            .lock()
+            .expect("importer current poisoned")
+            .take()
+        {
             free_rid(current.dst_rid);
         }
     }

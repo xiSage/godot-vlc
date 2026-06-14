@@ -3,12 +3,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11Device5, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence,
-    D3D11_FENCE_FLAG_SHARED,
+    D3D11_FENCE_FLAG_SHARED, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
+    ID3D11DeviceContext4, ID3D11Fence,
 };
+use windows::core::Interface;
 
 #[derive(Debug)]
 pub enum SharedError {
@@ -28,7 +28,9 @@ impl std::fmt::Display for SharedError {
                 write!(f, "godot-vlc: cast to ID3D11DeviceContext4 failed: {s}")
             }
             Self::CreateFence(s) => write!(f, "godot-vlc: ID3D11Device5::CreateFence failed: {s}"),
-            Self::SignalFence(s) => write!(f, "godot-vlc: ID3D11DeviceContext4::Signal failed: {s}"),
+            Self::SignalFence(s) => {
+                write!(f, "godot-vlc: ID3D11DeviceContext4::Signal failed: {s}")
+            }
         }
     }
 }
@@ -49,8 +51,7 @@ impl SharedFence {
         let mut fence: Option<ID3D11Fence> = None;
         unsafe { device5.CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut fence) }
             .map_err(|e| SharedError::CreateFence(e.message()))?;
-        let fence = fence
-            .ok_or_else(|| SharedError::CreateFence("null fence out-param".into()))?;
+        let fence = fence.ok_or_else(|| SharedError::CreateFence("null fence out-param".into()))?;
         let handle = unsafe { fence.CreateSharedHandle(None, GENERIC_ALL.0, None) }
             .map_err(|e| SharedError::CreateSharedHandle(e.message()))?;
         Ok(Self {

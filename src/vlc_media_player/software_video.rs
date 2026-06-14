@@ -24,63 +24,66 @@ use std::{
 };
 
 use godot::{
-    classes::{image, Image},
+    classes::{Image, image},
     prelude::*,
 };
 
 pub(super) unsafe extern "C" fn video_lock_callback(
     opaque: *mut c_void,
     planes: *mut *mut c_void,
-) -> *mut c_void { unsafe {
-    let (_tx, _img, buffer) = (opaque
-        as *mut (
-            *mut mpsc::Sender<(bool, Gd<Image>)>,
-            Gd<Image>,
-            PackedByteArray,
-        ))
-        .as_mut()
-        .unwrap();
-    let buffer_ptr = buffer.as_mut_slice().as_mut_ptr();
-    *planes = buffer_ptr as *mut c_void;
-    ptr::null_mut()
-}}
+) -> *mut c_void {
+    unsafe {
+        let (_tx, _img, buffer) = (opaque
+            as *mut (
+                *mut mpsc::Sender<(bool, Gd<Image>)>,
+                Gd<Image>,
+                PackedByteArray,
+            ))
+            .as_mut()
+            .unwrap();
+        let buffer_ptr = buffer.as_mut_slice().as_mut_ptr();
+        *planes = buffer_ptr as *mut c_void;
+        ptr::null_mut()
+    }
+}
 
 pub(super) unsafe extern "C" fn video_unlock_callback(
     opaque: *mut c_void,
     _picture: *mut c_void,
     _planes: *const *mut c_void,
-) { unsafe {
-    let (_tx, img, buffer) = (opaque
-        as *mut (
-            *mut mpsc::Sender<(bool, Gd<Image>)>,
-            Gd<Image>,
-            PackedByteArray,
-        ))
-        .as_mut()
-        .unwrap();
-    let width = img.get_width();
-    let height = img.get_height();
-    let format = img.get_format();
-    img.set_data(width, height, false, format, buffer);
-}}
+) {
+    unsafe {
+        let (_tx, img, buffer) = (opaque
+            as *mut (
+                *mut mpsc::Sender<(bool, Gd<Image>)>,
+                Gd<Image>,
+                PackedByteArray,
+            ))
+            .as_mut()
+            .unwrap();
+        let width = img.get_width();
+        let height = img.get_height();
+        let format = img.get_format();
+        img.set_data(width, height, false, format, buffer);
+    }
+}
 
-pub(super) unsafe extern "C" fn video_display_callback(
-    opaque: *mut c_void,
-    _picture: *mut c_void,
-) { unsafe {
-    let (tx, img, _buffer) = (opaque
-        as *mut (
-            *mut mpsc::Sender<(bool, Gd<Image>)>,
-            Gd<Image>,
-            PackedByteArray,
-        ))
-        .as_mut()
-        .unwrap();
-    _ = tx
-        .as_mut()
-        .unwrap()
-        .send((false, Gd::duplicate_resource(img).cast()));
-}}
+pub(super) unsafe extern "C" fn video_display_callback(opaque: *mut c_void, _picture: *mut c_void) {
+    unsafe {
+        let (tx, img, _buffer) = (opaque
+            as *mut (
+                *mut mpsc::Sender<(bool, Gd<Image>)>,
+                Gd<Image>,
+                PackedByteArray,
+            ))
+            .as_mut()
+            .unwrap();
+        _ = tx
+            .as_mut()
+            .unwrap()
+            .send((false, Gd::duplicate_resource(img).cast()));
+    }
+}
 
 pub(super) unsafe extern "C" fn video_format_callback(
     opaque: *mut *mut c_void,
@@ -89,32 +92,38 @@ pub(super) unsafe extern "C" fn video_format_callback(
     height: *mut c_uint,
     pitches: *mut c_uint,
     lines: *mut c_uint,
-) -> c_uint { unsafe {
-    let tx: *mut mpsc::Sender<(bool, Gd<Image>)> = *opaque as *mut mpsc::Sender<(bool, Gd<Image>)>;
-    let img = match Image::create_empty(*width as i32, *height as i32, false, image::Format::RGB8) {
-        Some(img) => img,
-        None => {
+) -> c_uint {
+    unsafe {
+        let tx: *mut mpsc::Sender<(bool, Gd<Image>)> =
+            *opaque as *mut mpsc::Sender<(bool, Gd<Image>)>;
+        let img =
+            match Image::create_empty(*width as i32, *height as i32, false, image::Format::RGB8) {
+                Some(img) => img,
+                None => {
+                    return 0;
+                }
+            };
+        let buffer = img.get_data();
+        chroma.copy_from(c"RV24".as_ptr(), 5);
+        *pitches = *width * 3;
+        *lines = *height;
+        if tx.as_mut().unwrap().send((true, img.clone())).is_err() {
             return 0;
         }
-    };
-    let buffer = img.get_data();
-    chroma.copy_from(c"RV24".as_ptr(), 5);
-    *pitches = *width * 3;
-    *lines = *height;
-    if tx.as_mut().unwrap().send((true, img.clone())).is_err() {
-        return 0;
+        *opaque = Box::into_raw(Box::new((tx, img, buffer))) as *mut c_void;
+        1
     }
-    *opaque = Box::into_raw(Box::new((tx, img, buffer))) as *mut c_void;
-    1
-}}
+}
 
-pub(super) unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) { unsafe {
-    let (_tx, _img, _buffer) = *Box::from_raw(
-        opaque
-            as *mut (
-                *mut mpsc::Sender<(bool, Gd<Image>)>,
-                Gd<Image>,
-                PackedByteArray,
-            ),
-    );
-}}
+pub(super) unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) {
+    unsafe {
+        let (_tx, _img, _buffer) = *Box::from_raw(
+            opaque
+                as *mut (
+                    *mut mpsc::Sender<(bool, Gd<Image>)>,
+                    Gd<Image>,
+                    PackedByteArray,
+                ),
+        );
+    }
+}

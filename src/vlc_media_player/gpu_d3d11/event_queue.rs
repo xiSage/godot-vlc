@@ -48,18 +48,11 @@ impl EventMailbox {
     /// Replace any pending event. The prior event (if any) is dropped,
     /// closing its NT handle.
     pub fn push(&self, e: OutputEvent) {
-        let _prev = self
-            .slot
-            .lock()
-            .expect("event mailbox poisoned")
-            .replace(e);
+        let _prev = self.slot.lock().expect("event mailbox poisoned").replace(e);
     }
 
     pub fn take(&self) -> Option<OutputEvent> {
-        self.slot
-            .lock()
-            .expect("event mailbox poisoned")
-            .take()
+        self.slot.lock().expect("event mailbox poisoned").take()
     }
 }
 

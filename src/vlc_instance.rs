@@ -19,12 +19,16 @@
 
 use crate::{util::cstring_from_gstring, vlc};
 use godot::{
-    classes::{Engine, ProjectSettings, class_macros::sys::GDEXTENSION_VARIANT_TYPE_STRING, notify::ObjectNotification},
-    prelude::*, register::info::PropertyHint,
+    classes::{
+        Engine, ProjectSettings, class_macros::sys::GDEXTENSION_VARIANT_TYPE_STRING,
+        notify::ObjectNotification,
+    },
+    prelude::*,
+    register::info::PropertyHint,
 };
 use printf::printf;
 use std::{
-    ffi::{c_char, c_int, c_void, CString},
+    ffi::{CString, c_char, c_int, c_void},
     mem,
 };
 
@@ -64,14 +68,19 @@ impl IObject for VLCInstance {
             .unwrap();
 
         if !ProjectSettings::singleton().has_setting("vlc/arguments") {
-            ProjectSettings::singleton().set_setting("vlc/arguments", &Variant::from(Array::<GString>::new()));
+            ProjectSettings::singleton()
+                .set_setting("vlc/arguments", &Variant::from(Array::<GString>::new()));
         }
-        ProjectSettings::singleton().set_initial_value("vlc/arguments", &Variant::from(Array::<GString>::new()));
+        ProjectSettings::singleton()
+            .set_initial_value("vlc/arguments", &Variant::from(Array::<GString>::new()));
         let mut info = VarDictionary::new();
         let _ = info.insert("name", "vlc/arguments");
         let _ = info.insert("type", VariantType::ARRAY);
         let _ = info.insert("hint", PropertyHint::TYPE_STRING);
-        let _ = info.insert("hint_string", format!("{}:", GDEXTENSION_VARIANT_TYPE_STRING));
+        let _ = info.insert(
+            "hint_string",
+            format!("{}:", GDEXTENSION_VARIANT_TYPE_STRING),
+        );
         ProjectSettings::singleton().add_property_info(&info);
         ProjectSettings::singleton().set_restart_if_changed("vlc/arguments", true);
         let arguments: Array<GString> = ProjectSettings::singleton()

@@ -8,23 +8,23 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use windows::core::Interface;
 use windows::Win32::Foundation::{GENERIC_ALL, HANDLE};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Resource, ID3D11Texture2D,
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_SHARED,
-    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device,
+    ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Resource, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIResource1;
+use windows::core::Interface;
 
 use crate::vlc::{
     libvlc_media_player_t, libvlc_video_color_primaries_t_libvlc_video_primaries_BT709,
     libvlc_video_color_space_t_libvlc_video_colorspace_BT709,
-    libvlc_video_engine_t_libvlc_video_engine_d3d11, libvlc_video_orient_t_libvlc_video_orient_top_left,
-    libvlc_video_output_cfg_t, libvlc_video_render_cfg_t, libvlc_video_set_output_callbacks,
-    libvlc_video_setup_device_cfg_t, libvlc_video_setup_device_info_t,
-    libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB,
+    libvlc_video_engine_t_libvlc_video_engine_d3d11,
+    libvlc_video_orient_t_libvlc_video_orient_top_left, libvlc_video_output_cfg_t,
+    libvlc_video_render_cfg_t, libvlc_video_set_output_callbacks, libvlc_video_setup_device_cfg_t,
+    libvlc_video_setup_device_info_t, libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB,
 };
 
 use super::event_queue::{EventMailbox, OutputEvent};
@@ -81,7 +81,10 @@ impl std::fmt::Display for CallbackError {
             Self::CreateRtv(s) => write!(f, "godot-vlc: CreateRenderTargetView failed: {s}"),
             Self::CreateFence(e) => write!(f, "{e}"),
             Self::SetOutputCallbacksFailed => {
-                write!(f, "godot-vlc: libvlc_video_set_output_callbacks returned false")
+                write!(
+                    f,
+                    "godot-vlc: libvlc_video_set_output_callbacks returned false"
+                )
             }
         }
     }
@@ -117,11 +120,7 @@ impl Backend {
     /// Allocate a new shared D3D11 texture + RTV, mint a fresh NT handle,
     /// push the handle to the mailbox, and install as the current output.
     /// Called from `update_output_cb` on libvlc's render thread.
-    fn rebuild_current_output(
-        &self,
-        width: u32,
-        height: u32,
-    ) -> Result<(), CallbackError> {
+    fn rebuild_current_output(&self, width: u32, height: u32) -> Result<(), CallbackError> {
         let desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
@@ -143,8 +142,8 @@ impl Backend {
         let mut texture: Option<ID3D11Texture2D> = None;
         unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut texture)) }
             .map_err(|e| CallbackError::CreateTexture(e.message()))?;
-        let texture = texture
-            .ok_or_else(|| CallbackError::CreateTexture("null texture out-param".into()))?;
+        let texture =
+            texture.ok_or_else(|| CallbackError::CreateTexture("null texture out-param".into()))?;
 
         let dxgi_resource: IDXGIResource1 = texture
             .cast()
@@ -181,7 +180,6 @@ impl Backend {
         *current = Some(CurrentOutput { texture, rtv });
         Ok(())
     }
-
 }
 
 /// Register `Backend` with libvlc as the GPU output. Consumes one
@@ -221,85 +219,97 @@ pub fn register(
     Ok(())
 }
 
-unsafe fn backend_ref<'a>(opaque: *mut c_void) -> &'a Backend { unsafe {
-    &*(opaque as *const Backend)
-}}
+unsafe fn backend_ref<'a>(opaque: *mut c_void) -> &'a Backend {
+    unsafe { &*(opaque as *const Backend) }
+}
 
 unsafe extern "C" fn setup_cb(
     opaque: *mut *mut c_void,
     _cfg: *const libvlc_video_setup_device_cfg_t,
     out: *mut libvlc_video_setup_device_info_t,
-) -> bool { unsafe {
-    if opaque.is_null() || (*opaque).is_null() || out.is_null() {
-        return false;
+) -> bool {
+    unsafe {
+        if opaque.is_null() || (*opaque).is_null() || out.is_null() {
+            return false;
+        }
+        let backend = backend_ref(*opaque);
+        // context_mutex stays NULL: the immediate context is never touched
+        // outside libvlc's own callbacks.
+        (*out).__bindgen_anon_1.d3d11.device_context = backend.context.as_raw();
+        (*out).__bindgen_anon_1.d3d11.context_mutex = std::ptr::null_mut();
+        true
     }
-    let backend = backend_ref(*opaque);
-    // context_mutex stays NULL: the immediate context is never touched
-    // outside libvlc's own callbacks.
-    (*out).__bindgen_anon_1.d3d11.device_context = backend.context.as_raw();
-    (*out).__bindgen_anon_1.d3d11.context_mutex = std::ptr::null_mut();
-    true
-}}
+}
 
-unsafe extern "C" fn cleanup_cb(opaque: *mut c_void) { unsafe {
-    if opaque.is_null() {
-        return;
+unsafe extern "C" fn cleanup_cb(opaque: *mut c_void) {
+    unsafe {
+        if opaque.is_null() {
+            return;
+        }
+        let _ = Arc::from_raw(opaque as *const Backend);
     }
-    let _ = Arc::from_raw(opaque as *const Backend);
-}}
+}
 
 unsafe extern "C" fn update_output_cb(
     opaque: *mut c_void,
     cfg: *const libvlc_video_render_cfg_t,
     output: *mut libvlc_video_output_cfg_t,
-) -> bool { unsafe {
-    if opaque.is_null() || cfg.is_null() || output.is_null() {
-        return false;
-    }
-    let backend = backend_ref(opaque);
-    backend.update_output_calls.fetch_add(1, Ordering::SeqCst);
-    let width = (*cfg).width;
-    let height = (*cfg).height;
-    if width == 0 || height == 0 {
-        return false;
-    }
-    if let Err(e) = backend.rebuild_current_output(width, height) {
-        // godot_error! requires the main thread; we're on libvlc's. eprintln
-        // surfaces on the _console binary's stderr.
-        eprintln!("godot-vlc: update_output_cb rebuild failed: {e}");
-        return false;
-    }
+) -> bool {
+    unsafe {
+        if opaque.is_null() || cfg.is_null() || output.is_null() {
+            return false;
+        }
+        let backend = backend_ref(opaque);
+        backend.update_output_calls.fetch_add(1, Ordering::SeqCst);
+        let width = (*cfg).width;
+        let height = (*cfg).height;
+        if width == 0 || height == 0 {
+            return false;
+        }
+        if let Err(e) = backend.rebuild_current_output(width, height) {
+            // godot_error! requires the main thread; we're on libvlc's. eprintln
+            // surfaces on the _console binary's stderr.
+            eprintln!("godot-vlc: update_output_cb rebuild failed: {e}");
+            return false;
+        }
 
-    // RGBA8 full-range BT.709 sRGB-transfer top-left, matching libvlc's own
-    // d3d11_player.cpp example.
-    (*output).__bindgen_anon_1.dxgi_format = DXGI_FORMAT_R8G8B8A8_UNORM_RAW;
-    (*output).full_range = true;
-    (*output).colorspace = libvlc_video_color_space_t_libvlc_video_colorspace_BT709;
-    (*output).primaries = libvlc_video_color_primaries_t_libvlc_video_primaries_BT709;
-    (*output).transfer = libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB;
-    (*output).orientation = libvlc_video_orient_t_libvlc_video_orient_top_left;
-    true
-}}
+        // RGBA8 full-range BT.709 sRGB-transfer top-left, matching libvlc's own
+        // d3d11_player.cpp example.
+        (*output).__bindgen_anon_1.dxgi_format = DXGI_FORMAT_R8G8B8A8_UNORM_RAW;
+        (*output).full_range = true;
+        (*output).colorspace = libvlc_video_color_space_t_libvlc_video_colorspace_BT709;
+        (*output).primaries = libvlc_video_color_primaries_t_libvlc_video_primaries_BT709;
+        (*output).transfer = libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB;
+        (*output).orientation = libvlc_video_orient_t_libvlc_video_orient_top_left;
+        true
+    }
+}
 
-unsafe extern "C" fn swap_cb(opaque: *mut c_void) { unsafe {
-    if opaque.is_null() {
-        return;
+unsafe extern "C" fn swap_cb(opaque: *mut c_void) {
+    unsafe {
+        if opaque.is_null() {
+            return;
+        }
+        let backend = backend_ref(opaque);
+        backend.swap_calls.fetch_add(1, Ordering::SeqCst);
+        if let Err(e) = backend.fence.signal_next(&backend.context) {
+            eprintln!("godot-vlc: swap_cb fence signal failed: {e}");
+        }
     }
-    let backend = backend_ref(opaque);
-    backend.swap_calls.fetch_add(1, Ordering::SeqCst);
-    if let Err(e) = backend.fence.signal_next(&backend.context) {
-        eprintln!("godot-vlc: swap_cb fence signal failed: {e}");
-    }
-}}
+}
 
-unsafe extern "C" fn make_current_cb(opaque: *mut c_void, _enter: bool) -> bool { unsafe {
-    // Stub: RTV pre-bound in update_output_cb. Cannot be NULL — libvlc
-    // requires it for the d3d11 engine.
-    if !opaque.is_null() {
-        backend_ref(opaque).make_current_calls.fetch_add(1, Ordering::SeqCst);
+unsafe extern "C" fn make_current_cb(opaque: *mut c_void, _enter: bool) -> bool {
+    unsafe {
+        // Stub: RTV pre-bound in update_output_cb. Cannot be NULL — libvlc
+        // requires it for the d3d11 engine.
+        if !opaque.is_null() {
+            backend_ref(opaque)
+                .make_current_calls
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        true
     }
-    true
-}}
+}
 
 unsafe extern "C" fn select_plane_cb(
     _opaque: *mut c_void,
@@ -317,9 +327,6 @@ mod tests {
 
     #[test]
     fn dxgi_format_constant_matches_windows_rs() {
-        assert_eq!(
-            DXGI_FORMAT_R8G8B8A8_UNORM_RAW,
-            DXGI_FORMAT_R8G8B8A8_UNORM.0
-        );
+        assert_eq!(DXGI_FORMAT_R8G8B8A8_UNORM_RAW, DXGI_FORMAT_R8G8B8A8_UNORM.0);
     }
 }

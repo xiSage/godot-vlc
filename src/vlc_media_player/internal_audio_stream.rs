@@ -18,7 +18,7 @@
 */
 
 use godot::{
-    classes::{native::AudioFrame, AudioStream, AudioStreamPlayback, IAudioStream},
+    classes::{AudioStream, AudioStreamPlayback, IAudioStream, native::AudioFrame},
     prelude::*,
 };
 use ringbuf::HeapCons;

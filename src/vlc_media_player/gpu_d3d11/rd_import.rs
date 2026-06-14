@@ -3,13 +3,13 @@
 
 use std::ffi::c_void;
 
-use godot::classes::rendering_device::DriverResource;
 use godot::classes::RenderingServer;
+use godot::classes::rendering_device::DriverResource;
 use godot::prelude::*;
 
-use windows::core::Interface;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Fence, ID3D12Resource};
+use windows::core::Interface;
 
 #[derive(Debug)]
 pub enum ImportError {
@@ -51,8 +51,7 @@ pub fn godot_d3d12_device() -> Result<ID3D12Device, ImportError> {
     }
     let raw = raw_handle as *mut c_void;
     unsafe {
-        let borrowed =
-            ID3D12Device::from_raw_borrowed(&raw).ok_or(ImportError::NoLogicalDevice)?;
+        let borrowed = ID3D12Device::from_raw_borrowed(&raw).ok_or(ImportError::NoLogicalDevice)?;
         Ok(borrowed.clone())
     }
 }

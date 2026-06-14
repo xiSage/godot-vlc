@@ -6,19 +6,18 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D12::{
-    ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
-    ID3D12GraphicsCommandList, ID3D12Resource, D3D12_COMMAND_LIST_TYPE_DIRECT,
-    D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-    D3D12_FENCE_FLAG_NONE, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
+    D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_FENCE_FLAG_NONE, D3D12_RESOURCE_BARRIER,
+    D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
     D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-    D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST,
-    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_TRANSITION_BARRIER,
-    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
+    D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER, ID3D12CommandAllocator,
+    ID3D12CommandQueue, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource,
 };
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+use windows::core::Interface;
 
 #[derive(Debug)]
 pub enum PrivateQueueError {
@@ -55,7 +54,10 @@ impl std::fmt::Display for PrivateQueueError {
             SignalFence(s) => write!(f, "godot-vlc: ID3D12CommandQueue::Signal failed: {s}"),
             WaitFence(s) => write!(f, "godot-vlc: ID3D12CommandQueue::Wait failed: {s}"),
             SetEventOnCompletion(s) => {
-                write!(f, "godot-vlc: ID3D12Fence::SetEventOnCompletion failed: {s}")
+                write!(
+                    f,
+                    "godot-vlc: ID3D12Fence::SetEventOnCompletion failed: {s}"
+                )
             }
             EventWaitFailed(code) => {
                 write!(f, "godot-vlc: WaitForSingleObject returned {code:#x}")
@@ -141,14 +143,30 @@ impl PrivateQueue {
             // while the hardware is in COPY_DEST, the implicit transition on
             // sample is invalid, and the GPU returns zeros.
             let pre_barriers = [
-                transition_barrier(src, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
-                transition_barrier(dst, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
+                transition_barrier(
+                    src,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE,
+                ),
+                transition_barrier(
+                    dst,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                ),
             ];
             self.list.ResourceBarrier(&pre_barriers);
             self.list.CopyResource(dst, src);
             let post_barriers = [
-                transition_barrier(src, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
-                transition_barrier(dst, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON),
+                transition_barrier(
+                    src,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    D3D12_RESOURCE_STATE_COMMON,
+                ),
+                transition_barrier(
+                    dst,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_COMMON,
+                ),
             ];
             self.list.ResourceBarrier(&post_barriers);
             self.list

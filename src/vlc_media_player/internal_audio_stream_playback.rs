@@ -20,10 +20,10 @@
 use std::ptr::slice_from_raw_parts_mut;
 
 use godot::{
-    classes::{native::AudioFrame, AudioStreamPlayback, IAudioStreamPlayback},
+    classes::{AudioStreamPlayback, IAudioStreamPlayback, native::AudioFrame},
     prelude::*,
 };
-use ringbuf::{traits::Consumer, HeapCons};
+use ringbuf::{HeapCons, traits::Consumer};
 
 #[derive(GodotClass)]
 #[class(base=AudioStreamPlayback, no_init, internal)]
@@ -44,19 +44,26 @@ impl InternalAudioStreamPlayback {
 
 #[godot_api]
 impl IAudioStreamPlayback for InternalAudioStreamPlayback {
-    unsafe fn mix_rawptr(&mut self, buffer: godot::meta::conv::RawPtr<*mut godot::classes::native::AudioFrame>, _rate_scale: f32, frames: i32) -> i32 { unsafe {
-        let buffer_slice = slice_from_raw_parts_mut(buffer.ptr(), frames as usize)
-            .as_mut()
-            .unwrap();
-        for (i, item) in buffer_slice.iter_mut().enumerate() {
-            if let Some(frame) = self.rb_cons.try_pop() {
-                *item = frame;
-            } else {
-                return i as i32;
+    unsafe fn mix_rawptr(
+        &mut self,
+        buffer: godot::meta::conv::RawPtr<*mut godot::classes::native::AudioFrame>,
+        _rate_scale: f32,
+        frames: i32,
+    ) -> i32 {
+        unsafe {
+            let buffer_slice = slice_from_raw_parts_mut(buffer.ptr(), frames as usize)
+                .as_mut()
+                .unwrap();
+            for (i, item) in buffer_slice.iter_mut().enumerate() {
+                if let Some(frame) = self.rb_cons.try_pop() {
+                    *item = frame;
+                } else {
+                    return i as i32;
+                }
             }
+            frames
         }
-        frames
-    }}
+    }
 
     fn start(&mut self, _from_pos: f64) {
         // do nothing
