@@ -28,20 +28,19 @@ use godot::{
     prelude::*,
 };
 
+struct SoftwareVideoState {
+    tx: *mut mpsc::Sender<(bool, Gd<Image>)>,
+    img: Gd<Image>,
+    buffer: PackedByteArray,
+}
+
 pub(super) unsafe extern "C" fn video_lock_callback(
     opaque: *mut c_void,
     planes: *mut *mut c_void,
 ) -> *mut c_void {
     unsafe {
-        let (_tx, _img, buffer) = (opaque
-            as *mut (
-                *mut mpsc::Sender<(bool, Gd<Image>)>,
-                Gd<Image>,
-                PackedByteArray,
-            ))
-            .as_mut()
-            .unwrap();
-        let buffer_ptr = buffer.as_mut_slice().as_mut_ptr();
+        let state = (opaque as *mut SoftwareVideoState).as_mut().unwrap();
+        let buffer_ptr = state.buffer.as_mut_slice().as_mut_ptr();
         *planes = buffer_ptr as *mut c_void;
         ptr::null_mut()
     }
@@ -53,35 +52,24 @@ pub(super) unsafe extern "C" fn video_unlock_callback(
     _planes: *const *mut c_void,
 ) {
     unsafe {
-        let (_tx, img, buffer) = (opaque
-            as *mut (
-                *mut mpsc::Sender<(bool, Gd<Image>)>,
-                Gd<Image>,
-                PackedByteArray,
-            ))
-            .as_mut()
-            .unwrap();
-        let width = img.get_width();
-        let height = img.get_height();
-        let format = img.get_format();
-        img.set_data(width, height, false, format, buffer);
+        let state = (opaque as *mut SoftwareVideoState).as_mut().unwrap();
+        let width = state.img.get_width();
+        let height = state.img.get_height();
+        let format = state.img.get_format();
+        state
+            .img
+            .set_data(width, height, false, format, &state.buffer);
     }
 }
 
 pub(super) unsafe extern "C" fn video_display_callback(opaque: *mut c_void, _picture: *mut c_void) {
     unsafe {
-        let (tx, img, _buffer) = (opaque
-            as *mut (
-                *mut mpsc::Sender<(bool, Gd<Image>)>,
-                Gd<Image>,
-                PackedByteArray,
-            ))
-            .as_mut()
-            .unwrap();
-        _ = tx
+        let state = (opaque as *mut SoftwareVideoState).as_mut().unwrap();
+        _ = state
+            .tx
             .as_mut()
             .unwrap()
-            .send((false, Gd::duplicate_resource(img).cast()));
+            .send((false, Gd::duplicate_resource(&state.img).cast()));
     }
 }
 
@@ -110,20 +98,13 @@ pub(super) unsafe extern "C" fn video_format_callback(
         if tx.as_mut().unwrap().send((true, img.clone())).is_err() {
             return 0;
         }
-        *opaque = Box::into_raw(Box::new((tx, img, buffer))) as *mut c_void;
+        *opaque = Box::into_raw(Box::new(SoftwareVideoState { tx, img, buffer })) as *mut c_void;
         1
     }
 }
 
 pub(super) unsafe extern "C" fn video_cleanup_callback(opaque: *mut c_void) {
     unsafe {
-        let (_tx, _img, _buffer) = *Box::from_raw(
-            opaque
-                as *mut (
-                    *mut mpsc::Sender<(bool, Gd<Image>)>,
-                    Gd<Image>,
-                    PackedByteArray,
-                ),
-        );
+        let _state = *Box::from_raw(opaque as *mut SoftwareVideoState);
     }
 }
