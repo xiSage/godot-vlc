@@ -4,5 +4,6 @@
 .doc
 .claude
 .trae
+/thirdparty/vlc/win-x64
 CLAUDE.md
 AGENTS.md
