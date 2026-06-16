@@ -4,7 +4,7 @@
 .doc
 .claude
 .trae
-/thirdparty/vlc/win-x64
+/thirdparty/vlc/
 /gdextension_template/bin/
 CLAUDE.md
 AGENTS.md
