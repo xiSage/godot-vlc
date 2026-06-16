@@ -22,13 +22,14 @@ use std::path::PathBuf;
 
 fn main() {
     let target = env::var("TARGET").unwrap();
-    let mut include_dir = "thirdparty/vlc/include";
+    let mut include_dir = "";
 
     if target.contains("windows") && target.contains("x86_64") {
         println!("cargo:rustc-link-search=./thirdparty/vlc/win-x64/lib");
         include_dir = "thirdparty/vlc/win-x64/include";
     } else if target.contains("linux") && target.contains("x86_64") {
-        println!("cargo:rustc-link-search=./thirdparty/vlc/lib/linux-x64");
+        println!("cargo:rustc-link-search=./thirdparty/vlc/linux-x64/lib");
+        include_dir = "thirdparty/vlc/linux-x64/include";
     }
 
     println!("cargo:rustc-link-lib=vlc");
