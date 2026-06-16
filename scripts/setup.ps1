@@ -14,5 +14,3 @@
 # foreach ($item in Get-ChildItem "$libDir/linux-x64") {
 #     New-Item -Path "$demoBin/linux-x64/$($item.Name)" -Value "../../../../../$libDir/linux-x64/$($item.Name)" -ItemType SymbolicLink -Force
 # }
-
-New-Item -Path "demo/addons/godot-vlc/" -Value "../../gdextension_template" -ItemType SymbolicLink -Force

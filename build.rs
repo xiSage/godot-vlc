@@ -22,9 +22,11 @@ use std::path::PathBuf;
 
 fn main() {
     let target = env::var("TARGET").unwrap();
+    let mut include_dir = "thirdparty/vlc/include";
 
     if target.contains("windows") && target.contains("x86_64") {
-        println!("cargo:rustc-link-search=./thirdparty/vlc/lib/win-x64");
+        println!("cargo:rustc-link-search=./thirdparty/vlc/win-x64/lib");
+        include_dir = "thirdparty/vlc/win-x64/include";
     } else if target.contains("linux") && target.contains("x86_64") {
         println!("cargo:rustc-link-search=./thirdparty/vlc/lib/linux-x64");
     }
@@ -32,8 +34,8 @@ fn main() {
     println!("cargo:rustc-link-lib=vlc");
 
     let bindings = bindgen::Builder::default()
-        .header("thirdparty/vlc/include/vlc/vlc.h")
-        .clang_arg("-Ithirdparty/vlc/include")
+        .header(format!("{}/vlc/vlc.h", include_dir))
+        .clang_arg(format!("-I{}", include_dir))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate_cstr(true)
         .disable_header_comment()
