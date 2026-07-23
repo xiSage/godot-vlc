@@ -273,14 +273,9 @@ unsafe extern "C" fn update_output_cb(
             return false;
         }
 
-        // RGBA8 full-range BT.709 sRGB-transfer top-left, matching libvlc's own
-        // d3d11_player.cpp example.
-        (*output).__bindgen_anon_1.dxgi_format = DXGI_FORMAT_R8G8B8A8_UNORM_RAW;
-        (*output).full_range = true;
-        (*output).colorspace = libvlc_video_color_space_t_libvlc_video_colorspace_BT709;
-        (*output).primaries = libvlc_video_color_primaries_t_libvlc_video_primaries_BT709;
-        (*output).transfer = libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB;
-        (*output).orientation = libvlc_video_orient_t_libvlc_video_orient_top_left;
+        // Default to RGBA8 full-range BT.709 / sRGB / top-left output so
+        // libvlc renders into a full-range RGB surface by default.
+        apply_default_output_config(&mut *output);
         true
     }
 }
@@ -321,6 +316,15 @@ unsafe extern "C" fn select_plane_cb(
     plane == 0
 }
 
+fn apply_default_output_config(output: &mut libvlc_video_output_cfg_t) {
+    output.__bindgen_anon_1.dxgi_format = DXGI_FORMAT_R8G8B8A8_UNORM_RAW;
+    output.full_range = true;
+    output.colorspace = libvlc_video_color_space_t_libvlc_video_colorspace_BT709;
+    output.primaries = libvlc_video_color_primaries_t_libvlc_video_primaries_BT709;
+    output.transfer = libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB;
+    output.orientation = libvlc_video_orient_t_libvlc_video_orient_top_left;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +332,18 @@ mod tests {
     #[test]
     fn dxgi_format_constant_matches_windows_rs() {
         assert_eq!(DXGI_FORMAT_R8G8B8A8_UNORM_RAW, DXGI_FORMAT_R8G8B8A8_UNORM.0);
+    }
+
+    #[test]
+    fn default_output_config_is_full_range_rgb() {
+        let mut output = unsafe { std::mem::zeroed::<libvlc_video_output_cfg_t>() };
+        apply_default_output_config(&mut output);
+
+        assert_eq!(output.__bindgen_anon_1.dxgi_format, DXGI_FORMAT_R8G8B8A8_UNORM_RAW);
+        assert!(output.full_range);
+        assert_eq!(output.colorspace, libvlc_video_color_space_t_libvlc_video_colorspace_BT709);
+        assert_eq!(output.primaries, libvlc_video_color_primaries_t_libvlc_video_primaries_BT709);
+        assert_eq!(output.transfer, libvlc_video_transfer_func_t_libvlc_video_transfer_func_SRGB);
+        assert_eq!(output.orientation, libvlc_video_orient_t_libvlc_video_orient_top_left);
     }
 }
