@@ -24,6 +24,12 @@ windows = { version = "0.62", optional = true, features = [
   "Win32_System_Threading",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Used to set VLC_LIB_PATH before libvlc_new. libc::setenv is called rather than
+# std::env::set_var because mutating the environment through Rust's API is
+# unsafe, and LibVLC reads the environment through the C library regardless.
+libc = "0.2"
+
 [features]
 default = ["gpu"]
 gpu = ["dep:windows"]

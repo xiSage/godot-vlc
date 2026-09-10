@@ -6,5 +6,6 @@
 .trae
 /thirdparty/vlc/
 /gdextension_template/bin/
+/artifacts/
 CLAUDE.md
 AGENTS.md

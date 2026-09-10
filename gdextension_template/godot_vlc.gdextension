@@ -14,13 +14,16 @@ linux.release.x86_64 = "res://addons/godot-vlc/bin/linux-x64/libgodot_vlc.so"
 windows.x86_64 = {
 	"res://addons/godot-vlc/bin/win-x64/libvlc.dll": "",
 	"res://addons/godot-vlc/bin/win-x64/libvlccore.dll": "",
-	"res://addons/godot-vlc/bin/win-x64/plugins": ""
+	"res://addons/godot-vlc/bin/win-x64/plugins": "",
+	"res://addons/godot-vlc/bin/win-x64/libexec": "",
+	"res://addons/godot-vlc/bin/win-x64/share": ""
 }
 linux.x86_64 = {
 	"res://addons/godot-vlc/bin/linux-x64/libvlc.so.12": "",
 	"res://addons/godot-vlc/bin/linux-x64/libvlccore.so.9": "",
-	"res://addons/godot-vlc/bin/linux-x64/libidn.so.11": "",
-	"res://addons/godot-vlc/bin/linux-x64/vlc": ""
+	"res://addons/godot-vlc/bin/linux-x64/vlc": "",
+	"res://addons/godot-vlc/bin/linux-x64/libexec": "",
+	"res://addons/godot-vlc/bin/linux-x64/share": ""
 }
 
 [icons]

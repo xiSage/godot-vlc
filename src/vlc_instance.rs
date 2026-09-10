@@ -92,6 +92,12 @@ impl IObject for VLCInstance {
         let args: Vec<_> = args.iter().map(|s| s.as_ptr()).collect();
         let argv = args.as_ptr();
 
+        // LibVLC derives its plugin, libexec and data directories from the
+        // location of its own module and says nothing when they turn out not to
+        // exist. Point them explicitly at the runtime we ship before any
+        // instance is created. See src/vlc_runtime.rs.
+        crate::vlc_runtime::configure_vlc_paths();
+
         let instance = unsafe { vlc::libvlc_new(argc, argv) };
         #[allow(clippy::missing_transmute_annotations)]
         let cb = unsafe { Some(mem::transmute(VLCInstance::log_callback_impl as *const ())) };

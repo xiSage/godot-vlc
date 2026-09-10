@@ -1,0 +1,40 @@
+# Libraries the shipped runtime is allowed to expect from the host.
+#
+# The rule this file encodes: every shared library a LibVLC plugin needs must
+# either be shipped inside the addon, or be listed here with the justification
+# that every supported host already provides it.
+#
+# This is the rule that the previous runtime violated. Its plugins were linked
+# against libavformat.so.60, libvpx.so.9, libFLAC.so.12 and liblua5.2.so.0 -
+# snap build-time sonames - and none of those were shipped. They resolved only
+# while the host happened to provide those exact versions, which a rolling
+# distribution stops doing sooner or later. When a plugin fails to load, LibVLC
+# logs one error and continues, so the failure surfaced as "Codec `h264` is not
+# supported" rather than as a missing library.
+#
+# Keep this list deliberately short. The contrib build links third-party
+# libraries into the modules statically, so a decoder appearing here means the
+# build configuration is wrong, not that the list needs another line.
+#
+# Patterns are globs matched with PowerShell's -like against the library SONAME.
+#
+# To justify an addition, check what the official Godot binary itself needs; if
+# Godot already depends on it, requiring it adds nothing to the user's burden:
+#
+#   readelf -d godot | grep NEEDED
+#
+# Anything whose soname changes across distributions (libvpx, libavformat,
+# libFLAC, liblua, ...) must be shipped, never listed here.
+
+# C and C++ runtime: present on any glibc system Godot itself can run on.
+libc.so*
+libm.so*
+libdl.so*
+libpthread.so*
+librt.so*
+libgcc_s.so*
+libstdc++.so*
+libresolv.so*
+libnsl.so*
+ld-linux*.so*
+linux-vdso.so*

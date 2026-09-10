@@ -31,9 +31,12 @@ mod util;
 mod vlc {
     include!(concat!(env!("OUT_DIR"), "/vlc_bindings.rs"));
 }
+#[cfg(test)]
+mod acceptance;
 mod vlc_instance;
 mod vlc_media;
 mod vlc_media_player;
+mod vlc_runtime;
 mod vlc_track;
 mod vlc_track_list;
 

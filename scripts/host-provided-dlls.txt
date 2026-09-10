@@ -1,0 +1,81 @@
+# DLLs the shipped Windows runtime is allowed to expect from the host.
+#
+# The rule is the same one encoded for Linux in host-provided-libs.txt: every
+# DLL a plugin imports must either be shipped inside the addon or be listed here
+# because every supported Windows already provides it.
+#
+# This list is not guesswork. It was produced by reading the PE import tables of
+# every DLL in a working Windows runtime tree:
+#
+#   llvm-objdump -p <plugin>.dll | Select-String '^DLL Name:'
+#
+# Over all 407 plugin DLLs the only import satisfied from inside the runtime was
+# libvlccore.dll; everything else was one of the names below.
+#
+# Deliberately NOT listed, because they are toolchain runtimes rather than
+# Windows components and therefore MUST ship inside the addon:
+#
+#   libgcc_s_seh-1.dll
+#
+# A mingw-built runtime imports it (libx265_plugin, the srt access plugins and
+# libgme_plugin all do) and no Windows installation provides it. Leaving it out
+# of the package is the exact failure this project already hit on Linux, where
+# plugin modules depended on libraries that were never shipped. It is declared
+# in the gdextension manifest instead, so the assembler refuses to build a
+# package that omits it.
+#
+# Matching is case-insensitive, as Windows DLL resolution is.
+
+# Microsoft Visual C++ runtime and the Universal CRT API sets. These come from
+# the Rust extension binaries rather than from VLC; every Windows 10 or newer,
+# which is what Godot 4 itself requires, provides them.
+VCRUNTIME140.dll
+bcryptprimitives.dll
+api-ms-win-crt-*.dll
+
+ADVAPI32.dll
+api-ms-win-core-synch-l1-2-0.dll
+AUTHZ.dll
+bcrypt.dll
+COMCTL32.dll
+comdlg32.dll
+CRYPT32.dll
+d2d1.dll
+d3d11.dll
+d3d9.dll
+D3DCOMPILER_47.dll
+dwmapi.dll
+DWrite.dll
+dxgi.dll
+dxva2.dll
+GDI32.dll
+IMM32.dll
+IPHLPAPI.DLL
+KERNEL32.dll
+MFPlat.DLL
+MPR.dll
+msdmo.dll
+MSIMG32.dll
+msvcrt.dll
+ncrypt.dll
+NETAPI32.dll
+ntdll.dll
+ole32.dll
+OLEAUT32.dll
+OPENGL32.dll
+Secur32.dll
+SETUPAPI.dll
+SHELL32.dll
+SHLWAPI.dll
+USER32.dll
+USERENV.dll
+USP10.dll
+UxTheme.dll
+VERSION.dll
+vulkan-1.dll
+WINMM.dll
+WinSCard.dll
+WS2_32.dll
+WSOCK32.dll
+WTSAPI32.dll
+XmlLite.dll
