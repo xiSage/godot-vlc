@@ -577,6 +577,17 @@ Write-Host ''
 if ($allViolations.Count -gt 0) {
     Write-Host "FAILED with $($allViolations.Count) violation(s):" -ForegroundColor Red
     $allViolations | ForEach-Object { Write-Host "  - $_" }
+
+    # On GitHub Actions, each violation also becomes an annotation. The log needs
+    # a signed-in reader, and annotations do not, so a failure reports itself
+    # instead of requiring somebody to go and copy the text out.
+    if ($env:GITHUB_ACTIONS) {
+        foreach ($violation in $allViolations) {
+            $escaped = $violation -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Host "::error::$escaped"
+        }
+    }
+
     Write-Host ''
     Write-Host 'A host library in the list means the build did not internalise it; prefer fixing the'
     Write-Host 'build over extending the host-provided list. A file that is present but undeclared'
