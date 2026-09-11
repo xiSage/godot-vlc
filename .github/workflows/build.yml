@@ -139,6 +139,19 @@ jobs:
     - name: Stage the LibVLC runtime
       run: ./scripts/stage_libvlc.ps1 -Platforms linux-x64 -IncludeTools
 
+    # The addon expects the X11 stack, which scripts/host-provided-libs.txt
+    # justifies on the grounds that the official Godot Linux binary needs it too.
+    # A headless runner has none of it, so one plugin cannot be loaded and the
+    # acceptance test fails for a reason that has nothing to do with the runtime.
+    # Installing the documented host libraries is what makes the runner the host
+    # the manifest assumes; every one of them is present on any machine that can
+    # open a windowed Godot, which is the machine this addon is for.
+    - name: Install the documented host libraries
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends `
+          libxkbcommon-x11-0 libxkbcommon0 libx11-6 libxcb1 libxau6 libxdmcp6 libbsd0 libmd0
+
     # After staging, because the build script generates its bindings from the
     # staged runtime's vlc.h. Here rather than in the lint job for that reason,
     # and here as well as on Windows because the crate's #[cfg] code differs.
