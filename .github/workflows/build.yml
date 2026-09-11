@@ -40,6 +40,11 @@ jobs:
     - name: LibVLC provenance check
       run: ./scripts/check_vlc_provenance.ps1 -SelfTest
 
+  # Formatting only. Clippy needs the crate to compile, and the crate's build
+  # script generates its LibVLC bindings from the staged runtime's vlc.h, so
+  # clippy lives in the platform jobs where that runtime has been staged. It runs
+  # on both platforms on purpose: the crate has Linux-only and Windows-only code
+  # under #[cfg], and linting on one platform never sees the other's.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -47,9 +52,6 @@ jobs:
 
     - name: Rustfmt Check
       run: cargo fmt --all -- --check
-
-    - name: Clippy Check
-      run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Both LibVLC artifacts are produced on Linux. The Windows runtime is a
   # mingw-w64 cross build from the same container and the same pinned commit:
@@ -137,6 +139,12 @@ jobs:
     - name: Stage the LibVLC runtime
       run: ./scripts/stage_libvlc.ps1 -Platforms linux-x64 -IncludeTools
 
+    # After staging, because the build script generates its bindings from the
+    # staged runtime's vlc.h. Here rather than in the lint job for that reason,
+    # and here as well as on Windows because the crate's #[cfg] code differs.
+    - name: Clippy Check
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
     - name: Test
       run: ./scripts/test.ps1
 
@@ -192,6 +200,11 @@ jobs:
 
     - name: Stage the LibVLC runtime
       run: ./scripts/stage_libvlc.ps1 -Platforms win-x64 -IncludeTools
+
+    # The same check as on Linux, and not redundant with it: the crate has
+    # Windows-only code under #[cfg] that a Linux clippy run never compiles.
+    - name: Clippy Check
+      run: cargo clippy --workspace --all-targets -- -D warnings
 
     - name: Build Debug
       run: ./scripts/build_debug.ps1
