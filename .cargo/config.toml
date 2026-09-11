@@ -1,0 +1,20 @@
+# The Linux extension has to find libvlc.so.12 in its own directory.
+#
+# Godot dlopen()s this library, and the dynamic loader resolves the extension's
+# dependencies from the process's search path -- LD_LIBRARY_PATH, the cache, the
+# default directories -- and not from the directory the library was loaded from.
+# Without $ORIGIN here, the addon's own libvlc is invisible to it, so the addon
+# works only for a user who happens to have put the plugin directory on
+# LD_LIBRARY_PATH. That is the same defect the Windows side had with the mingw
+# runtime: a shipped binary whose dependency the loader cannot find, which shows
+# up as a plugin that does not work rather than as an error.
+#
+# scripts/check_addon.ps1 caught it on the first CI run: ldd on the assembled
+# extension reported `libvlc.so.12 => not found`. scripts/postprocess.ps1 gives
+# the LibVLC libraries the same $ORIGIN treatment, for the same reason.
+#
+# Scoped to the Linux target, so Windows is unchanged: there the loader searches
+# the directory the loaded module came from, which is why the addon layout is
+# enough on that platform.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN"]
