@@ -204,13 +204,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # and the version a package demands moves. VLC provides no meson of its own:
 # extras/tools builds cmake, nasm, libtool, tar and xz, but no meson.
 #
-# --break-system-packages because distributions that follow PEP 668 mark the
-# system Python as externally managed and refuse the install outright
-# ("error: externally-managed-environment"). That protection exists to keep a
-# distribution's own Python consistent, and this is a throwaway build image whose
-# only Python consumer is meson, so the flag is the intended escape here.
+# It goes into a virtual environment rather than the system Python. The
+# distributions this image supports have moved at different times to PEP 668,
+# which makes the system Python refuse packages outright
+# ("error: externally-managed-environment"), and the flag that overrides that --
+# --break-system-packages -- does not exist in the pip that 22.04 ships, so one
+# line cannot serve both. A virtual environment is what PEP 668 asks for, needs
+# no flag, and behaves the same on either base. python3-venv is installed above
+# for contrib's own use.
 ARG MESON_VERSION=1.3.2
-RUN pip3 install --no-cache-dir --break-system-packages "meson==${MESON_VERSION}" \
+RUN python3 -m venv /opt/meson \
+ && /opt/meson/bin/pip install --no-cache-dir "meson==${MESON_VERSION}" \
+ && ln -sf /opt/meson/bin/meson /usr/local/bin/meson \
  && meson --version \
  && command -v meson
 
