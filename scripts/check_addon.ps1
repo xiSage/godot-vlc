@@ -176,7 +176,14 @@ function Test-DependencyEntries {
         $where = if ($Source) { " (needed by $Source)" } else { '' }
 
         if (-not $entry.Found) {
-            $violations += "unresolved dependency: $($entry.Name)$where"
+            # A library the host is expected to provide does not have to be
+            # installed on the machine running this check. A headless CI runner has
+            # no libxkbcommon-x11, and that says nothing about the addon; what has
+            # to be rejected is a library that is neither shipped nor justified,
+            # which is exactly what the runtime this replaces depended on.
+            if (-not (Test-HostProvided -Name $entry.Name -Patterns $HostProvidedPatterns)) {
+                $violations += "unresolved dependency: $($entry.Name)$where"
+            }
             continue
         }
 
@@ -356,7 +363,7 @@ function Invoke-SelfTest {
         ($peResolved | Where-Object Name -eq 'KERNEL32.dll').Resolved
 
     # --- dependency rules --------------------------------------------------
-    $hostPatterns = @('libc.so*', 'libm.so*', 'ld-linux*.so*', 'linux-vdso.so*')
+    $hostPatterns = @('libc.so*', 'libm.so*', 'ld-linux*.so*', 'linux-vdso.so*', 'libxkbcommon-x11.so*')
     $declared = @('bin/linux-x64/libvlccore.so.9', 'bin/linux-x64/vlc')
 
     $clean = @(
@@ -371,6 +378,13 @@ function Invoke-SelfTest {
     $unresolved = @([pscustomobject]@{ Name = 'libavformat.so.60'; Resolved = ''; Found = $false })
     Assert-Equal 'rejects an unresolved dependency' 1 `
         (Test-DependencyEntries -Entries $unresolved -AddonRoot '/addon' -DeclaredPaths $declared -HostProvidedPatterns $hostPatterns).Count
+
+    # The distinction that matters: not found on this machine, but justified, is
+    # not a violation. Not found and not justified is the defect this gate exists
+    # for, and the case above covers it.
+    $hostAbsent = @([pscustomobject]@{ Name = 'libxkbcommon-x11.so.0'; Resolved = ''; Found = $false })
+    Assert-Equal 'accepts a host-provided library this machine does not have' 0 `
+        (Test-DependencyEntries -Entries $hostAbsent -AddonRoot '/addon' -DeclaredPaths $declared -HostProvidedPatterns $hostPatterns).Count
 
     $notShipped = @([pscustomobject]@{ Name = 'libvpx.so.9'; Resolved = ''; Found = $true })
     Assert-Equal 'rejects a dependency that is neither shipped nor host-provided' 1 `

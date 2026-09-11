@@ -38,3 +38,22 @@ libresolv.so*
 libnsl.so*
 ld-linux*.so*
 linux-vdso.so*
+
+# X11 and xcb, needed by VLC's xcb video outputs and its screen access module.
+# The extension never uses those -- it renders through libvlc's output callbacks
+# -- but the modules are built and shipped, and they link the X11 stack. They pass
+# the rule at the top of this file: the official Godot Linux binary needs libX11,
+# libxcb and libxkbcommon to open a window at all, so a host able to run a
+# windowed Godot already provides every one of these. Check that with
+# `readelf -d godot` rather than trusting it.
+#
+# They are listed even though a headless machine cannot resolve them:
+# scripts/check_addon.ps1 accepts a justified library that the checking machine
+# does not have, and rejects one that is neither shipped nor justified, which is
+# the case the runtime this replaces fell into.
+libXau.so*
+libXdmcp.so*
+libbsd.so*
+libmd.so*
+libxkbcommon.so*
+libxkbcommon-x11.so*
