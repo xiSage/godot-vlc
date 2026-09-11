@@ -422,7 +422,7 @@ impl VlcMediaPlayer {
         }
         let mut sums = [0u64; 4];
         let mut count: u64 = 0;
-        for chunk in bytes.as_slice().chunks_exact(4) {
+        for chunk in bytes.as_slice().as_chunks::<4>().0 {
             sums[0] += chunk[0] as u64;
             sums[1] += chunk[1] as u64;
             sums[2] += chunk[2] as u64;

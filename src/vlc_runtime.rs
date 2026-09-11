@@ -189,7 +189,9 @@ pub fn configure_vlc_paths() {
 fn own_module_dir() -> Option<PathBuf> {
     let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
     // A function defined in this library identifies this library's mapping.
-    let own_address = own_module_dir_from_maps as usize;
+    // Through a pointer: casting a function item straight to an integer is
+    // rejected by the function_casts_as_integer lint.
+    let own_address = own_module_dir_from_maps as *const () as usize;
     own_module_dir_from_maps(&maps, own_address)
 }
 
