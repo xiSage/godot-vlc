@@ -341,6 +341,14 @@ if (-not (Test-Path -LiteralPath $contribPkgConfig)) {
 }
 $env:PKG_CONFIG_PATH = if ($env:PKG_CONFIG_PATH) { "$contribPkgConfig`:$env:PKG_CONFIG_PATH" } else { $contribPkgConfig }
 
+# Upstream states the contrib location on the configure command line
+# (extras/package/win32/build.sh calls configure.sh --with-contrib=../contrib/
+# $CONTRIB_PREFIX). Ours reached the same libraries through PKG_CONFIG_PATH alone,
+# which works but says less: this tells configure where the tree is, so it derives
+# the include and library directories from it rather than seeing them only through
+# .pc files. PKG_CONFIG_PATH stays, because it is what actually feeds pkg-config.
+$configureArgs += "--with-contrib=$(Join-Path $src "contrib/$hostTriplet")"
+
 # ---------------------------------------------------------------------------
 Write-Host 'build: configure'
 # ---------------------------------------------------------------------------
