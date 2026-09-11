@@ -13,11 +13,17 @@ checked.
 
 What the runpaths have to be:
 
-  lib/libvlccore.so.*, lib/libvlc.so.*, lib/vlc/*.so.*
-      $ORIGIN                       siblings of the library itself
-  lib/vlc/plugins/<category>/*_plugin.so
-      $ORIGIN/../..                 -> lib/vlc   (helper libraries)
-      $ORIGIN/../../..              -> lib       (libvlccore, libvlc)
+  every shipped .so, one $ORIGIN step for each directory it sits below the
+  runtime root
+
+      lib/libvlccore.so.9            depth 1   $ORIGIN:$ORIGIN/..
+      lib/vlc/libvlc_xcb_events.so.0 depth 2   ...:$ORIGIN/../..
+      lib/vlc/plugins/codec/x.so     depth 3   ...:$ORIGIN/../../..
+      lib/vlc/plugins/access/rtp/x.so depth 4  ...:$ORIGIN/../../../..
+
+  The ladder is computed from the depth rather than written out, because a fixed
+  path is right for the libraries that happen to sit at that depth and wrong for
+  the rest. See Get-RelocatableRunpath in lib/runpath.ps1.
 
 Only regular files are patched. patchelf replaces a symlink with a regular file,
 so patching libvlc.so.12 (a symlink to libvlc.so.12.0.0) would silently break the
@@ -55,8 +61,7 @@ if (-not (Test-Path -LiteralPath $Runtime -PathType Container)) {
     throw "runtime directory '$Runtime' does not exist"
 }
 
-$RunpathOrigin = '$ORIGIN'
-$RunpathPlugin = '$ORIGIN/../..:$ORIGIN/../../..'
+
 
 function Get-RealSharedObject {
     <#
@@ -142,26 +147,33 @@ if ($Platform -eq 'linux-x64') {
         Select-Object -First 1
     if (-not $pluginsDir) { throw "no plugins directory found under '$lib'" }
 
-    # --- top-level libraries and the helper libraries beside the plugins ----
+    # The helper libraries live beside the plugins directory (lib/vlc), the
+    # plugins below it, and the core in lib itself. All of them are shipped shared
+    # objects and all of them are patched by the same rule below.
     $helperDir = Split-Path -Parent $pluginsDir
     $plainLibraries = @()
     $plainLibraries += Get-RealSharedObject -Directory $lib
     $plainLibraries += Get-RealSharedObject -Directory $helperDir
-    foreach ($file in $plainLibraries) {
-        Invoke-Native -Command 'patchelf' -Arguments @('--set-rpath', $RunpathOrigin, $file.FullName)
-    }
-
-    # --- plugin modules -----------------------------------------------------
     $plugins = @(Get-RealSharedObject -Directory $pluginsDir -Recurse)
     if ($plugins.Count -eq 0) { throw "'$pluginsDir' contains no modules" }
-    foreach ($file in $plugins) {
-        Invoke-Native -Command 'patchelf' -Arguments @('--set-rpath', $RunpathPlugin, $file.FullName)
-    }
 
-    # --- assertions ---------------------------------------------------------
-    Assert-Runpath -File (Get-Item -LiteralPath (Join-Path $lib "libvlccore.so.$CoreAbiMajor")).FullName -Expected $RunpathOrigin
-    Assert-Runpath -File (Get-Item -LiteralPath (Join-Path $lib "libvlc.so.$AbiMajor")).FullName -Expected $RunpathOrigin
-    Assert-Runpath -File $plugins[0].FullName -Expected $RunpathPlugin
+    # --- patch every shipped shared object ----------------------------------
+    # One rule, computed from where each file sits, rather than one rule for the
+    # libraries and a different one for the plugins: the plugins are not all at
+    # the same depth, and the helper libraries beside them are at another.
+    $runtimeRoot = (Resolve-Path -LiteralPath $Runtime).Path.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    $linuxObjects = @($plainLibraries + $plugins)
+    foreach ($file in $linuxObjects) {
+        $directory = Split-Path -Parent $file.FullName
+        if (-not $directory.StartsWith($runtimeRoot, [System.StringComparison]::Ordinal)) {
+            throw "'$($file.FullName)' is not inside '$runtimeRoot'"
+        }
+
+        $relative = $directory.Substring($runtimeRoot.Length)
+        $expected = Get-RelocatableRunpath -Depth (Get-RunpathDepth -RelativeDirectory $relative)
+        Invoke-Native -Command 'patchelf' -Arguments @('--set-rpath', $expected, $file.FullName)
+        Assert-Runpath -File $file.FullName -Expected $expected
+    }
 
     # The core must be a shared library the modules link against. The direct test
     # for a statically linked core is that lib/libvlccore.so.<major> exists as a

@@ -62,3 +62,48 @@ function Get-RunpathValue {
     $entry = Get-RelativePathTag -Output $Output | Where-Object Tag -eq 'RUNPATH' | Select-Object -First 1
     if ($entry) { $entry.Value } else { $null }
 }
+
+function Get-RunpathDepth {
+    <#
+    .SYNOPSIS
+    How many directories a relative path descends.
+
+    .DESCRIPTION
+    Takes the path of a library's directory relative to the runtime root, so
+    "lib/vlc/plugins/access/rtp" is 4 and the root itself is 0.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$RelativeDirectory)
+
+    @($RelativeDirectory -split '[\\/]' | Where-Object { $_ }).Count
+}
+
+function Get-RelocatableRunpath {
+    <#
+    .SYNOPSIS
+    The $ORIGIN ladder for a library that sits $Depth directories below the root.
+
+    .DESCRIPTION
+    A shipped library finds its siblings through $ORIGIN and the runtime through
+    the directories above it, and how many steps that is depends on where the
+    library sits: libvlccore.so.9 one level below the runtime root, the helper
+    libraries beside the plugins two, a plugin under plugins/codec three, one
+    under plugins/access/rtp four.
+
+    A fixed two- or three-step path therefore works for the libraries that happen
+    to sit at that depth and silently fails for the rest, which is what happened:
+    libvlc_xcb_events.so and every plugin under access/rtp could not find
+    libvlccore.so.9, and LibVLC reports that as a plugin it could not load rather
+    than as a path that is wrong.
+
+    Listing every step up to the root costs nothing at load time, because a
+    directory that does not exist is skipped, and it takes the arithmetic out of
+    the picture.
+    #>
+    param([Parameter(Mandatory)][int]$Depth)
+
+    $parts = @('$ORIGIN')
+    for ($level = 1; $level -le $Depth; $level++) {
+        $parts += '$ORIGIN' + ('/..' * $level)
+    }
+    $parts -join ':'
+}

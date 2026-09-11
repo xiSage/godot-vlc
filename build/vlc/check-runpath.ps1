@@ -71,6 +71,22 @@ if ($SelfTest) {
         ((Get-NonRelocatableComponent -Values @('../lib')) -join ',')
     Assert-Equal 'ignores an empty value' 0 (Get-NonRelocatableComponent -Values @('')).Count
 
+    # --- the ladder the patcher sets ---------------------------------------
+    # Depth is measured from the runtime root, the directory that holds lib/, so
+    # lib/vlc/plugins/access/rtp is 5 directories below it.
+    Assert-Equal 'depth 0 is the library itself' '$ORIGIN' (Get-RelocatableRunpath -Depth 0)
+    Assert-Equal 'depth 2 lists the steps above the library' `
+        '$ORIGIN:$ORIGIN/..:$ORIGIN/../..' (Get-RelocatableRunpath -Depth 2)
+    Assert-Equal 'counts every directory below the runtime root' 5 (Get-RunpathDepth -RelativeDirectory 'lib/vlc/plugins/access/rtp')
+    # The defect this replaced: a fixed two- and three-step path, which reaches
+    # lib/ from lib/vlc/plugins/codec but not from lib/vlc/plugins/access/rtp, so
+    # those plugins could not find libvlccore.so.9. The ladder is longer than any
+    # file needs, and the level that reaches lib/ has to be in it.
+    Assert-Equal 'a plugin five deep can still reach lib/' 'True' `
+        ([bool]((Get-RelocatableRunpath -Depth 5).Split(':') -contains ('$ORIGIN' + ('/..' * 4))))
+    Assert-Equal 'the root itself is depth 0' 0 (Get-RunpathDepth -RelativeDirectory '')
+    Assert-Equal 'ignores a trailing separator' 1 (Get-RunpathDepth -RelativeDirectory 'lib/')
+
     if ($script:failures -ne 0) {
         Write-Host "self-test: $($script:failures) case(s) failed" -ForegroundColor Red
         exit 1
