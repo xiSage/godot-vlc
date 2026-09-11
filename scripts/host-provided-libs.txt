@@ -55,5 +55,7 @@ libXau.so*
 libXdmcp.so*
 libbsd.so*
 libmd.so*
+libxcb.so*
+libxcb-xkb.so*
 libxkbcommon.so*
 libxkbcommon-x11.so*
