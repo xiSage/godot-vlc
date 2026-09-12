@@ -141,8 +141,8 @@ foreach ($platform in $Platforms) {
 if ($buildInfo.Count -gt 1) {
     # Cross-platform provenance is asserted by scripts/check_vlc_provenance.ps1,
     # which reads the artifacts directly. It used to live here, but CI stages one
-    # platform per job, so a check needing both staged in one run never executed.
-    Write-Host 'Both platforms staged. Run scripts/check_vlc_provenance.ps1 to assert they share a commit and ABI.'
+    # platform per job, so a check needing several staged in one run never ran.
+    Write-Host 'Run scripts/check_vlc_provenance.ps1 to assert the staged platforms share a commit and ABI.'
 }
 
 Write-Host 'Done. Next: build_release.ps1 / build_debug.ps1, then assemble_addon.ps1, then check_addon.ps1'
