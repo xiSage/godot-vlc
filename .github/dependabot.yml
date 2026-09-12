@@ -42,10 +42,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # Raise the requirement in Cargo.toml to the version that is actually used
-    # rather than leaving a range that the lockfile quietly exceeds. Every other
-    # input this repository depends on is pinned in that spirit.
-    versioning-strategy: "increase"
+    # versioning-strategy is left at its default. The options reference lists it
+    # as available for Cargo, but Dependabot's Cargo implementation accepts only
+    # `auto` and `lockfile-only`, and says so at parse time ('value "increase" did
+    # not match one of the following values: lockfile-only, auto'). `auto` is what
+    # this wants anyway: Cargo resolves to the newest compatible version and reads
+    # a bare version as a caret-equivalent requirement, so the requirement in
+    # Cargo.toml is only raised when it does not already allow the new release.
+
     # A release is not adopted on the day it lands; a week is enough time for a
     # broken or yanked one to be withdrawn first. Security updates are never
     # delayed by this.
