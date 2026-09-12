@@ -106,13 +106,21 @@ function Invoke-RepoScript {
 function Get-CommandVersion {
     param(
         [Parameter(Mandatory)][string]$Command,
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$VersionArguments
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$VersionArguments,
+        # Some tools print a banner before the version (llvm-objdump opens with a
+        # URL). Matching a line keeps the table to one meaningful line per tool.
+        [string]$Match
     )
 
     if (-not (Get-Command $Command -ErrorAction SilentlyContinue)) { return $null }
-    $output = & $Command @VersionArguments 2>&1 | Select-Object -First 1
-    if ($LASTEXITCODE -ne 0 -and -not $output) { return $null }
-    "$output".Trim()
+    $lines = @(& $Command @VersionArguments 2>&1)
+    if ($lines.Count -eq 0) { return $null }
+
+    if ($Match) {
+        $hit = $lines | Where-Object { $_ -match $Match } | Select-Object -First 1
+        if ($hit) { return "$hit".Trim() }
+    }
+    "$($lines | Select-Object -First 1)".Trim()
 }
 
 function Get-PinnedRustVersion {
@@ -175,8 +183,8 @@ function Invoke-Check {
 
     Add-Row -Name 'tar' -Version (Get-CommandVersion -Command 'tar' -VersionArguments @('--version')) `
         -IsRequired $true -Advice 'tar is needed to unpack the runtime artifact'
-    Add-Row -Name 'objdump' -Version ((Get-CommandVersion -Command 'llvm-objdump' -VersionArguments @('--version')) ??
-        (Get-CommandVersion -Command 'objdump' -VersionArguments @('--version'))) `
+    Add-Row -Name 'objdump' -Version ((Get-CommandVersion -Command 'llvm-objdump' -VersionArguments @('--version') -Match 'version') ??
+        (Get-CommandVersion -Command 'objdump' -VersionArguments @('--version') -Match 'version')) `
         -IsRequired $true -Advice 'install LLVM (llvm-objdump) or binutils (objdump); the dependency gate reads imported libraries with it'
 
     Add-Row -Name 'docker' -Version (Get-CommandVersion -Command 'docker' -VersionArguments @('--version')) `
