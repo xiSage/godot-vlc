@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://dakfnot14s0bk"]
 
 [ext_resource type="VLCMedia" uid="uid://n41raqiv2ion" path="res://test.mp4" id="1_ig7tw"]
+[ext_resource type="Script" path="res://ui_scale.gd" id="2_uiscale"]
 
 [sub_resource type="GDScript" id="GDScript_sho2u"]
 script/source = "extends VLCMediaPlayer
@@ -244,9 +245,17 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "gpu output:"
 
+[node name="UIScale" type="Label" parent="VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "ui scale:"
+
 [node name="Statics" type="Button" parent="VBoxContainer" unique_id=1509434665]
 layout_mode = 2
 text = "Statics"
+
+[node name="UIScaleAdjuster" type="Node" parent="."]
+script = ExtResource("2_uiscale")
 
 [node name="InputMRLDialog" type="ConfirmationDialog" parent="." unique_id=1361761297]
 unique_name_in_owner = true
