@@ -1,0 +1,29 @@
+# Highest glibc version the built extension may require.
+#
+# The extension's shared library is dlopen()ed into the Godot process, so this
+# value must not exceed the glibc requirement of the official Godot Linux
+# binaries. If it does, Godot starts and the addon silently fails to load.
+#
+# Measure the official Godot requirement from the binary itself; the published
+# documentation does not state it reliably:
+#
+#     objdump -T godot | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+#
+# scripts/check_glibc_floor.ps1 asserts that a built library does not exceed
+# this bound, so building on a newer CI runner cannot quietly raise the floor.
+#
+# 2.35 is what ubuntu-22.04 produces, and both halves of the addon are built on
+# ubuntu 22.04: the extension on the CI runner, the LibVLC runtime in the
+# container in build/vlc/. They therefore share one floor, and neither raises the
+# other's. The base image was chosen for exactly this reason; see the top of
+# build/vlc/Dockerfile for why an older base (debian:11, glibc 2.31) was
+# abandoned.
+#
+# Lowering this would widen the supported range but requires an older base, and
+# an older base cannot build a 2026 VLC: autoconf, meson, gcc and cmake all fall
+# below what current contrib packages demand.
+#
+# Whatever value is here is a supported-platform boundary and belongs in
+# README.md.
+
+GLIBC_BASELINE=2.35

@@ -181,6 +181,7 @@ version = "1.2.0"
 dependencies = [
  "bindgen",
  "godot",
+ "libc",
  "printf",
  "ringbuf",
  "windows",

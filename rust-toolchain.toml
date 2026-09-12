@@ -1,0 +1,19 @@
+# The toolchain this project is built and linted with.
+#
+# Pinning it is not ceremony. CI builds with `-D warnings`, and clippy's lints
+# change between releases, so an unpinned toolchain turns somebody else's compiler
+# upgrade into a build failure that nobody chose. That happened: a local 1.96
+# passed while the 1.98 runner failed on chunks_exact_to_as_chunks, and a
+# Linux-only lint (function_casts_as_integer) could not be seen from Windows at
+# all because the code behind #[cfg(target_os = "linux")] is never compiled there.
+#
+# Every other input this repository depends on is pinned in the same spirit: the
+# VLC revision in build/vlc/vlc.lock, the base images and meson in the Dockerfile,
+# pwsh in the Dockerfile. This was the last unpinned one.
+#
+# This is not a statement about the oldest compiler the crate supports. That is
+# Cargo.toml's rust-version, which is deliberately lower.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

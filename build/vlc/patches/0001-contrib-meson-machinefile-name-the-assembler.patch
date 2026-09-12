@@ -1,0 +1,20 @@
+diff --git a/contrib/src/gen-meson-machinefile.py b/contrib/src/gen-meson-machinefile.py
+index 29eb7cd190..e6c1e7f6ee 100755
+--- a/contrib/src/gen-meson-machinefile.py
++++ b/contrib/src/gen-meson-machinefile.py
+@@ -89,6 +89,15 @@ if args.type == 'internal':
+     _add_environ_val('pkg-config', 'PKG_CONFIG')
+     _add_environ_val('windres', 'WINDRES')
+     _add_environ_val('cmake', 'CMAKE')
++    # An assembler that emits object code for the target. nasm runs on the
++    # build machine and selects the object format with -f, so the build-side
++    # assembler is exposed under the target triplet name and named here.
++    # meson does not guess a prefix for nasm, and a cross build cannot run a
++    # target-side binary, so without this entry libass fails with
++    # "Assembly was requested, but cannot be built".
++    host_triplet = os.environ.get('HOST')
++    if host_triplet:
++        args.file.write("nasm = '{}-nasm'\n".format(host_triplet))
+ 
+     # built-in options section
+     args.file.write("\n[built-in options]\n")

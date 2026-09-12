@@ -1,0 +1,37 @@
+# VLC_REPO and the revision both platforms must be built from. They used to be
+# built from two different VLC snapshots, which made any cross-platform
+# behaviour difference impossible to attribute, and the plugin ABI check is an
+# exact string compare with no compatibility range, so mixing revisions is not
+# an option either.
+#
+# VLC_COMMIT may be an abbreviation; build.ps1 resolves it and refuses to build
+# unless the resolved commit starts with this value. The full SHA is recorded in
+# the artifact's build-info.txt, and scripts/check_vlc_provenance.ps1 asserts
+# that both platforms report the same one.
+#
+# VLC_FALLBACK_COMMIT is the revision to fall back to if the D3D11 capture path
+# regresses. It is not used automatically: select it with
+# VLC_COMMIT_OVERRIDE=<sha> when running build.ps1, which is also what the
+# failure message suggests.
+#
+# Consumed by build/vlc/build.ps1, which reads the keys below. The CI workflow
+# only hashes this file into its artifact cache key; it does not read the values.
+# Keep the key=value format: it is grepped, not parsed by a real parser.
+
+VLC_REPO=https://code.videolan.org/videolan/vlc.git
+VLC_COMMIT=546e18e53e
+VLC_FALLBACK_COMMIT=853c0f19
+
+# VLC_API_VERSION_STRING, read from include/vlc_plugin.h.
+# A plugin and its core must report the exact same string or the plugin is
+# rejected at dlopen time ("unsupported version"), so a mismatched runtime is not
+# subtle: the acceptance test fails as a plugin-load failure. build.ps1 also
+# refuses to build when the source header disagrees with this value, so the pin
+# cannot rot silently.
+VLC_API_VERSION_STRING=4.0.6
+
+# SONAMEs the shipped runtime must expose. build/vlc/postprocess.ps1 asserts them
+# on the built tree, and scripts/check_addon.ps1 asserts that the manifest and
+# the assembled payload agree on the same set.
+VLC_ABI_MAJOR=12
+VLC_CORE_ABI_MAJOR=9

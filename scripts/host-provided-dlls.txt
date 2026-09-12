@@ -1,0 +1,88 @@
+# DLLs the shipped Windows runtime is allowed to expect from the host.
+#
+# The rule is the same one encoded for Linux in host-provided-libs.txt: every
+# DLL a plugin imports must either be shipped inside the addon or be listed here
+# because every supported Windows already provides it.
+#
+# This list is not guesswork. It was produced by reading the PE import tables of
+# every DLL in a working Windows runtime tree:
+#
+#   llvm-objdump -p <plugin>.dll | Select-String '^DLL Name:'
+#
+# Over all 383 plugin DLLs the only import satisfied from inside the runtime was
+# libvlccore.dll; everything else was one of the names below.
+#
+# Deliberately NOT listed, and deliberately NOT shipped either:
+#
+#   libgcc_s_seh-1.dll, libstdc++-6.dll, libwinpthread-1.dll
+#
+# Those are toolchain runtimes rather than Windows components, so no Windows
+# installation provides them, and LibVLC could not load a plugin that imported one
+# even if the addon carried it: it opens every plugin with
+# LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32) (src/win32/plugin.c),
+# which searches a plugin's dependencies in System32 and nowhere else -- not the
+# application directory, not the plugin's own directory, and not PATH. The mingw
+# build used to link the runtime dynamically and libgme_plugin.dll failed with
+# error 126 for exactly that reason, while the DLL sat beside the core.
+#
+# The Windows build therefore links the runtime statically
+# (LDFLAGS='-static-libgcc -static-libstdc++' in build/vlc/build.ps1), and the
+# measurement above holds with none of them appearing at all. If one ever appears,
+# the closure check reports it here rather than letting it ship.
+#
+# Matching is case-insensitive, as Windows DLL resolution is.
+#
+
+# Microsoft Visual C++ runtime and the Universal CRT API sets. These come from
+# the Rust extension binaries rather than from VLC; every Windows 10 or newer,
+# which is what Godot 4 itself requires, provides them.
+VCRUNTIME140.dll
+bcryptprimitives.dll
+api-ms-win-crt-*.dll
+
+ADVAPI32.dll
+api-ms-win-core-synch-l1-2-0.dll
+AUTHZ.dll
+bcrypt.dll
+COMCTL32.dll
+comdlg32.dll
+CRYPT32.dll
+d2d1.dll
+d3d11.dll
+d3d9.dll
+D3DCOMPILER_47.dll
+dwmapi.dll
+DWrite.dll
+dxgi.dll
+dxva2.dll
+GDI32.dll
+IMM32.dll
+IPHLPAPI.DLL
+KERNEL32.dll
+MFPlat.DLL
+MPR.dll
+msdmo.dll
+MSIMG32.dll
+msvcrt.dll
+ncrypt.dll
+NETAPI32.dll
+ntdll.dll
+ole32.dll
+OLEAUT32.dll
+OPENGL32.dll
+Secur32.dll
+SETUPAPI.dll
+SHELL32.dll
+SHLWAPI.dll
+USER32.dll
+USERENV.dll
+USP10.dll
+UxTheme.dll
+VERSION.dll
+vulkan-1.dll
+WINMM.dll
+WinSCard.dll
+WS2_32.dll
+WSOCK32.dll
+WTSAPI32.dll
+XmlLite.dll

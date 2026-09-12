@@ -6,14 +6,45 @@ defaults:
 
 on:
   push:
-    branches: [ "master" ]
+    # build_workflow is listed so that this branch is actually validated; drop it
+    # once the branch is merged.
+    branches: [ "master", "build_workflow" ]
   pull_request:
     branches: [ "master" ]
+  # So the pipeline can be re-run from the Actions tab without adding a commit.
+  # These jobs take long enough that a transient failure is worth retrying
+  # without rewriting history.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Fast checks on the checking logic itself. No runtime, no container, no
+  # network, so a broken gate is reported before anything expensive starts.
+  script_tests:
+    name: script self-tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: RUNPATH checker
+      run: ./build/vlc/check-runpath.ps1 -SelfTest
+
+    - name: Addon checks
+      run: ./scripts/check_addon.ps1 -SelfTest
+
+    - name: glibc floor check
+      run: ./scripts/check_glibc_floor.ps1 -SelfTest
+
+    - name: LibVLC provenance check
+      run: ./scripts/check_vlc_provenance.ps1 -SelfTest
+
+  # Formatting only. Clippy needs the crate to compile, and the crate's build
+  # script generates its LibVLC bindings from the staged runtime's vlc.h, so
+  # clippy lives in the platform jobs where that runtime has been staged. It runs
+  # on both platforms on purpose: the crate has Linux-only and Windows-only code
+  # under #[cfg], and linting on one platform never sees the other's.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -22,40 +53,149 @@ jobs:
     - name: Rustfmt Check
       run: cargo fmt --all -- --check
 
+  # Both LibVLC artifacts are produced on Linux. The Windows runtime is a
+  # mingw-w64 cross build from the same container and the same pinned commit:
+  # GitHub's Windows runners have no Docker daemon, and building the two
+  # platforms from two different VLC revisions made any cross-platform behaviour
+  # difference impossible to attribute.
+  #
+  # The artifact is cached on the hash of the build inputs, so bumping
+  # build/vlc/vlc.lock rebuilds it while an unchanged pin does not pay the one
+  # to two hour contrib build on every run.
+  build_vlc_linux64:
+    name: LibVLC (linux-x64)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Restore the LibVLC artifact
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: artifacts
+        key: vlc-linux-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}
+
+    - name: Build the pinned build environment
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: docker build -t godot-vlc/vlc-build build/vlc
+
+    - name: Build LibVLC
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        New-Item -Path artifacts -ItemType Directory -Force | Out-Null
+        docker run --rm -v "$($PWD.Path)/artifacts:/out" godot-vlc/vlc-build linux-x64 /out
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: vlc-linux-x64
+        path: artifacts/vlc-linux-x64.tar.gz
+
+  build_vlc_win64:
+    name: LibVLC (win-x64, mingw cross)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Restore the LibVLC artifact
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: artifacts
+        key: vlc-win-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}
+
+    - name: Build the pinned build environment
+      if: steps.cache.outputs.cache-hit != 'true'
+      # The Windows runtime is cross-compiled from a newer base than the Linux
+      # one, because its mingw-w64 decides only what cross-compiles and nothing
+      # about the artifact's glibc floor: a Windows runtime is PE. mingw-w64 9 on
+      # 22.04 is gcc 10, and packages such as ggml, glslang and libaribcaption do
+      # not compile against it. The default base stays 22.04 so that the Linux
+      # runtime's glibc matches the extension's own baseline.
+      run: docker build --build-arg BASE_IMAGE=ubuntu:24.04 -t godot-vlc/vlc-build-win build/vlc
+
+    - name: Build LibVLC
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        New-Item -Path artifacts -ItemType Directory -Force | Out-Null
+        docker run --rm -v "$($PWD.Path)/artifacts:/out" godot-vlc/vlc-build-win win-x64 /out
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: vlc-win-x64
+        path: artifacts/vlc-win-x64.tar.gz
+
+  build_linux64:
+    needs: [ build_vlc_linux64 ]
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v6
+
+    # Keep this in step with the actions/upload-artifact version used above.
+    - uses: actions/download-artifact@v7
+      with:
+        name: vlc-linux-x64
+        path: artifacts
+
+    - name: Stage the LibVLC runtime
+      run: ./scripts/stage_libvlc.ps1 -Platforms linux-x64 -IncludeTools
+
+    # The addon expects the X11 stack, which scripts/host-provided-libs.txt
+    # justifies on the grounds that the official Godot Linux binary needs it too.
+    # A headless runner has none of it, so one plugin cannot be loaded and the
+    # acceptance test fails for a reason that has nothing to do with the runtime.
+    # Installing the documented host libraries is what makes the runner the host
+    # the manifest assumes; every one of them is present on any machine that can
+    # open a windowed Godot, which is the machine this addon is for.
+    - name: Install the documented host libraries
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends `
+          libxkbcommon-x11-0 libxkbcommon0 libx11-6 libxcb1 libxau6 libxdmcp6 libbsd0 libmd0
+
+    # After staging, because the build script generates its bindings from the
+    # staged runtime's vlc.h. Here rather than in the lint job for that reason,
+    # and here as well as on Windows because the crate's #[cfg] code differs.
     - name: Clippy Check
       run: cargo clippy --workspace --all-targets -- -D warnings
 
-  build_linux64:
-  
-    runs-on: ubuntu-22.04
+    - name: Test
+      run: ./scripts/test.ps1
 
-    steps:
-    - uses: actions/checkout@v6
-    
     - name: Build Debug
       run: ./scripts/build_debug.ps1
-      
+
     - name: Build Release
       run: ./scripts/build_release.ps1
 
+    - name: Assemble the addon
+      run: ./scripts/assemble_addon.ps1 -Platforms linux-x64
+
+    - name: Check the addon is complete and self-contained
+      run: ./scripts/check_addon.ps1 -Platforms linux-x64
+
+    - name: Bound the glibc requirement of the extension and the runtime
+      run: ./scripts/check_glibc_floor.ps1 -Path target/release/libgodot_vlc.so, gdextension_template/bin/linux-x64
+
+    - name: Acceptance test (decode a real H.264 file from the assembled addon)
+      run: ./scripts/acceptance_test.ps1 -Platform linux-x64
+
     - name: Copy Binary
       run: |
-        New-Item -Path "bin/" -ItemType Directory
+        New-Item -Path "bin/" -ItemType Directory -Force | Out-Null
         Copy-Item -Path "target/debug/libgodot_vlc.so" -Destination "bin/libgodot_vlc_debug.so"
         Copy-Item -Path "target/release/libgodot_vlc.so" -Destination "bin/libgodot_vlc.so"
-    
+
     - uses: actions/upload-artifact@v7
       with:
         name: linux64
         path: bin/*
 
   build_win64:
-
+    needs: [ build_vlc_win64 ]
     runs-on: windows-latest
-
     steps:
     - uses: actions/checkout@v6
-    
+
     - name: Install LLVM and Clang # required for bindgen to work, see https://github.com/rust-lang/rust-bindgen/issues/1797
       uses: KyleMayes/install-llvm-action@v2
       with:
@@ -65,20 +205,97 @@ jobs:
     - name: Set LIBCLANG_PATH
       run: echo "LIBCLANG_PATH=$((gcm clang).source -replace "clang.exe")" >> $env:GITHUB_ENV
 
+    # Keep this in step with the actions/upload-artifact version used above.
+    - uses: actions/download-artifact@v7
+      with:
+        name: vlc-win-x64
+        path: artifacts
+
+    - name: Stage the LibVLC runtime
+      run: ./scripts/stage_libvlc.ps1 -Platforms win-x64 -IncludeTools
+
+    # The same check as on Linux, and not redundant with it: the crate has
+    # Windows-only code under #[cfg] that a Linux clippy run never compiles.
+    - name: Clippy Check
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
     - name: Build Debug
       run: ./scripts/build_debug.ps1
-      
+
     - name: Build Release
       run: ./scripts/build_release.ps1
-      
+
+    - name: Assemble the addon
+      run: ./scripts/assemble_addon.ps1 -Platforms win-x64
+
+    - name: Check the addon is complete and self-contained
+      run: ./scripts/check_addon.ps1 -Platforms win-x64
+
+    - name: Acceptance test (decode a real H.264 file from the assembled addon)
+      run: ./scripts/acceptance_test.ps1 -Platform win-x64
+
     - name: Copy Binary
       run: |
-        New-Item -Path "bin/" -ItemType Directory
+        New-Item -Path "bin/" -ItemType Directory -Force | Out-Null
         Copy-Item -Path "target/debug/godot_vlc.dll" -Destination "bin/godot_vlc_debug.dll"
         Copy-Item -Path "target/debug/godot_vlc.pdb" -Destination "bin/godot_vlc_debug.pdb"
         Copy-Item -Path "target/release/godot_vlc.dll" -Destination "bin/godot_vlc.dll"
-    
+
     - uses: actions/upload-artifact@v7
       with:
         name: win64
         path: bin/*
+
+  # The distributable addon contains both platforms, so it can only be assembled
+  # where both are present. This job is also the only place the required
+  # cross-platform gate can run: asserting that two artifacts share a commit and
+  # an ABI needs both of them.
+  package:
+    needs: [ build_vlc_linux64, build_vlc_win64, build_linux64, build_win64 ]
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v7
+      with:
+        name: vlc-linux-x64
+        path: artifacts
+
+    - uses: actions/download-artifact@v7
+      with:
+        name: vlc-win-x64
+        path: artifacts
+
+    - name: Assert both runtimes share a commit and an ABI
+      run: ./scripts/check_vlc_provenance.ps1
+
+    - uses: actions/download-artifact@v7
+      with:
+        name: linux64
+        path: bin/linux
+
+    - uses: actions/download-artifact@v7
+      with:
+        name: win64
+        path: bin/win
+
+    # Put the downloaded binaries where the build would have left them, so that
+    # the assembler and the packaging step see the usual layout.
+    - name: Restore the build output layout
+      run: |
+        New-Item -Path target/release, target/debug -ItemType Directory -Force | Out-Null
+        Copy-Item bin/linux/libgodot_vlc.so        target/release/libgodot_vlc.so
+        Copy-Item bin/linux/libgodot_vlc_debug.so  target/debug/libgodot_vlc.so
+        Copy-Item bin/win/godot_vlc.dll            target/release/godot_vlc.dll
+        Copy-Item bin/win/godot_vlc_debug.dll      target/debug/godot_vlc.dll
+
+    - name: Stage both LibVLC runtimes
+      run: ./scripts/stage_libvlc.ps1
+
+    - name: Assemble, verify and package the addon
+      run: ./scripts/publish.ps1 -SkipBuild
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: godot-vlc-addon
+        path: "*.zip"
