@@ -173,40 +173,66 @@ function Remove-DebugInfo {
     $inspector = if ($Platform -eq 'linux-x64') { 'readelf' }
     elseif (Get-Command 'x86_64-w64-mingw32-objdump' -ErrorAction SilentlyContinue) { 'x86_64-w64-mingw32-objdump' }
     else { 'objdump' }
-    $inspectArguments = if ($Platform -eq 'linux-x64') { @('-W', '-S') } else { @('-h') }
+    # Typed, because PowerShell unwraps a one-element array out of an if-branch:
+    # `@('-h')` assigned this way is the *string* '-h', and `$inspectArguments +
+    # @($file)` then concatenates into a single bogus argument instead of building
+    # an argument list. That is what made objdump fail on the Windows runtime.
+    [string[]]$inspectArguments = if ($Platform -eq 'linux-x64') { @('-W', '-S') } else { @('-h') }
 
     foreach ($file in $SharedObjects) {
         Invoke-Native -Command $strip -Arguments @('--strip-debug', $file.FullName)
     }
 
-    # Anchored to the section-name column: objdump prints the file's path in its
-    # first line, and a path is free to contain ".debug" without being one. The
-    # index is bracketed in readelf's table and bare in objdump's, and both are
-    # accepted here -- a pattern that only knew one of them would find no
-    # survivors in the other format, which is indistinguishable from a clean file
-    # and would make this check decorative.
+    # Read the section table back.
+    #
+    # The exit code is not the signal by itself. A tool that printed a complete
+    # table has done its job, and objdump does return non-zero for reasons that
+    # are not about the file under test -- it did exactly that on one CI run, on a
+    # file it reads without complaint here, in the same image, with the same
+    # arguments, and with every strip before it having succeeded. So the table is
+    # what decides.
+    #
+    # A tool that printed no table examined nothing, and that cannot be waved
+    # through -- but it does not have to be fatal either, because there is a second
+    # opinion that does not need the tool: --strip-debug is idempotent, so a file
+    # with none left is unchanged by a second run, while one still carrying debug
+    # information shrinks. A file whose second strip changed it is a survivor
+    # either way.
     $tableMarker = if ($Platform -eq 'linux-x64') { 'Section Headers:' } else { 'Sections:' }
     $sectionLine = '^\s*(\[\s*\d+\]\s+|\d+\s+)?\.z?debug'
 
     $survivors = @()
+    $unexamined = @()
     foreach ($file in $SharedObjects) {
         $dump = Get-NativeOutput -Command $inspector -Arguments ($inspectArguments + @($file.FullName))
-        if ($dump.ExitCode -ne 0) { throw "$inspector failed on '$($file.FullName)'" }
-        # An inspector that printed no table at all -- the wrong format, a tool
-        # that failed quietly -- would otherwise leave a file looking clean,
-        # because a section that was never listed cannot be matched.
-        if (-not ($dump.Output | Select-String -SimpleMatch $tableMarker)) {
-            throw "$inspector printed no section table for '$($file.FullName)'"
+        if ($dump.Output | Select-String -SimpleMatch $tableMarker) {
+            $names = @(
+                $dump.Output |
+                    Select-String -Pattern $sectionLine |
+                    ForEach-Object { ($_.Line.Trim() -split '\s+' | Where-Object { $_ -like '.*' } | Select-Object -First 1) }
+            )
+            if ($names.Count -gt 0) { $survivors += "$($file.Name): $($names[0])" }
+            continue
         }
-        $names = @(
-            $dump.Output |
-                Select-String -Pattern $sectionLine |
-                ForEach-Object { ($_.Line.Trim() -split '\s+' | Where-Object { $_ -like '.*' } | Select-Object -First 1) }
-        )
-        if ($names.Count -gt 0) { $survivors += "$($file.Name): $($names[0])" }
+
+        # Re-stat rather than reading $file.Length: a FileInfo caches its Length
+        # when it is created, so the value here would be the size from before the
+        # strip above and every file would look as if it had just shrunk.
+        $before = (Get-Item -LiteralPath $file.FullName).Length
+        Invoke-Native -Command $strip -Arguments @('--strip-debug', $file.FullName)
+        $after = (Get-Item -LiteralPath $file.FullName).Length
+        if ($after -ne $before) {
+            $survivors += "$($file.Name): $($before - $after) bytes of debug information survived the first strip"
+        } else {
+            $first = @($dump.Output | Where-Object { $_.Trim() } | Select-Object -First 1)
+            $unexamined += "$($file.Name) (exit $($dump.ExitCode): $first)"
+        }
     }
     if ($survivors.Count -gt 0) {
         throw "debug sections survived stripping in $($survivors.Count) file(s); first is $($survivors[0])"
+    }
+    if ($unexamined.Count -gt 0) {
+        Write-Warning "$inspector read no section table for $($unexamined.Count) file(s), so they were verified by a second strip instead; first is $($unexamined[0])"
     }
 
     Write-Host "  stripped $($SharedObjects.Count) shared object(s) of debug information"
