@@ -157,6 +157,12 @@ Common failures, and what they mean:
   built, so an x86_64 emulator cannot run the addon.
 - The Android runtime and the extension are both built for 16 KB memory pages,
   which Android 15 and later require; a runtime built elsewhere may not be.
+- The bundled runtimes are stripped of debug information. VLC is built with `-g`
+  and nothing removed the result, so the addon used to ship it: 666 MB of the
+  Linux runtime's 798 MB of shared objects and 827 MB of the Windows runtime's
+  1026 MB were `.debug_*` sections, and the packed Linux runtime was 307 MB where
+  the same tree stripped is 53 MB. The trade is that a crash inside LibVLC has no
+  symbols here; `build/vlc/postprocess.ps1` records the reasoning.
 - macOS, Linux arm64 and Windows arm64 are not supported.
 
 

@@ -11,6 +11,12 @@ Godot addon those paths are wrong. Replacing them by hand is what made the
 previous runtime unreproducible, so it is done here, on every build, and then
 checked.
 
+The tree is also stripped of debug information here, because VLC is built with
+-g and DWARF is most of what came out: measured on the artifacts before this
+existed, 666 MB of the Linux tree's 798 MB of shared objects and 827 MB of the
+Windows tree's 1026 MB were debug sections. That is the size users downloaded.
+See Remove-DebugInfo for the reasoning and for what is deliberately left alone.
+
 What the runpaths have to be:
 
   every shipped .so, one $ORIGIN step for each directory it sits below the
@@ -124,6 +130,88 @@ function Assert-Relocatable {
     }
 }
 
+function Remove-DebugInfo {
+    <#
+    .SYNOPSIS
+    Strips the debug sections from every shipped shared object, then asserts none
+    survived.
+
+    .DESCRIPTION
+    VLC is configured with -g, and nothing downstream was removing the result, so
+    the addon shipped it. Measured on the artifacts from before this existed: the
+    Linux tree's 798 MB of shared objects carried 666 MB of .debug_* sections, the
+    Windows tree's 1026 MB carried 827 MB, and the packed Linux tarball was 307 MB
+    where the same tree stripped comes to 53 MB. A game addon is not a debugging
+    symbol package, VLC's own releases are stripped, and the extension beside the
+    runtime is a cargo release build, which carries none either.
+
+    --strip-debug rather than --strip-unneeded, deliberately. The debug sections
+    are the whole of the problem, and leaving the static symbol table in place
+    keeps this change from being the one that surprises somebody: --strip-unneeded
+    also removes symbols a shared object does not need at run time, which is more
+    than this was asked to do.
+
+    Two tools, because one binutils does not read both formats: strip for ELF and
+    the mingw-w64 triplet's strip for PE, which is the same binutils built for
+    that target. The result is read back with the matching objdump/readelf,
+    because a strip that silently did nothing would leave exactly the artifact
+    this exists to prevent -- and scripts/check_addon.ps1 asserts the same
+    property again on the assembled addon.
+    #>
+    param(
+        [Parameter(Mandatory)][ValidateSet('linux-x64', 'win-x64')][string]$Platform,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SharedObjects
+    )
+
+    if ($SharedObjects.Count -eq 0) { throw "no shared objects to strip for $Platform" }
+
+    $strip = if ($Platform -eq 'linux-x64') { 'strip' } else { 'x86_64-w64-mingw32-strip' }
+    if (-not (Get-Command $strip -ErrorAction SilentlyContinue)) { throw "$strip not found" }
+
+    # For PE the triplet's objdump is preferred: the host's objdump is built for
+    # ELF and reports the format rather than the sections.
+    $inspector = if ($Platform -eq 'linux-x64') { 'readelf' }
+    elseif (Get-Command 'x86_64-w64-mingw32-objdump' -ErrorAction SilentlyContinue) { 'x86_64-w64-mingw32-objdump' }
+    else { 'objdump' }
+    $inspectArguments = if ($Platform -eq 'linux-x64') { @('-W', '-S') } else { @('-h') }
+
+    foreach ($file in $SharedObjects) {
+        Invoke-Native -Command $strip -Arguments @('--strip-debug', $file.FullName)
+    }
+
+    # Anchored to the section-name column: objdump prints the file's path in its
+    # first line, and a path is free to contain ".debug" without being one. The
+    # index is bracketed in readelf's table and bare in objdump's, and both are
+    # accepted here -- a pattern that only knew one of them would find no
+    # survivors in the other format, which is indistinguishable from a clean file
+    # and would make this check decorative.
+    $tableMarker = if ($Platform -eq 'linux-x64') { 'Section Headers:' } else { 'Sections:' }
+    $sectionLine = '^\s*(\[\s*\d+\]\s+|\d+\s+)?\.z?debug'
+
+    $survivors = @()
+    foreach ($file in $SharedObjects) {
+        $dump = Get-NativeOutput -Command $inspector -Arguments ($inspectArguments + @($file.FullName))
+        if ($dump.ExitCode -ne 0) { throw "$inspector failed on '$($file.FullName)'" }
+        # An inspector that printed no table at all -- the wrong format, a tool
+        # that failed quietly -- would otherwise leave a file looking clean,
+        # because a section that was never listed cannot be matched.
+        if (-not ($dump.Output | Select-String -SimpleMatch $tableMarker)) {
+            throw "$inspector printed no section table for '$($file.FullName)'"
+        }
+        $names = @(
+            $dump.Output |
+                Select-String -Pattern $sectionLine |
+                ForEach-Object { ($_.Line.Trim() -split '\s+' | Where-Object { $_ -like '.*' } | Select-Object -First 1) }
+        )
+        if ($names.Count -gt 0) { $survivors += "$($file.Name): $($names[0])" }
+    }
+    if ($survivors.Count -gt 0) {
+        throw "debug sections survived stripping in $($survivors.Count) file(s); first is $($survivors[0])"
+    }
+
+    Write-Host "  stripped $($SharedObjects.Count) shared object(s) of debug information"
+}
+
 $lib = Join-Path $Runtime 'lib'
 if (-not (Test-Path -LiteralPath $lib -PathType Container)) { throw "expected '$lib'" }
 
@@ -163,6 +251,9 @@ if ($Platform -eq 'linux-x64') {
     # the same depth, and the helper libraries beside them are at another.
     $runtimeRoot = (Resolve-Path -LiteralPath $Runtime).Path.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
     $linuxObjects = @($plainLibraries + $plugins)
+    # Before the runpaths are patched, so that everything asserted below is what
+    # actually ships.
+    Remove-DebugInfo -Platform 'linux-x64' -SharedObjects $linuxObjects
     foreach ($file in $linuxObjects) {
         $directory = Split-Path -Parent $file.FullName
         if (-not $directory.StartsWith($runtimeRoot, [System.StringComparison]::Ordinal)) {
@@ -223,6 +314,13 @@ if ($Platform -eq 'linux-x64') {
     $elf = @(Get-ChildItem -LiteralPath $lib -Recurse -Force -File |
         Where-Object { $_.Name -like '*.so' -or $_.Name -like '*.so.*' })
     if ($elf.Count -gt 0) { throw "found ELF shared objects in the Windows runtime: $($elf[0].Name)" }
+
+    # The core DLLs sit beside the plugin directory rather than inside it, so the
+    # list the plugins come from is not the whole runtime.
+    Remove-DebugInfo -Platform 'win-x64' -SharedObjects (@(
+            Get-Item -LiteralPath (Join-Path $lib 'libvlccore.dll')
+            Get-Item -LiteralPath (Join-Path $lib 'libvlc.dll')
+        ) + $dlls)
 
     Write-Host "  verified $($dlls.Count) plugin modules"
 }

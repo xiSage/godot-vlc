@@ -49,12 +49,22 @@ Both commands produce `artifacts/vlc-<platform>.tar.gz`:
 
 ```
 include/vlc/**     headers (consumed by build.rs / bindgen)
-lib/**             the shipped runtime
+lib/**             the shipped runtime: runpaths normalised, and debug
+                   information stripped by postprocess.ps1
 libexec/vlc/**     the out-of-process preparser and the plugin cache generator
 share/vlc/**       the Lua playlist parsers and service discovery scripts
 tools/vlc          the CLI, for looking at a runtime by hand, never shipped
 build-info.txt     provenance: commit, ABI version, whether GPL was disabled
 ```
+
+`postprocess.ps1` also strips the debug information out of the tree. VLC is
+configured with `-g` and nothing downstream was removing the result, so the
+artifacts used to carry 666 MB of `.debug_*` sections out of the Linux tree's
+798 MB of shared objects and 827 MB out of the Windows tree's 1026 MB — most of
+what the addon made users download, and none of it needed to run. Why
+`--strip-debug` rather than `--strip-unneeded` is argued in that script, and
+`scripts/check_addon.ps1` asserts the same property on the assembled addon so a
+later build that reintroduced `-g`-built objects cannot pass unnoticed.
 
 `scripts/stage_libvlc.ps1` unpacks it into `thirdparty/vlc/<platform>/`; pass
 `-IncludeTools` to also stage `tools/`, which is for running the runtime by hand.
@@ -254,11 +264,16 @@ not from expectations:
 
 | | linux-x64 | win-x64 |
 |---|---|---|
-| artifact | `vlc-linux-x64.tar.gz`, 307.2 MB | `vlc-win-x64.tar.gz`, 355.3 MB |
+| artifact | `vlc-linux-x64.tar.gz`, 53.4 MB | `vlc-win-x64.tar.gz`, 71.3 MB |
 | plugin modules | 359 | 383 |
 | host dependencies | none: `ldd` over every plugin resolves | none: `objdump` over 388 binaries resolves |
 | decoding | `scripts/acceptance_test.ps1` passes | the libvlc decode test passes |
 | pin | `4.0.0-dev-37536-g546e18e53e`, API 4.0.6 | the same revision and ABI |
+
+The artifact sizes are with the debug information stripped: 307.2 MB and 353.4 MB
+before, and the shared objects they unpack to carried 666 MB and 827 MB of
+`.debug_*` sections. Stripping was measured not to change what the runtime can
+do -- the acceptance test passes against a stripped tree on both platforms.
 
 Solved, and worth recording because the symptom was so misleading:
 

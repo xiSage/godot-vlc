@@ -283,6 +283,17 @@ if [ "$alignment" != "0x4000" ]; then
     fail=1
 fi
 
+# The desktop runtimes shipped DWARF until it was measured, and it was most of
+# what users downloaded: 666 MB of the Linux tree's 798 MB of shared objects and
+# 827 MB of the Windows tree's 1026 MB. ndk-build's release mode strips, so this
+# runtime never carried any -- and this is what would notice if a future NDK
+# stopped doing it, rather than the addon quietly growing by a factor of five.
+if "$toolchain/llvm-readelf" -W -S "$built_lib" |
+    grep -qE '^[[:space:]]*(\[[[:space:]]*[0-9]+\][[:space:]]+)?\.z?debug'; then
+    echo "FAIL: the runtime carries debug sections; the shipped runtime must be stripped" >&2
+    fail=1
+fi
+
 if [ "$fail" != 0 ]; then
     exit 1
 fi
