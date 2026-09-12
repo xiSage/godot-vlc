@@ -13,18 +13,47 @@ Runs the invariant that the previous Linux runtime violated:
 
   2. CLOSURE -- for every shared object in the addon, every dependency must
      resolve, and every resolution must land either inside the addon (and be
-     declared) or in scripts/host-provided-libs.txt (Linux) or
-     scripts/host-provided-dlls.txt (Windows). This is what turns "we believe
-     the runtime is self-contained" into an assertion.
+     declared) or in the host-provided list for that platform:
+
+       Linux    scripts/host-provided-libs.txt
+       Windows  scripts/host-provided-dlls.txt
+       Android  scripts/host-provided-libs-android.txt
+
+     This is what turns "we believe the runtime is self-contained" into an
+     assertion.
+
+The three platforms do not share an inspector, because they do not share a
+binary format or a runtime shape:
+
+  * Windows uses `llvm-objdump -p` (or objdump -p) and the PE import table.
+  * Linux uses ldd, which resolves each dependency through the host loader.
+  * Android uses `llvm-readelf -d` (or readelf -d) and the ELF DT_NEEDED tags.
+
+Android cannot use ldd. The payload is an AArch64 Android ELF and ldd resolves a
+binary by running it: on Windows ldd cannot read the file at all, and on Linux it
+would resolve against the host's glibc, which says nothing about what an Android
+device provides. DT_NEEDED is a static read and is therefore the honest check.
+
+Android also has a different runtime shape, which is why it needs its own
+host-provided list rather than the Linux one: its LibVLC build is monolithic.
+There is one libvlc.so with every module linked into it, no plugins/ directory and
+no libvlccore.so, so the entire closure is a handful of platform libraries on a
+single file plus the one dependency the extension has on the runtime shipped
+beside it.
 
 Both checks refuse to report success when they could not actually run: a missing
-inspector, or a declared directory that yielded no shared objects, is a failure
-rather than a pass. The previous revision of this script reported "0 shared
-objects inspected" and exited 0, because Get-ChildItem -Recurse does not descend
-directory symlinks.
+inspector, a shared object the inspector could not read, or a declared directory
+that yielded no shared objects, is a failure rather than a pass. The previous
+revision of this script reported "0 shared objects inspected" and exited 0,
+because Get-ChildItem -Recurse does not descend directory symlinks.
 
 Run scripts/assemble_addon.ps1 first: this inspects the assembled addon, not the
 source tree, because the assembled addon is what users receive.
+
+.PARAMETER Platforms
+Platforms to check. Defaults to the two desktop platforms; android-arm64 has to
+be requested explicitly, so a machine without the Android payload does not fail
+the desktop gate.
 
 .PARAMETER SelfTest
 Exercises the parsing and comparison logic against synthetic inputs and exits.
@@ -32,12 +61,13 @@ The self-test needs no addon, no inspector and no Linux, so it runs anywhere.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win-x64', 'linux-x64')]
+    [ValidateSet('win-x64', 'linux-x64', 'android-arm64')]
     [string[]]$Platforms = @('win-x64', 'linux-x64'),
 
     [string]$GdextensionPath = 'gdextension_template/godot_vlc.gdextension',
     [string]$HostProvidedListPath = 'scripts/host-provided-libs.txt',
     [string]$HostProvidedDllListPath = 'scripts/host-provided-dlls.txt',
+    [string]$HostProvidedAndroidListPath = 'scripts/host-provided-libs-android.txt',
     [string]$ForbiddenListPath = 'scripts/forbidden-in-addon.txt',
     [string]$AddonPrefix = 'res://addons/godot-vlc/',
 
@@ -108,6 +138,45 @@ function Get-PeImportEntry {
     @($entries)
 }
 
+# Parses `llvm-readelf -d` / `readelf -d` output into { Name, Resolved, Found },
+# the same entry shape Get-LddEntry produces, so Test-DependencyEntries can
+# consume it unchanged.
+#
+# Input shape -- one dynamic-section table, where only the NEEDED rows name a
+# dependency:
+#
+#   Dynamic section at offset 0x3127440 contains 34 entries:
+#     Tag                Type           Name/Value
+#     0x0000000000000001 (NEEDED)       Shared library: [libEGL.so]
+#     0x000000000000000e (SONAME)       Library soname: [libvlc.so]
+#     0x000000000000001e (FLAGS)        SYMBOLIC BIND_NOW
+#     0x0000000000000019 (INIT_ARRAY)   0x312b1e0
+#
+# The literal (NEEDED) tag is matched rather than "any line carrying a bracketed
+# name", because SONAME describes the object itself: taking it for a dependency
+# would make every Android library depend on its own name, and libvlc.so would
+# then have to be justified in the host-provided list to satisfy a check about
+# what the host must supply. FLAGS, RELA, INIT_ARRAY, VERSYM, VERNEED and the
+# rest name no library at all.
+#
+# Every entry comes back with an empty Resolved and Found = $true. That is not a
+# claim that the library was found; it is the same state Get-PeImportEntry
+# produces for a PE import, and it means "cannot be located from here, so it is
+# legitimate only if it is shipped inside the addon or justified in the
+# host-provided list". Neither can be decided here -- an AArch64 Android ELF
+# cannot be resolved by the host's loader -- so the caller supplies that context.
+function Get-ElfNeededEntry {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Output)
+
+    $entries = @()
+    foreach ($line in $Output) {
+        if ($line -match '\(NEEDED\)\s+Shared library:\s*\[(?<name>[^\]]+)\]') {
+            $entries += [pscustomobject]@{ Name = $Matches['name']; Resolved = ''; Found = $true }
+        }
+    }
+    @($entries)
+}
+
 # Rewrites entries whose DLL is shipped inside the addon so that the shared
 # dependency rules apply to them.
 function Resolve-PeImportEntry {
@@ -125,6 +194,54 @@ function Resolve-PeImportEntry {
             $resolved += [pscustomobject]@{
                 Name     = $entry.Name
                 Resolved = "$root/$shipped"
+                Found    = $true
+            }
+        } else {
+            $resolved += $entry
+        }
+    }
+    @($resolved)
+}
+
+# Rewrites the ELF entries that name a library the addon itself ships, so the
+# shared dependency rules apply to them -- the ELF counterpart of
+# Resolve-PeImportEntry.
+#
+# This is what stops the Android extension libraries from being reported as host
+# dependencies. They link the runtime that ships beside them, so
+# libgodot_vlc.so has DT_NEEDED libvlc.so; with every NEEDED name left
+# unresolved, the gate would demand that libvlc.so be justified in
+# host-provided-libs-android.txt, and the only way to silence it would be to
+# declare the shipped runtime a host library. That is precisely the conflation
+# this file exists to prevent: libvlc.so is an addon file, declared in
+# [dependencies] as android.arm64, and the gate has to check it is still
+# packaged and still declared rather than wave it through.
+#
+# Names are compared case-sensitively (-ceq) because the Android loader that will
+# resolve them is case-sensitive; the Windows index lowercases for the mirror
+# reason. $Shipped is an array of { Name, Relative } rather than a lookup table
+# for the same reason: PowerShell's @{} is case-insensitive.
+function Resolve-ElfNeededEntry {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Entries,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Shipped,
+        [Parameter(Mandatory)][string]$AddonRoot
+    )
+
+    $root = $AddonRoot.Replace('\', '/').TrimEnd('/')
+    $resolved = @()
+    foreach ($entry in $Entries) {
+        # Not named $shipped: PowerShell variable names are case-insensitive, so
+        # that would silently overwrite the $Shipped parameter before the loop.
+        $match = $null
+        foreach ($candidate in $Shipped) {
+            if ($candidate.Name -ceq $entry.Name) { $match = $candidate; break }
+        }
+
+        if ($match) {
+            $resolved += [pscustomobject]@{
+                Name     = $entry.Name
+                Resolved = "$root/$($match.Relative)"
                 Found    = $true
             }
         } else {
@@ -400,6 +517,66 @@ function Invoke-SelfTest {
     Assert-Equal 'leaves a system DLL unresolved' '' `
         ($peResolved | Where-Object Name -eq 'KERNEL32.dll').Resolved
 
+    # --- ELF DT_NEEDED (Android) -------------------------------------------
+    # The real shape of `llvm-readelf -d` on the assembled Android runtime,
+    # including every non-library tag the parser has to leave alone. SONAME is
+    # the one that matters: it names the object itself, so treating it as a
+    # dependency would make libvlc.so depend on libvlc.so.
+    $readelf = @(
+        ''
+        'Dynamic section at offset 0x3127440 contains 34 entries:'
+        '  Tag                Type           Name/Value'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libEGL.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libGLESv2.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libm.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [liblog.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libc.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libdl.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libandroid.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libmediandk.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libc++_shared.so]'
+        '  0x000000000000000e (SONAME)       Library soname: [libvlc.so]'
+        '  0x000000000000001e (FLAGS)        SYMBOLIC BIND_NOW '
+        '  0x000000006ffffffb (FLAGS_1)      NOW '
+        '  0x0000000000000007 (RELA)         0x29e4a0'
+        '  0x0000000000000019 (INIT_ARRAY)   0x312b1e0'
+        '  0x0000000000000014 (PLTREL)       RELA'
+        '  0x000000006ffffff0 (VERSYM)       0xdef58'
+        '  0x000000006ffffffe (VERNEED)      0xf1860'
+        '  0x0000000000000000 (NULL)         0x0'
+    )
+    $elf = Get-ElfNeededEntry -Output $readelf
+    Assert-Equal 'parses every DT_NEEDED entry' 9 $elf.Count
+    Assert-Equal 'extracts DT_NEEDED names in order and nothing else' `
+        'libEGL.so | libGLESv2.so | libm.so | liblog.so | libc.so | libdl.so | libandroid.so | libmediandk.so | libc++_shared.so' `
+        ($elf | ForEach-Object Name)
+    Assert-Equal 'ignores SONAME rather than making the object its own dependency' 0 `
+        ($elf | Where-Object Name -eq 'libvlc.so').Count
+    Assert-Equal 'ignores FLAGS, RELA and the other non-library dynamic tags' 0 `
+        ($elf | Where-Object { $_.Name -notlike '*.so' }).Count
+    Assert-Equal 'leaves a NEEDED name unlocated for the caller to attribute' '' $elf[0].Resolved
+
+    # The extension libraries link the runtime shipped beside them, which is the
+    # shape that must not be reported as a host dependency.
+    $extension = Get-ElfNeededEntry -Output @(
+        '  0x0000000000000001 (NEEDED)       Shared library: [libvlc.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libdl.so]'
+        '  0x0000000000000001 (NEEDED)       Shared library: [libc.so]'
+    )
+    $shipped = @([pscustomobject]@{ Name = 'libvlc.so'; Relative = 'bin/android-arm64/libvlc.so' })
+    $extensionResolved = Resolve-ElfNeededEntry -Entries $extension -Shipped $shipped -AddonRoot '/addon'
+    Assert-Equal 'attributes a shipped Android runtime to its path inside the addon' `
+        '/addon/bin/android-arm64/libvlc.so' ($extensionResolved | Where-Object Name -eq 'libvlc.so').Resolved
+    Assert-Equal 'leaves an Android platform library unlocated' '' `
+        ($extensionResolved | Where-Object Name -eq 'libc.so').Resolved
+
+    # Case matters on Android, so a differently-cased shipped name is a
+    # different library and must not be resolved to the addon.
+    $wrongCase = @([pscustomobject]@{ Name = 'LIBVLC.SO'; Relative = 'bin/android-arm64/LIBVLC.SO' })
+    Assert-Equal 'matches a soname case-sensitively' '' `
+        (Resolve-ElfNeededEntry -Entries $extension -Shipped $wrongCase -AddonRoot '/addon' |
+            Where-Object Name -eq 'libvlc.so').Resolved
+
     # --- dependency rules --------------------------------------------------
     $hostPatterns = @('libc.so*', 'libm.so*', 'ld-linux*.so*', 'linux-vdso.so*', 'libxkbcommon-x11.so*')
     $declared = @('bin/linux-x64/libvlccore.so.9', 'bin/linux-x64/vlc')
@@ -431,6 +608,39 @@ function Invoke-SelfTest {
     $libraryLeak = @([pscustomobject]@{ Name = 'libidn.so.12'; Resolved = '/addon/bin/linux-x64/libidn.so.12'; Found = $true })
     Assert-Equal 'rejects a shipped library missing from the manifest' 1 `
         (Test-DependencyEntries -Entries $libraryLeak -AddonRoot '/addon' -DeclaredPaths $declared -HostProvidedPatterns $hostPatterns).Count
+
+    # --- Android host-provided rules ---------------------------------------
+    # The closure of the assembled Android payload: the platform libraries
+    # libvlc.so needs, plus the extension's dependency on the shipped runtime
+    # already attributed to the addon above.
+    $androidNeeded = @($elf) + @($extensionResolved)
+    $androidPatterns = @(
+        'libEGL.so', 'libGLESv2.so', 'libm.so', 'liblog.so', 'libc.so', 'libdl.so',
+        'libandroid.so', 'libmediandk.so', 'libc++_shared.so'
+    )
+    $androidDeclared = @('bin/android-arm64/libvlc.so')
+
+    Assert-Equal 'accepts a platform library the Android runtime is allowed to expect' 0 `
+        (Test-DependencyEntries -Entries $androidNeeded -AddonRoot '/addon' `
+            -DeclaredPaths $androidDeclared -HostProvidedPatterns $androidPatterns).Count
+    Assert-Equal 'accepts the extension linking the runtime it ships beside' 0 `
+        (Test-DependencyEntries -Entries ($extensionResolved | Where-Object Name -eq 'libvlc.so') -AddonRoot '/addon' `
+            -DeclaredPaths $androidDeclared -HostProvidedPatterns @()).Count
+
+    # The reverse verification the platform branch depends on: drop one entry
+    # from scripts/host-provided-libs-android.txt and the gate must report a
+    # violation rather than pass quietly.
+    $androidMissing = $androidPatterns | Where-Object { $_ -ne 'liblog.so' }
+    $androidViolations = @(Test-DependencyEntries -Entries $androidNeeded -AddonRoot '/addon' `
+            -DeclaredPaths $androidDeclared -HostProvidedPatterns $androidMissing `
+            -Source 'bin/android-arm64/libvlc.so')
+    Assert-Equal 'rejects an Android dependency that is neither shipped nor host-provided' 1 $androidViolations.Count
+    Assert-Equal 'names the Android library that lost its justification' `
+        "dependency 'liblog.so' is neither shipped nor in the host-provided list (needed by bin/android-arm64/libvlc.so)" `
+        $androidViolations[0]
+    Assert-Equal 'rejects a shipped Android library missing from the manifest' 1 `
+        (Test-DependencyEntries -Entries $extensionResolved -AddonRoot '/addon' `
+            -DeclaredPaths @() -HostProvidedPatterns $androidPatterns).Count
 
     # --- manifest coverage -------------------------------------------------
     Assert-Equal 'accepts a file under a declared directory' 0 `
@@ -525,8 +735,9 @@ function Read-HostProvidedPatterns {
 }
 
 $hostPatterns = @{
-    'linux-x64' = Read-HostProvidedPatterns -RelativePath $HostProvidedListPath
-    'win-x64'   = Read-HostProvidedPatterns -RelativePath $HostProvidedDllListPath
+    'linux-x64'     = Read-HostProvidedPatterns -RelativePath $HostProvidedListPath
+    'win-x64'       = Read-HostProvidedPatterns -RelativePath $HostProvidedDllListPath
+    'android-arm64' = Read-HostProvidedPatterns -RelativePath $HostProvidedAndroidListPath
 }
 
 $forbiddenPatterns = Read-HostProvidedPatterns -RelativePath $ForbiddenListPath
@@ -536,6 +747,17 @@ $peTool = @('llvm-objdump', 'objdump') |
     ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } |
     Select-Object -First 1
 $lddAvailable = [bool](Get-Command ldd -ErrorAction SilentlyContinue)
+
+# The Android payload is an AArch64 Android ELF, so ldd is not an option: it
+# resolves a binary by running it through the host loader, which cannot read an
+# Android executable at all on Windows and would answer a different question on
+# Linux. Its DT_NEEDED tags are read statically instead. llvm-readelf ships with
+# the NDK and the LLVM toolchains, binutils' readelf is the alternative; if
+# neither is present the Android closure is reported as unverifiable rather than
+# skipped.
+$elfTool = @('llvm-readelf', 'readelf') |
+    ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
 
 $addonRootPosix = $addonRoot.Replace('\', '/')
 $allViolations = @()
@@ -600,7 +822,11 @@ foreach ($platform in $Platforms) {
         } | ForEach-Object { "bin/$platform/$([System.IO.Path]::GetFileName($_))" }
     )
 
-    $pattern = if ($platform -eq 'linux-x64') { '*.so*' } else { '*.dll' }
+    # A platform's shared-object pattern follows its binary format. It is not
+    # decided by whether the tree happens to carry a plugins/ directory: Android
+    # ships neither plugins/ nor libvlccore.so -- its runtime is one monolithic
+    # libvlc.so -- and matching '*.dll' there would enumerate nothing and pass.
+    $pattern = if ($platform -eq 'win-x64') { '*.dll' } else { '*.so*' }
     $sharedObjects = @(
         Get-ChildItem -LiteralPath $platformDir -Recurse -Force -File |
             Where-Object { $_.Name -like $pattern }
@@ -610,6 +836,13 @@ foreach ($platform in $Platforms) {
             "bin/$platform/$($_.FullName.Substring($platformDir.Length + 1).Replace('\', '/'))"
         }
     )
+
+    # A closure check that inspected nothing verified nothing. Test-InspectedCoverage
+    # notices an empty enumeration through a declared directory, and Android has
+    # none: its payload is flat, so this is the guard for that shape.
+    if ($sharedObjects.Count -eq 0) {
+        $allViolations += "${platform}: no shared object matched '$pattern' under bin/$platform, so the dependency closure was not verified"
+    }
 
     $allViolations += Test-InspectedCoverage -DeclaredDirectories $declaredDirectories -InspectedPaths $inspectedPaths -AddonRoot $addonRoot |
         ForEach-Object { "${platform}: $_" }
@@ -629,7 +862,7 @@ foreach ($platform in $Platforms) {
                     ForEach-Object { "${platform}: $_" }
             }
         }
-    } else {
+    } elseif ($platform -eq 'win-x64') {
         if (-not $peTool) {
             $allViolations += "${platform}: neither llvm-objdump nor objdump is available, so the import closure could not be verified"
         } else {
@@ -644,6 +877,48 @@ foreach ($platform in $Platforms) {
                 $entries = Get-PeImportEntry -Output (& $peTool.Source -p $sharedObject.FullName 2>&1)
                 $entries = Resolve-PeImportEntry -Entries $entries -AddonDllIndex $dllIndex -AddonRoot $addonRootPosix
                 $relative = "bin/$platform/$($sharedObject.FullName.Substring($platformDir.Length + 1).Replace('\', '/'))"
+                $allViolations += Test-DependencyEntries -Entries $entries `
+                    -AddonRoot $addonRootPosix `
+                    -DeclaredPaths $declaredPaths `
+                    -HostProvidedPatterns $hostPatterns[$platform] `
+                    -Source $relative |
+                    ForEach-Object { "${platform}: $_" }
+            }
+        }
+    } else {
+        # Android: read DT_NEEDED statically, because the payload cannot be
+        # resolved by the host's loader.
+        if (-not $elfTool) {
+            $allViolations += "${platform}: neither llvm-readelf nor readelf is available, so the DT_NEEDED closure could not be verified"
+        } else {
+            # Index every shared object the addon ships so a NEEDED name the
+            # payload itself satisfies is attributed to the addon.
+            $shippedLibraries = @(
+                foreach ($library in $sharedObjects) {
+                    [pscustomobject]@{
+                        Name     = $library.Name
+                        Relative = "bin/$platform/$($library.FullName.Substring($platformDir.Length + 1).Replace('\', '/'))"
+                    }
+                }
+            )
+
+            foreach ($sharedObject in $sharedObjects) {
+                $relative = "bin/$platform/$($sharedObject.FullName.Substring($platformDir.Length + 1).Replace('\', '/'))"
+                $raw = @(& $elfTool.Source -d $sharedObject.FullName 2>&1)
+
+                # Distinguishes "this object needs nothing" from "the reader could
+                # not read it": the latter parses to zero entries just as
+                # silently, and a silent zero is the failure mode this whole
+                # script exists to prevent. Matched case-sensitively, because
+                # readelf's "There is no dynamic section in this file" carries the
+                # same two words.
+                if (-not ($raw -cmatch 'Dynamic section')) {
+                    $allViolations += "${platform}: $relative has no readable dynamic section (read with '$($elfTool.Name)'), so its DT_NEEDED closure was not verified"
+                }
+
+                $entries = Get-ElfNeededEntry -Output $raw
+                $entries = Resolve-ElfNeededEntry -Entries $entries -Shipped $shippedLibraries -AddonRoot $addonRootPosix
+                Write-Verbose "  $relative`: $($entries.Count) DT_NEEDED entry(ies) via '$($elfTool.Name)'"
                 $allViolations += Test-DependencyEntries -Entries $entries `
                     -AddonRoot $addonRootPosix `
                     -DeclaredPaths $declaredPaths `

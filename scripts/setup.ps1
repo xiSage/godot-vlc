@@ -218,6 +218,47 @@ function Invoke-Check {
         }
     }
 
+    # Android needs a second toolchain, none of which the desktop runtimes use. The
+    # NDK is a separate download from the Android SDK, and it has to be the Linux
+    # one: the NDK ships one prebuilt toolchain per host, and the Windows download
+    # contains only windows-x86_64, which the container the runtime is built in
+    # cannot execute. All three rows are optional -- they matter only when building
+    # for Android -- so a missing one is reported rather than treated as a fault.
+    $ndkRoot = if ($env:ANDROID_NDK_HOME) { $env:ANDROID_NDK_HOME }
+    elseif ($env:ANDROID_NDK_ROOT) { $env:ANDROID_NDK_ROOT }
+    else { $null }
+    $ndkRevision = $null
+    if ($ndkRoot -and (Test-Path -LiteralPath (Join-Path $ndkRoot 'source.properties'))) {
+        foreach ($line in Get-Content -LiteralPath (Join-Path $ndkRoot 'source.properties')) {
+            if ($line -match '^Pkg\.Revision\s*=\s*(.+)$') { $ndkRevision = $Matches[1].Trim() }
+        }
+    }
+    # Two different NDKs matter, and neither substitutes for the other.
+    # Cross-compiling the extension needs this host's prebuilt toolchain; the
+    # runtime is built in a container that fetches its own Linux NDK, so nothing
+    # on this machine has to be a Linux one. The row reports what this host can
+    # actually use.
+    $ndkHostTag = if ($IsWindows) { 'windows-x86_64' } else { 'linux-x86_64' }
+    $ndkForHost = [bool]($ndkRoot -and (Test-Path -LiteralPath (Join-Path $ndkRoot "toolchains/llvm/prebuilt/$ndkHostTag")))
+    $ndkShown = if ($ndkRevision) { "$ndkRevision ($ndkRoot)" } else { $ndkRoot }
+    if ($ndkRoot -and -not $ndkForHost) { $ndkShown = "$ndkRoot (no $ndkHostTag toolchain)" }
+    Add-Row -Name 'Android NDK' -Found $ndkForHost -Version $ndkShown -IsRequired $false `
+        -Advice 'set ANDROID_NDK_HOME to an NDK r28 or r29 to build the extension for Android; the runtime is built in a container, which fetches its own NDK'
+
+    $rustTargets = @(& rustup target list --installed 2>$null)
+    Add-Row -Name 'rust android target' -Found ($rustTargets -contains 'aarch64-linux-android') -Version $null -IsRequired $false `
+        -Advice 'run rustup target add aarch64-linux-android from the repository, so the pinned toolchain gets it'
+
+    # The path, not a version. GNU readelf prints its licence alongside its
+    # version, so picking a line by the word "version" picks the licence; and
+    # which binary answers is the useful fact, since the gate prefers
+    # llvm-readelf and falls back to readelf.
+    $readelfPath = if (Test-Tool 'llvm-readelf') { (Get-Command 'llvm-readelf').Source }
+    elseif (Test-Tool 'readelf') { (Get-Command 'readelf').Source }
+    else { $null }
+    Add-Row -Name 'readelf' -Found ([bool]$readelfPath) -Version $readelfPath -IsRequired $false `
+        -Advice 'install LLVM (llvm-readelf) or binutils (readelf); the Android half of the dependency gate reads DT_NEEDED with it'
+
     # Godot's Windows builds ship two executables, and the GUI one detaches from
     # the console so its stdout cannot be captured. The console variant is the one
     # to ask; a candidate that exists but will not answer is still reported as
@@ -248,6 +289,14 @@ function Invoke-Check {
         Write-Host ''
         Write-Host "  note: demo/project.godot records Godot $demoGodot and this machine has $godotVersion."
         Write-Host '        The demo is meant to follow the newest Godot; opening it will update that field.'
+    }
+
+    if ($ndkForHost) {
+        Write-Host ''
+        Write-Host '  The Android runtime is a separate build from the desktop ones:'
+        Write-Host '      docker build -f build/vlc-android/Dockerfile -t godot-vlc/vlc-android-build build'
+        Write-Host '      docker run --rm -v "$PWD/artifacts:/out" godot-vlc/vlc-android-build arm64-v8a /out'
+        Write-Host '      pwsh scripts/stage_libvlc.ps1 -Platforms android-arm64'
     }
 
     if ($LinuxTarget) {

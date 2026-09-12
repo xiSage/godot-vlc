@@ -4,7 +4,8 @@ Unpacks the self-compiled LibVLC runtime into thirdparty/vlc/<platform>/.
 
 .DESCRIPTION
 This script performs no network access. It consumes the artifact produced by
-build/vlc/ and unpacks it into the layout build.rs expects:
+build/vlc/ (or build/vlc-android/) and unpacks it into the layout build.rs
+expects:
 
     thirdparty/vlc/<platform>/include/vlc/**
     thirdparty/vlc/<platform>/lib/**
@@ -15,27 +16,27 @@ libexec and share are runtime rather than build-time: the first holds the
 out-of-process preparser and the plugin cache generator, the second the Lua
 scripts. Without them every plugin still loads and no interface can start.
 
-tools/ (the vlc CLI) is not unpacked unless asked for. It is not what ships and
-not what the acceptance test uses -- that drives libvlc directly, from
-src/acceptance.rs -- so it is here for looking at a runtime by hand.
-
-Provenance is not compared here. scripts/check_vlc_provenance.ps1 reads the
-artifacts directly, because CI stages one platform per job and a check needing
-both staged in one run never executed.
+The Android runtime, which build/vlc-android/ produces, has neither. It is
+monolithic -- every module linked into libvlc.so -- so there is no plugin tree to
+find in a directory, no preparser to run out of process, and its data path is
+compiled in as /system/usr/share. It ships include/ and lib/ and nothing else.
 
 .PARAMETER Platforms
-Which platforms to stage. Defaults to both.
+Which platforms to stage. Defaults to the two desktop ones; the Android runtime is
+named explicitly, because it is built by a separate job and its artifact is not
+present in every checkout.
 
 .PARAMETER ArtifactsDir
 Directory holding vlc-<platform>.tar.gz, relative to the repository root.
 
 .PARAMETER IncludeTools
 Also unpack tools/ (the vlc CLI), for running a runtime by hand. It never reaches
-an addon: assemble_addon.ps1 only copies what the manifest declares.
+an addon: assemble_addon.ps1 only copies what the manifest declares. The Android
+runtime ships no CLI, so this is ignored for it.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win-x64', 'linux-x64')]
+    [ValidateSet('win-x64', 'linux-x64', 'android-arm64')]
     [string[]]$Platforms = @('win-x64', 'linux-x64'),
 
     [string]$ArtifactsDir = 'artifacts',
@@ -68,9 +69,11 @@ foreach ($platform in $Platforms) {
     # bsdtar (shipped with Windows 10+) and GNU tar both accept this form.
     # libexec and share are runtime, not build-time: libexec carries the preparser
     # and plugin cache generator, share carries the Lua scripts. A runtime without
-    # them loads every plugin and still cannot start an interface.
-    $members = @('include', 'lib', 'libexec', 'share')
-    if ($IncludeTools) { $members += 'tools' }
+    # them loads every plugin and still cannot start an interface. The Android
+    # runtime has neither and is unpacked as what it is.
+    $isAndroid = $platform -like 'android-*'
+    $members = if ($isAndroid) { @('include', 'lib') } else { @('include', 'lib', 'libexec', 'share') }
+    if ($IncludeTools -and -not $isAndroid) { $members += 'tools' }
     tar -xzf $artifactPath -C $targetDir @members
     if ($LASTEXITCODE -ne 0) {
         throw "failed to unpack '$artifactName' (tar exited with $LASTEXITCODE)"
@@ -84,13 +87,20 @@ foreach ($platform in $Platforms) {
     if (-not (Test-Path -LiteralPath $libCheck) -or @(Get-ChildItem -LiteralPath $libCheck -Force).Count -eq 0) {
         throw "'$artifactName' does not contain a populated lib/ directory."
     }
-    $libexecCheck = Join-Path $targetDir 'libexec/vlc'
-    if (-not (Test-Path -LiteralPath $libexecCheck -PathType Container)) {
-        throw "'$artifactName' does not contain libexec/vlc; the runtime could not start an interface."
-    }
-    $shareCheck = Join-Path $targetDir 'share/vlc'
-    if (-not (Test-Path -LiteralPath $shareCheck -PathType Container)) {
-        throw "'$artifactName' does not contain share/vlc; the Lua-based modules would be missing."
+    if ($isAndroid) {
+        $libraryCheck = Join-Path $targetDir 'lib/libvlc.so'
+        if (-not (Test-Path -LiteralPath $libraryCheck -PathType Leaf)) {
+            throw "'$artifactName' does not contain lib/libvlc.so; a monolithic runtime is exactly that one file."
+        }
+    } else {
+        $libexecCheck = Join-Path $targetDir 'libexec/vlc'
+        if (-not (Test-Path -LiteralPath $libexecCheck -PathType Container)) {
+            throw "'$artifactName' does not contain libexec/vlc; the runtime could not start an interface."
+        }
+        $shareCheck = Join-Path $targetDir 'share/vlc'
+        if (-not (Test-Path -LiteralPath $shareCheck -PathType Container)) {
+            throw "'$artifactName' does not contain share/vlc; the Lua-based modules would be missing."
+        }
     }
 
     # Read build-info.txt straight out of the tarball so that it is never

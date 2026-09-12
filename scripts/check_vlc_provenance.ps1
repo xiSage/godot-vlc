@@ -4,25 +4,32 @@ Asserts that every LibVLC artifact was built from the same pinned revision and
 reports the same plugin ABI.
 
 .DESCRIPTION
-The two platforms used to be built from two different VLC snapshots, which made
-any cross-platform behaviour difference impossible to attribute. The plugin ABI
+The platforms used to be built from different VLC snapshots, which made any
+cross-platform behaviour difference impossible to attribute. The plugin ABI
 check inside LibVLC is an exact string compare with no compatibility range, so a
 runtime whose plugins and core disagree simply refuses to load those plugins.
 
-The comparison lives here rather than inside stage_libvlc.ps1 because staging
-happens one platform per CI job, so a check that needs both platforms staged
-never ran at all. This script reads the artifacts directly, so it works wherever
-both artifacts are present.
+Three artifacts are produced now: the two desktop runtimes and the Android one.
+The Android runtime is monolithic -- every module linked into libvlc.so -- so it
+reports no separate core ABI. What every platform must agree on is the engine
+commit and the plugin ABI string, and that is what is compared here.
 
-.PARAMETER ArtifactsDir
-Directory holding vlc-<platform>.tar.gz, relative to the repository root.
+The comparison lives here rather than inside stage_libvlc.ps1 because staging
+happens one platform per CI job, so a check that needs them all staged never ran
+at all. This script reads the artifacts directly, so it works wherever the
+artifacts are present.
+
+.PARAMETER Platforms
+Which artifacts to compare. Defaults to the two desktop platforms: a named
+artifact that is missing is an error rather than a skip, so asking for the
+Android runtime is a statement that it should be there.
 
 .PARAMETER SelfTest
 Exercises the comparison against synthetic provenance and exits.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win-x64', 'linux-x64')]
+    [ValidateSet('win-x64', 'linux-x64', 'android-arm64')]
     [string[]]$Platforms = @('win-x64', 'linux-x64'),
 
     [string]$ArtifactsDir = 'artifacts',
@@ -119,6 +126,25 @@ if ($SelfTest) {
     Assert-Equal 'a single artifact has nothing to compare' 0 `
         (Test-Provenance -Provenance @{ 'win-x64' = @{ vlc_commit = 'abc' } } -Fields @('vlc_commit')).Count
 
+    # Three platforms, one of them the Android runtime: monolithic, so it carries
+    # no separate core ABI, and it still has to agree on the engine commit and the
+    # plugin ABI string.
+    $three = @{
+        'win-x64'       = @{ vlc_commit = 'abc'; vlc_api_version_string = '4.0.6' }
+        'linux-x64'     = @{ vlc_commit = 'abc'; vlc_api_version_string = '4.0.6' }
+        'android-arm64' = @{ vlc_commit = 'abc'; vlc_api_version_string = '4.0.6' }
+    }
+    Assert-Equal 'accepts three agreeing artifacts' 0 `
+        (Test-Provenance -Provenance $three -Fields @('vlc_commit', 'vlc_api_version_string')).Count
+
+    $threeAbiMismatch = @{
+        'win-x64'       = @{ vlc_commit = 'abc'; vlc_api_version_string = '4.0.6' }
+        'linux-x64'     = @{ vlc_commit = 'abc'; vlc_api_version_string = '4.0.6' }
+        'android-arm64' = @{ vlc_commit = 'abc'; vlc_api_version_string = '4.0.5' }
+    }
+    Assert-Equal 'rejects an ABI mismatch on any one platform' 1 `
+        (Test-Provenance -Provenance $threeAbiMismatch -Fields @('vlc_commit', 'vlc_api_version_string')).Count
+
     if ($script:failures -ne 0) {
         Write-Host "self-test: $($script:failures) case(s) failed" -ForegroundColor Red
         exit 1
@@ -153,7 +179,7 @@ $violations = Test-Provenance -Provenance $provenance -Fields @('vlc_commit', 'v
 if ($violations.Count -gt 0) {
     Write-Host 'FAILED:' -ForegroundColor Red
     $violations | ForEach-Object { Write-Host "  - $_" }
-    Write-Host 'Rebuild both platforms from the same pin.'
+    Write-Host 'Rebuild every platform from the same pin.'
     exit 1
 }
 

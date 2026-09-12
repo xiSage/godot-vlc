@@ -1,0 +1,95 @@
+# Libraries the shipped Android runtime is allowed to expect from the platform.
+#
+# The rule is the one encoded for Linux in host-provided-libs.txt and for Windows
+# in host-provided-dlls.txt: every library a shipped shared object needs must
+# either be shipped inside the addon, or be listed here because the platform
+# guarantees it.
+#
+# Android has its own list rather than sharing the Linux one, because the runtime
+# it ships is a different shape. The Android build is monolithic: one libvlc.so
+# with every module linked into it, no plugins/ directory and no libvlccore.so.
+# The whole closure is therefore nine DT_NEEDED tags on one file -- plus the
+# extension's single dependency on the runtime that ships beside it, which is an
+# addon file and so is not listed below.
+#
+# This list is not guesswork. It is the union of the DT_NEEDED tags actually
+# present in the assembled payload, read with
+#
+#   readelf -d gdextension_template/bin/android-arm64/libvlc.so            | grep NEEDED
+#   readelf -d gdextension_template/bin/android-arm64/libgodot_vlc.so      | grep NEEDED
+#   readelf -d gdextension_template/bin/android-arm64/libgodot_vlc_debug.so | grep NEEDED
+#
+#   libvlc.so (ELF64, Machine AArch64), 9 tags:
+#     libEGL.so libGLESv2.so libm.so liblog.so libc.so libdl.so libandroid.so
+#     libmediandk.so libc++_shared.so
+#   libgodot_vlc.so and libgodot_vlc_debug.so, 3 tags each:
+#     libvlc.so libdl.so libc.so
+#
+# ldd is deliberately not used to produce that list, and scripts/check_addon.ps1
+# does not use it for this platform either. ldd answers "what does this binary
+# resolve to on THIS machine", which it does by running the binary's loader: on
+# Windows it cannot open an Android ELF at all, and on Linux it would resolve an
+# AArch64 Android object against the host's glibc and report the wrong libraries.
+# DT_NEEDED read out of the dynamic section is a static answer to the question
+# that actually matters, which is "what does the device have to provide".
+#
+# Patterns are globs matched with PowerShell's -like against the DT_NEEDED name.
+# They are spelled exactly, without the trailing '*' the Linux list uses: a
+# DT_NEEDED entry is a fixed string baked into the shipped .so at link time, not
+# a soname that a distribution is free to version differently.
+
+# Bionic libc and the NDK's support libraries. Every Android release provides
+# these; they are the platform, not an addon dependency.
+libc.so
+libm.so
+libdl.so
+liblog.so
+
+# Android platform libraries, all present as stubs in the NDK sysroot for
+# aarch64-linux-android at API 21, which is the floor Godot 4 itself supports
+# (checked in <ndk>/toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/lib/
+# aarch64-linux-android/21/):
+#
+#   libandroid.so   -- native window and asset APIs (ANativeWindow, AAsset)
+#   libmediandk.so  -- AMediaCodec / AMediaFormat, used by the Android media
+#                      stack modules inside the monolithic runtime
+#   libEGL.so       -- the platform EGL implementation, asked for by the GL
+#                      video output even though the extension renders through
+#                      libvlc's callbacks
+#   libGLESv2.so    -- the platform OpenGL ES 2 entry points those modules call
+libandroid.so
+libmediandk.so
+libEGL.so
+libGLESv2.so
+
+# The NDK's shared C++ runtime. This addon does not ship it and must not: the
+# Android .so files here are built with the NDK's libc++, and Godot's own export
+# template already carries the runtime for the ABI.
+#
+# Verified rather than assumed. Godot's template AAR contains
+#
+#   jni/arm64-v8a/libc++_shared.so   1253544 bytes
+#
+# (demo/android/build/libs/release/godot-lib.template_release.aar), and the
+# exported APK contains the same file at
+#
+#   lib/arm64-v8a/libc++_shared.so   1253544 bytes
+#
+# (demo/android/build/build/outputs/apk/standard/debug/android_debug.apk). Godot's
+# Android export copies the AAR's jni/<abi>/*.so into the APK's lib/<abi>/, which
+# is the directory the Android loader searches, so libc++_shared.so is present
+# beside libvlc.so on the device. Shipping a second copy would only risk two
+# libc++ instances in one process.
+libc++_shared.so
+
+# NOT listed, deliberately: libvlc.so.
+#
+# It is the runtime this addon ships, declared in [dependencies] as
+# android.arm64 -> res://addons/godot-vlc/bin/android-arm64/libvlc.so, so it is
+# an addon file. The extension libraries link it (DT_NEEDED libvlc.so in both
+# libgodot_vlc.so and libgodot_vlc_debug.so) and scripts/check_addon.ps1
+# attributes that name to the addon through the shipped-library index rather than
+# to the platform. Listing it here would let the gate accept a payload whose
+# runtime had stopped being packaged, which is the exact failure this check
+# exists to catch: in the package layout the runtime must sit beside the
+# extension, not be inherited from the system.
