@@ -9,22 +9,29 @@
 #
 #   llvm-objdump -p <plugin>.dll | Select-String '^DLL Name:'
 #
-# Over all 407 plugin DLLs the only import satisfied from inside the runtime was
+# Over all 383 plugin DLLs the only import satisfied from inside the runtime was
 # libvlccore.dll; everything else was one of the names below.
 #
-# Deliberately NOT listed, because they are toolchain runtimes rather than
-# Windows components and therefore MUST ship inside the addon:
+# Deliberately NOT listed, and deliberately NOT shipped either:
 #
-#   libgcc_s_seh-1.dll
+#   libgcc_s_seh-1.dll, libstdc++-6.dll, libwinpthread-1.dll
 #
-# A mingw-built runtime imports it (libx265_plugin, the srt access plugins and
-# libgme_plugin all do) and no Windows installation provides it. Leaving it out
-# of the package is the exact failure this project already hit on Linux, where
-# plugin modules depended on libraries that were never shipped. It is declared
-# in the gdextension manifest instead, so the assembler refuses to build a
-# package that omits it.
+# Those are toolchain runtimes rather than Windows components, so no Windows
+# installation provides them, and LibVLC could not load a plugin that imported one
+# even if the addon carried it: it opens every plugin with
+# LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32) (src/win32/plugin.c),
+# which searches a plugin's dependencies in System32 and nowhere else -- not the
+# application directory, not the plugin's own directory, and not PATH. The mingw
+# build used to link the runtime dynamically and libgme_plugin.dll failed with
+# error 126 for exactly that reason, while the DLL sat beside the core.
+#
+# The Windows build therefore links the runtime statically
+# (LDFLAGS='-static-libgcc -static-libstdc++' in build/vlc/build.ps1), and the
+# measurement above holds with none of them appearing at all. If one ever appears,
+# the closure check reports it here rather than letting it ship.
 #
 # Matching is case-insensitive, as Windows DLL resolution is.
+#
 
 # Microsoft Visual C++ runtime and the Universal CRT API sets. These come from
 # the Rust extension binaries rather than from VLC; every Windows 10 or newer,

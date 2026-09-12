@@ -14,7 +14,8 @@
 # VLC_COMMIT_OVERRIDE=<sha> when running build.ps1, which is also what the
 # failure message suggests.
 #
-# Consumed by build/vlc/build.ps1 (shell) and .github/workflows/build.yml.
+# Consumed by build/vlc/build.ps1, which reads the keys below. The CI workflow
+# only hashes this file into its artifact cache key; it does not read the values.
 # Keep the key=value format: it is grepped, not parsed by a real parser.
 
 VLC_REPO=https://code.videolan.org/videolan/vlc.git

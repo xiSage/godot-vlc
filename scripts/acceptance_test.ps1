@@ -29,7 +29,7 @@ and looks for plugins beside itself rather than beside the runtime. None of that
 concerns a library, and all of it disappeared when the test moved to this one.
 
 Requires:
-    scripts/stage_libvlc.ps1 -IncludeTools
+    scripts/stage_libvlc.ps1
     scripts/assemble_addon.ps1
 
 .PARAMETER Platform

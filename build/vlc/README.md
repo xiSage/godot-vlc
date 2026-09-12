@@ -50,14 +50,17 @@ Both commands produce `artifacts/vlc-<platform>.tar.gz`:
 ```
 include/vlc/**     headers (consumed by build.rs / bindgen)
 lib/**             the shipped runtime
-tools/vlc          the CLI, used only by the acceptance test, never shipped
+libexec/vlc/**     the out-of-process preparser and the plugin cache generator
+share/vlc/**       the Lua playlist parsers and service discovery scripts
+tools/vlc          the CLI, for looking at a runtime by hand, never shipped
 build-info.txt     provenance: commit, ABI version, whether GPL was disabled
 ```
 
-`scripts/stage_libvlc.ps1` unpacks it into `thirdparty/vlc/<platform>/{include,lib}`;
-pass `-IncludeTools` to also stage `tools/`, which the acceptance test needs.
-`tools/` is deliberately never copied into the include/lib tree, so the CLI can
-never reach an addon.
+`scripts/stage_libvlc.ps1` unpacks it into `thirdparty/vlc/<platform>/`; pass
+`-IncludeTools` to also stage `tools/`, which is for running the runtime by hand.
+Nothing that is not shipped is copied into the addon: `assemble_addon.ps1` copies
+what the `.gdextension` manifest declares, and `libexec/` and `share/vlc` are
+declared because VLC cannot start an interface without them.
 
 The contrib build is the slow part; upstream quotes one to two hours for the
 full set, and it is the `make -C contrib` step rather than `contrib/bootstrap`,
@@ -98,9 +101,10 @@ The benefit over a default build is that the plugin tree contains no viral GPL
 modules, so there is no need to explain to users of a commercial Godot project
 which GPL plugins were bundled.
 
-`--disable-vlc` is deliberately *not* passed. The `vlc` CLI is the cheapest
-headless acceptance test available and it is staged under `tools/`. It is a test
-artifact, not a delivered one.
+`--disable-vlc` is deliberately *not* passed. The `vlc` CLI is the cheapest way to
+look at a runtime by hand when the acceptance test reports something, and it is
+staged under `tools/`. It is a diagnostic artifact, not a delivered one, and not
+what the acceptance test uses.
 
 ## The glibc floor
 
@@ -138,7 +142,8 @@ whole runtime rather than only the extension.
 
 ## Known limitations
 
-The front half of this pipeline has been executed for real; the rest has not.
+Every stage of this pipeline has been executed for real, on both platforms, from
+the pinned revision.
 
 Established by running it:
 
