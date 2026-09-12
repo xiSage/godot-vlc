@@ -22,6 +22,16 @@ VLC_REPO=https://code.videolan.org/videolan/vlc.git
 VLC_COMMIT=546e18e53e
 VLC_FALLBACK_COMMIT=853c0f19
 
+# The Android runtime is not built by this directory: VLC's own Android build
+# system turns the same engine into a monolithic libvlc.so, and that build
+# system is a second input with a revision of its own. Pinned here for the same
+# reason as the engine, and consumed by build/vlc-android/build.sh.
+#
+# This is libvlcjni, which is the part of the vlc-android project that produces
+# libvlc.so; the application repository around it is not used at all.
+LIBVLCJNI_REPO=https://code.videolan.org/videolan/libvlcjni.git
+LIBVLCJNI_COMMIT=a8d53a9151d7e4a9a5dfd0a5eb1cd92669afdc21
+
 # VLC_API_VERSION_STRING, read from include/vlc_plugin.h.
 # A plugin and its core must report the exact same string or the plugin is
 # rejected at dlopen time ("unsupported version"), so a mismatched runtime is not
