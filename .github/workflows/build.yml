@@ -7,8 +7,9 @@ defaults:
 on:
   push:
     # build_workflow is listed so that this branch is actually validated; drop it
-    # once the branch is merged.
-    branches: [ "master", "build_workflow" ]
+    # once the branch is merged. android is listed for the same reason: it is
+    # where the Android runtime and the extension's Android target are built.
+    branches: [ "master", "build_workflow", "android" ]
   pull_request:
     branches: [ "master" ]
   # So the pipeline can be re-run from the Actions tab without adding a commit.
@@ -123,6 +124,43 @@ jobs:
       with:
         name: vlc-win-x64
         path: artifacts/vlc-win-x64.tar.gz
+
+  # The Android runtime comes from a different build system from the two desktop
+  # ones: VLC's own Android build system, driving the NDK into a single
+  # monolithic libvlc.so. It is a job of its own rather than a matrix entry, and
+  # the container supplies the toolchain exactly as it does for the desktop
+  # runtimes -- which is also why it is Linux-only.
+  #
+  # Cached on the same inputs as the desktop artifacts, plus the revision of the
+  # Android build system, so an unchanged pin does not pay for the contrib build
+  # again.
+  build_vlc_android_arm64:
+    name: LibVLC (android-arm64)
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Restore the LibVLC artifact
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: artifacts
+        key: vlc-android-arm64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc-android/Dockerfile', 'build/vlc-android/build.sh') }}
+
+    - name: Build the pinned build environment
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: docker build -f build/vlc-android/Dockerfile -t godot-vlc/vlc-android-build build
+
+    - name: Build LibVLC
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        New-Item -Path artifacts -ItemType Directory -Force | Out-Null
+        docker run --rm -v "$($PWD.Path)/artifacts:/out" godot-vlc/vlc-android-build arm64-v8a /out
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: vlc-android-arm64
+        path: artifacts/vlc-android-arm64.tar.gz
 
   build_linux64:
     needs: [ build_vlc_linux64 ]
