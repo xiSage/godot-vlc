@@ -18,13 +18,65 @@
 */
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let target = env::var("TARGET").unwrap();
     let mut include_dir = "";
+    let mut clang_args: Vec<String> = Vec::new();
 
-    if target.contains("windows") && target.contains("x86_64") {
+    // Android is tested first and on its own. Its triple is
+    // aarch64-linux-android, which also contains "linux", so the Linux branch
+    // below would otherwise match and link an Android build against the desktop
+    // runtime -- a mismatch that builds cleanly and fails at load time.
+    if target.contains("android") {
+        if !target.contains("aarch64") {
+            panic!(
+                "only the arm64 Android target has a staged runtime: expected an \
+                 'aarch64' triple, got '{target}'. Stage thirdparty/vlc/android-<arch>/ \
+                 and add the branch here before building for it."
+            );
+        }
+        println!("cargo:rustc-link-search=./thirdparty/vlc/android-arm64/lib");
+        include_dir = "thirdparty/vlc/android-arm64/include";
+
+        // bindgen runs clang, and clang has to be told what it is compiling for.
+        // Without a sysroot it reaches for the host's C library headers and stops
+        // at the first `#include <stdio.h>` in vlc/libvlc.h, which reads as if the
+        // VLC headers were broken. The NDK carries that sysroot, in a prebuilt
+        // directory named after the host, so the NDK has to be pointed at.
+        //
+        // This mirrors what the rest of the build already needs: LIBCLANG_PATH
+        // for bindgen and the NDK's compilers for the code the extension links.
+        let ndk = env::var("ANDROID_NDK_HOME")
+            .or_else(|_| env::var("ANDROID_NDK_ROOT"))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "set ANDROID_NDK_HOME (or ANDROID_NDK_ROOT) to the Android NDK: \
+                     the bindings are generated against its sysroot"
+                )
+            });
+        let host = env::var("HOST").unwrap();
+        let host_tag = if host.contains("windows") {
+            "windows-x86_64"
+        } else if host.contains("darwin") {
+            "darwin-x86_64"
+        } else {
+            "linux-x86_64"
+        };
+        let sysroot = Path::new(&ndk)
+            .join("toolchains/llvm/prebuilt")
+            .join(host_tag)
+            .join("sysroot");
+        assert!(
+            sysroot.is_dir(),
+            "{} is not a directory, so ANDROID_NDK_HOME does not name an Android NDK",
+            sysroot.display()
+        );
+
+        clang_args.push(format!("--target={target}"));
+        clang_args.push(format!("--sysroot={}", sysroot.display()));
+    } else if target.contains("windows") && target.contains("x86_64") {
         println!("cargo:rustc-link-search=./thirdparty/vlc/win-x64/lib");
         include_dir = "thirdparty/vlc/win-x64/include";
     } else if target.contains("linux") && target.contains("x86_64") {
@@ -37,6 +89,7 @@ fn main() {
     let bindings = bindgen::Builder::default()
         .header(format!("{}/vlc/vlc.h", include_dir))
         .clang_arg(format!("-I{}", include_dir))
+        .clang_args(clang_args)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate_cstr(true)
         .disable_header_comment()

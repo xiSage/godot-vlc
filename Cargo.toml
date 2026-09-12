@@ -30,6 +30,15 @@ windows = { version = "0.62", optional = true, features = [
   "Win32_System_Threading",
 ] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# Used to set HOME before libvlc_new. LibVLC's Android platform layer derives its
+# user data, cache and config directories from $HOME, and falls back to a
+# hardcoded /sdcard/Android/data/org.videolan.vlc when it is unset -- another
+# application's directory, which this process is not allowed to write. libc is
+# used for the same reason as on Linux: LibVLC reads the environment through the
+# C library, and mutating it through Rust's own API is unsafe.
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Used to set VLC_LIB_PATH before libvlc_new. libc::setenv is called rather than
 # std::env::set_var because mutating the environment through Rust's API is
