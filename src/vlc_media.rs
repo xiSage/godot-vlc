@@ -150,7 +150,7 @@ impl VlcMedia {
     /// # Parameters
     /// - [param path] the path to the media file.
     #[func]
-    fn load_from_file(path: GString) -> Gd<Self> {
+    pub fn load_from_file(path: GString) -> Gd<Self> {
         let mut path = Box::new(path);
         let media_ptr = unsafe {
             libvlc_media_new_callbacks(

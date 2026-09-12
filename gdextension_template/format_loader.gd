@@ -34,5 +34,15 @@ func _load(path: String, _original_path: String, _use_sub_threads: bool, _cache_
 	if f == null:
 		return ERR_CANT_OPEN
 	f.close()
-	var resource := VLCMedia.load_from_file(path)
-	return resource
+
+	# Reached through the engine singleton rather than as `VLCMedia.load_from_file`:
+	# this script is parsed while the project is imported, which happens before a
+	# GDExtension has registered any of its classes. Naming the class here is a
+	# parse error, and a parse error is not local to this function -- it takes the
+	# whole custom loader out of the exported project, so every media file fails to
+	# load as an unrecognised resource and a scene that references one cannot start.
+	var vlc := Engine.get_singleton(&"VLCInstance")
+	if vlc == null:
+		push_error("godot-vlc: VLCInstance is missing, so media inside res:// cannot be loaded")
+		return ERR_UNAVAILABLE
+	return vlc.call(&"load_media_file", path)
