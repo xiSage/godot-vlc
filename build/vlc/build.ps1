@@ -195,12 +195,42 @@ function Copy-Tree {
     <#
     .SYNOPSIS
     Copies the contents of one directory into another, hidden entries included.
+
+    .DESCRIPTION
+    Symbolic links are recreated as links, not followed. Copy-Item copies what a
+    link points at, so lib/vlc's SONAME chains -- libvlc.so -> libvlc.so.12 ->
+    libvlc.so.12.0.0 -- arrived as three full copies of the same library. The
+    Linux artifact carried libvlccore.so.9.0.0 three times over, and a runtime is
+    exactly where the chain matters: the dynamic loader resolves a DT_NEEDED
+    through it, and the arm that is linked is the one with the versioned name.
+
+    Directories are walked rather than handed to Copy-Item -Recurse for the same
+    reason, since that recurses through links too.
     #>
     param([Parameter(Mandatory)][string]$From, [Parameter(Mandatory)][string]$To)
 
     New-Item -Path $To -ItemType Directory -Force | Out-Null
     foreach ($item in Get-ChildItem -LiteralPath $From -Force) {
-        Copy-Item -LiteralPath $item.FullName -Destination $To -Recurse -Force
+        $destination = Join-Path $To $item.Name
+
+        # Before the container check: a link to a directory reports itself as a
+        # container, and recursing into it is what must not happen.
+        if ($item.LinkTarget) {
+            if (Test-Path -LiteralPath $destination) {
+                # Not -Recurse: a link is one entry, and recursing through a
+                # directory link would delete what it points at.
+                Remove-Item -LiteralPath $destination -Force
+            }
+            New-Item -ItemType SymbolicLink -Path $destination -Target $item.LinkTarget -Force | Out-Null
+            continue
+        }
+
+        if ($item.PSIsContainer) {
+            Copy-Tree -From $item.FullName -To $destination
+            continue
+        }
+
+        Copy-Item -LiteralPath $item.FullName -Destination $destination -Force
     }
 }
 
@@ -392,6 +422,24 @@ if ($Platform -eq 'linux-x64') {
     Copy-Tree -From $stagedInclude -To (Join-Path $runtime 'include/vlc')
     if (Test-Path -LiteralPath $stagedBin -PathType Container) {
         Copy-Tree -From $stagedBin -To (Join-Path $runtime 'tools')
+    }
+
+    # The SONAME chains must arrive as links. Copy-Item follows a link and copies
+    # what it points at, which flattened libvlc.so -> libvlc.so.12 ->
+    # libvlc.so.12.0.0 into three copies of the same library and did the same for
+    # libvlccore and for the helper libraries under lib/vlc. The loader resolves a
+    # DT_NEEDED through the chain, so the arms are not interchangeable furniture:
+    # they are how a linked library is found. Counting files would not notice the
+    # difference, so this looks for the links themselves.
+    foreach ($name in @('libvlc.so', "libvlc.so.$($lock['VLC_ABI_MAJOR'])",
+                        'libvlccore.so', "libvlccore.so.$($lock['VLC_CORE_ABI_MAJOR'])")) {
+        $item = Get-Item -LiteralPath (Join-Path $runtime "lib/$name") -Force -ErrorAction SilentlyContinue
+        if (-not $item) {
+            throw "expected '$name' in the runtime's lib/ after staging"
+        }
+        if (-not $item.LinkTarget) {
+            throw "'$name' arrived as a regular file, so the staging flattened the SONAME chain into copies; Copy-Tree must recreate links rather than follow them"
+        }
     }
 
     # Build-only artifacts.
