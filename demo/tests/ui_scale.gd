@@ -45,25 +45,29 @@ func _init() -> void:
 		_expect_vector("insets for %s" % case[0],
 			Vector2(UiScale.safe_insets(case[1], case[2])), Vector2(case[3]))
 
-	# Inset in units plus the padding: 90 px at 3x is 30 units.
-	_expect_vector("the panel offset at 3x",
-		UiScale.panel_offset_for(Vector2i(90, 0), 3.0),
-		Vector2(30.0 + UiScale.SAFE_AREA_PADDING, 0.0 + UiScale.SAFE_AREA_PADDING))
+	# Only the width caps the scale: the frame scrolls vertically, so a panel taller
+	# than the screen is expected rather than something to shrink away from.
+	var phone_width := 1080.0 - 160.0
+	_expect_float("a phone is wide enough for the panel at its density's scale",
+		UiScale.fit_to_width(3.0, 201.0, phone_width), 3.0)
+	_expect_float("a window narrower than the panel caps the scale",
+		UiScale.fit_to_width(3.0, 201.0, 320.0), 320.0 / 201.0)
+	_expect_float("a desktop window does not cap the scale",
+		UiScale.fit_to_width(1.0, 201.0, 1280.0), 1.0)
 
-	# A phone on its side is shorter than the panel is tall at the scale its density
-	# asked for, so the scale is capped to what the screen leaves after the cutout.
-	var landscape := UiScale.fit_to_window(3.0, Vector2(201, 423), Vector2(2720, 1204))
-	_expect_float("the scale fitted to a phone in landscape", landscape, 1204.0 / 423.0)
-
-	# And a desktop window is roomy enough that fitting changes nothing.
-	_expect_float("the scale fitted to a desktop window",
-		UiScale.fit_to_window(1.0, Vector2(201, 423), Vector2(1280, 800)), 1.0)
+	# The frame: a notched phone in portrait, at 3x, with a 201-unit panel. The
+	# 90 px notch is 30 units of a 3x screen, and the padding sits outside that.
+	var frame := UiScale.frame_rect_for(Vector2i(0, 90), Vector2i(1080, 2400), 201.0, 3.0)
+	_expect_vector("the frame's corner, in units",
+		frame.position, Vector2(0.0 + UiScale.SAFE_AREA_PADDING, 30.0 + UiScale.SAFE_AREA_PADDING))
+	_expect_vector("the frame is as wide as the panel and as tall as what is left",
+		frame.size, Vector2(201.0, (2400.0 - 90.0) / 3.0 - UiScale.SAFE_AREA_PADDING * 2.0))
 
 	if _failures > 0:
 		quit(1)
 		return
 
-	print("ui_scale: OK (%d cases)" % (SCALE_CASES.size() + INSET_CASES.size() + 3))
+	print("ui_scale: OK (%d cases)" % (SCALE_CASES.size() + INSET_CASES.size() + 5))
 	quit(0)
 
 
