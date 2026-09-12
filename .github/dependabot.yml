@@ -1,0 +1,85 @@
+# Dependency updates.
+#
+# Kept in the repository rather than in the settings UI so that the choice of
+# ecosystem, interval and grouping is reviewable, and so that changing it arrives
+# as a diff like any other change.
+#
+# What is watched, and why:
+#
+#   cargo          - Cargo.toml and Cargo.lock: the crate's own dependencies and
+#                    the build script's, which together decide what the extension
+#                    links against and which vlc.h the bindings are generated
+#                    from.
+#   github-actions - the action versions in .github/workflows/build.yml. They are
+#                    pinned for the same reason everything else here is: an
+#                    action that changes under the pipeline changes the pipeline.
+#   rust-toolchain - the channel rust-toolchain.toml pins. That pin is deliberate,
+#                    but it has to move eventually, and this is the mechanism that
+#                    proposes the move: the pull request runs the same CI as any
+#                    other, so the toolchain is only bumped once rustfmt and
+#                    clippy under `-D warnings` have agreed to it.
+#
+# What is deliberately not watched:
+#
+#   docker          - build/vlc/Dockerfile. Its base image is the one input that
+#                     may not be bumped freely: it sets the glibc floor of both
+#                     the Linux extension and the Linux runtime, and that floor
+#                     must not exceed the one the official Godot Linux binaries
+#                     need. Moving it is a deliberate change with a measurement
+#                     attached (scripts/check_glibc_floor.ps1), not a dependency
+#                     bump. The image's other pins -- meson, pwsh, and the VLC
+#                     revision in vlc.lock -- are inputs to the same reasoning and
+#                     are not visible to Dependabot at all.
+#   pre-commit      - .pre-commit-config.yaml defines `repo: local` hooks only, so
+#                     there is no remote repository to update.
+#   gradle          - the Gradle files under demo/android are Godot's export
+#                     template, written on export and untracked, as is android/.
+#                     A fresh clone contains neither.
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Raise the requirement in Cargo.toml to the version that is actually used
+    # rather than leaving a range that the lockfile quietly exceeds. Every other
+    # input this repository depends on is pinned in that spirit.
+    versioning-strategy: "increase"
+    # A release is not adopted on the day it lands; a week is enough time for a
+    # broken or yanked one to be withdrawn first. Security updates are never
+    # delayed by this.
+    cooldown:
+      default-days: 7
+    groups:
+      # Patch releases are grouped because they are read the same way and CI says
+      # the same thing about all of them. Minor releases are not: every
+      # dependency here is a 0.x crate, where a minor release is allowed to break
+      # the API, so each one gets its own pull request and its own reason.
+      cargo-patches:
+        patterns: ["*"]
+        update-types: ["patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      # One pull request for the whole set: the versions are major tags, so an
+      # update is always a major one, and a pipeline is easier to judge when all
+      # of its changes are in front of the reviewer at once. The workflow runs on
+      # the pull request, so the pipeline validates the bump itself.
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "rust-toolchain"
+    directory: "/"
+    schedule:
+      # Monthly rather than weekly. The toolchain is a build input whose
+      # consequences -- new lints under `-D warnings` -- are worth meeting one at
+      # a time rather than in a queue.
+      interval: "monthly"
+    cooldown:
+      default-days: 7
