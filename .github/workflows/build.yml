@@ -292,8 +292,9 @@ jobs:
   # needs the device. What CI can do is everything up to it -- build the extension
   # with the NDK, assemble the addon, and put it through the gate.
   #
-  # Nothing consumes this artifact yet. The distributable addon still contains the
-  # two desktop platforms, and adding Android to it is a separate decision.
+  # Nothing consumes this artifact yet, and that is deliberate: the package job
+  # assembles the addon for every platform the release supports, and Android joins
+  # it there.
   build_android64:
     needs: [ build_vlc_android_arm64 ]
     runs-on: ubuntu-22.04
@@ -382,12 +383,12 @@ jobs:
         name: android64
         path: bin/*
 
-  # The distributable addon contains both platforms, so it can only be assembled
-  # where both are present. This job is also the only place the required
-  # cross-platform gate can run: asserting that two artifacts share a commit and
-  # an ABI needs both of them.
+  # The distributable addon contains all three platforms, so it can only be
+  # assembled where all three are present. This job is also the only place the
+  # required cross-platform gate can run: asserting that the artifacts share a
+  # commit and an ABI needs all of them in hand.
   package:
-    needs: [ build_vlc_linux64, build_vlc_win64, build_linux64, build_win64 ]
+    needs: [ build_vlc_linux64, build_vlc_win64, build_vlc_android_arm64, build_linux64, build_win64, build_android64 ]
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v7
@@ -402,8 +403,13 @@ jobs:
         name: vlc-win-x64
         path: artifacts
 
-    - name: Assert both runtimes share a commit and an ABI
-      run: ./scripts/check_vlc_provenance.ps1
+    - uses: actions/download-artifact@v8
+      with:
+        name: vlc-android-arm64
+        path: artifacts
+
+    - name: Assert every runtime shares a commit and an ABI
+      run: ./scripts/check_vlc_provenance.ps1 -Platforms win-x64,linux-x64,android-arm64
 
     - uses: actions/download-artifact@v8
       with:
@@ -415,21 +421,31 @@ jobs:
         name: win64
         path: bin/win
 
+    - uses: actions/download-artifact@v8
+      with:
+        name: android64
+        path: bin/android
+
     # Put the downloaded binaries where the build would have left them, so that
-    # the assembler and the packaging step see the usual layout.
+    # the assembler and the packaging step see the usual layout. The Android
+    # extension is a cross build, so it lands under the target triple rather than
+    # beside the two host builds.
     - name: Restore the build output layout
       run: |
         New-Item -Path target/release, target/debug -ItemType Directory -Force | Out-Null
+        New-Item -Path target/aarch64-linux-android/release, target/aarch64-linux-android/debug -ItemType Directory -Force | Out-Null
         Copy-Item bin/linux/libgodot_vlc.so        target/release/libgodot_vlc.so
         Copy-Item bin/linux/libgodot_vlc_debug.so  target/debug/libgodot_vlc.so
         Copy-Item bin/win/godot_vlc.dll            target/release/godot_vlc.dll
         Copy-Item bin/win/godot_vlc_debug.dll      target/debug/godot_vlc.dll
+        Copy-Item bin/android/libgodot_vlc.so       target/aarch64-linux-android/release/libgodot_vlc.so
+        Copy-Item bin/android/libgodot_vlc_debug.so target/aarch64-linux-android/debug/libgodot_vlc.so
 
-    - name: Stage both LibVLC runtimes
-      run: ./scripts/stage_libvlc.ps1
+    - name: Stage every LibVLC runtime
+      run: ./scripts/stage_libvlc.ps1 -Platforms win-x64,linux-x64,android-arm64
 
     - name: Assemble, verify and package the addon
-      run: ./scripts/publish.ps1 -SkipBuild
+      run: ./scripts/publish.ps1 -SkipBuild -Platforms win-x64,linux-x64,android-arm64
 
     - uses: actions/upload-artifact@v7
       with:

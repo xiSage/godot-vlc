@@ -11,12 +11,14 @@ runtime is missing or incomplete installs cleanly and then fails at runtime with
 "Codec not supported", so the checks are part of publishing rather than an
 optional extra.
 
-Both platforms must have been staged first:
-    scripts/stage_libvlc.ps1
+Every platform in the release must have been staged first:
+    scripts/stage_libvlc.ps1 -Platforms win-x64,linux-x64,android-arm64
 
 .PARAMETER Platforms
-Platforms to include. Defaults to both, because a release that supports Windows
-and Linux needs both runtimes.
+Platforms to include. Defaults to all three, because a release that supports
+Windows, Linux and Android needs all three runtimes. A platform that is not there
+is an error rather than a quiet omission, so a checkout that means to publish less
+has to name what it means.
 
 .PARAMETER SkipBuild
 Skip the cargo builds and package what is already in target/. Used by CI, where
@@ -24,8 +26,8 @@ the per-platform build jobs have already produced the binaries.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win-x64', 'linux-x64')]
-    [string[]]$Platforms = @('win-x64', 'linux-x64'),
+    [ValidateSet('win-x64', 'linux-x64', 'android-arm64')]
+    [string[]]$Platforms = @('win-x64', 'linux-x64', 'android-arm64'),
 
     [switch]$SkipBuild
 )
