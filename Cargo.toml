@@ -2,6 +2,12 @@
 name = "godot-vlc"
 version = "1.2.0"
 edition = "2024"
+# The oldest compiler this crate builds with. Derived rather than guessed: the
+# highest requirement in the source is slice::as_chunks, stable since 1.88.0
+# (read from the standard library's own rustdoc), and that is above the 1.85.0
+# that edition 2024 needs. It is deliberately lower than what rust-toolchain.toml
+# pins, which is the compiler CI and contributors actually use.
+rust-version = "1.88"
 build = "build.rs"
 
 [lib]
