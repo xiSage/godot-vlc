@@ -24,10 +24,15 @@ that silently shipped neither, and both have been missing at least once.
 It runs where the device is, which is never CI, so it is a developer's check
 rather than a pipeline step.
 
-Known rough edge: adb's server process can hold this script's output pipe open, so
-a wrapper that captures its output (a CI step, an editor task, another shell) may
-sit there after the verdict has been printed. The work is done at that point; run
-it from a terminal, or read the verdict and the log it leaves behind.
+Known rough edge: adb's server is a daemon that can hold on to the handles of
+whatever started it, so a caller that *captures* this script's output can sit there
+after the verdict has been printed. The work is done at that point. The server is
+started detached below, which removes the usual reason for it; a caller that wants
+to be certain should redirect to a file rather than capture, which leaves nothing of
+its own for a daemon to hold:
+
+    Start-Process pwsh -ArgumentList '-File','scripts/acceptance_test_android.ps1' `
+        -RedirectStandardOutput run.log -RedirectStandardError run.err
 
 Three things about this flow are easy to get wrong, so the script does them
 rather than documenting them for the caller:
