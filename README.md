@@ -57,7 +57,10 @@ pwsh scripts/setup.ps1 stage     # fetch the artifact CI built, or use a local o
 # up what it produced in artifacts/
 pwsh scripts/setup.ps1 libvlc
 
-pwsh scripts/setup.ps1 build     # compile the extension, debug and release
+pwsh scripts/setup.ps1 debug     # compile the extension, debug only
+pwsh scripts/setup.ps1 release   # release only
+pwsh scripts/setup.ps1 build     # both, which is what addon needs: the manifest
+                                 # declares the debug and release libraries
 pwsh scripts/setup.ps1 test      # unit tests
 pwsh scripts/setup.ps1 addon     # assemble the addon, then run the gates
 pwsh scripts/setup.ps1 accept    # decode a real H.264 file through the addon

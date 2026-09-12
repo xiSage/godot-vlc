@@ -38,7 +38,11 @@ Prerequisites it deliberately does not install:
     check    report this machine's prerequisites and stop
     stage    obtain the runtime into thirdparty/ (default, with check)
     libvlc   build the runtime in a container (explicit; one to two hours)
-    build    compile the extension, debug and release
+    debug    compile the extension, debug only
+    release  compile the extension, release only
+    build    compile both, which is what addon needs: the manifest declares the
+             debug and release libraries, so assemble_addon.ps1 refuses to run
+             with only one of them present
     test     run the unit tests
     addon    assemble the addon and run the gates over it
     accept   decode a real H.264 file through the assembled addon
@@ -58,7 +62,7 @@ lints before CI does.
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('check', 'stage', 'libvlc', 'build', 'test', 'addon', 'accept', 'reset')]
+    [ValidateSet('check', 'stage', 'libvlc', 'debug', 'release', 'build', 'test', 'addon', 'accept', 'reset')]
     [string]$Action,
 
     [switch]$SkipFetch,
@@ -367,6 +371,8 @@ switch ($Action) {
     'check' { Invoke-Check }
     'stage' { Invoke-Stage }
     'libvlc' { Invoke-LibVlc }
+    'debug' { Invoke-RepoScript -Script 'build_debug.ps1' -ScriptArguments @() }
+    'release' { Invoke-RepoScript -Script 'build_release.ps1' -ScriptArguments @() }
     'build' {
         Invoke-RepoScript -Script 'build_debug.ps1' -ScriptArguments @()
         Invoke-RepoScript -Script 'build_release.ps1' -ScriptArguments @()
