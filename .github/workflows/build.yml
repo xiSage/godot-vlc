@@ -367,7 +367,9 @@ jobs:
     # if a later revision stopped.
     - name: Check the extension is 16 KB aligned
       run: |
-        $alignment = llvm-readelf -l target/release/libgodot_vlc.so |
+        $library = 'target/aarch64-linux-android/release/libgodot_vlc.so'
+        if (-not (Test-Path -LiteralPath $library)) { throw "$library is missing; the release build did not produce it" }
+        $alignment = llvm-readelf -l $library |
           Select-String ' LOAD ' | ForEach-Object { ($_.Line -split '\s+')[-1] } | Sort-Object -Unique
         if ($alignment -ne '0x4000') { throw "LOAD alignment is '$alignment', expected 0x4000 (16 KB)" }
         Write-Host 'the extension is 16 KB aligned'
