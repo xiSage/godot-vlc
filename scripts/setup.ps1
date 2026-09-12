@@ -152,10 +152,19 @@ function Invoke-Check {
     $required = [System.Collections.Generic.List[object]]::new()
     $optional = [System.Collections.Generic.List[object]]::new()
 
+    # Existence and version are separate facts. A tool can be installed and still
+    # refuse to report a version -- Godot's GUI executable detaches from the
+    # console and prints nothing that can be captured -- and deciding "missing"
+    # from empty output is how this reported an installed Godot as not found.
     function Add-Row {
-        param([string]$Name, [string]$Version, [bool]$IsRequired, [string]$Advice)
-        $row = [pscustomobject]@{ Name = $Name; Version = $Version; Advice = $Advice }
+        param([string]$Name, [bool]$Found, [string]$Version, [bool]$IsRequired, [string]$Advice)
+        $row = [pscustomobject]@{ Name = $Name; Found = $Found; Version = $Version; Advice = $Advice }
         if ($IsRequired) { $required.Add($row) } else { $optional.Add($row) }
+    }
+
+    function Test-Tool {
+        param([string]$Command)
+        [bool](Get-Command $Command -ErrorAction SilentlyContinue)
     }
 
     $cargo = Get-CommandVersion -Command 'cargo' -VersionArguments @('--version')
@@ -164,60 +173,80 @@ function Invoke-Check {
     # reads the second word as a [TOOLCHAIN] argument and fails with "invalid
     # toolchain name: 'clippy'".
     $rustAdvice = if ($pinned) { "install the pinned toolchain: rustup toolchain install $pinned --component rustfmt --component clippy" } else { 'install Rust from https://rustup.rs' }
-    Add-Row -Name 'cargo' -Version $cargo -IsRequired $true -Advice $rustAdvice
+    Add-Row -Name 'cargo' -Found (Test-Tool 'cargo') -Version $cargo -IsRequired $true -Advice $rustAdvice
     if ($cargo -and $pinned) {
         $active = Get-CommandVersion -Command 'rustc' -VersionArguments @('--version')
         if ($active -and $active -notlike "*$pinned*") {
             $optional.Add([pscustomobject]@{
                     Name    = 'rust toolchain'
+                    Found   = $true
                     Version = "$active (rust-toolchain.toml pins $pinned)"
                     Advice  = "rustup toolchain install $pinned --component rustfmt --component clippy"
                 })
         }
     }
 
-    Add-Row -Name 'libclang (LIBCLANG_PATH)' -Version $env:LIBCLANG_PATH -IsRequired $true `
+    Add-Row -Name 'libclang (LIBCLANG_PATH)' -Found ([bool]$env:LIBCLANG_PATH) -Version $env:LIBCLANG_PATH -IsRequired $true `
         -Advice 'install LLVM and set LIBCLANG_PATH to the directory holding libclang; bindgen needs it'
 
     if ($platform -eq 'win-x64') {
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
         $vs = if (Test-Path -LiteralPath $vswhere) { (& $vswhere -latest -property installationVersion 2>$null) } else { $null }
-        Add-Row -Name 'MSVC' -Version $vs -IsRequired $true -Advice 'install Visual Studio with the C++ workload'
+        Add-Row -Name 'MSVC' -Found ([bool]$vs) -Version $vs -IsRequired $true -Advice 'install Visual Studio with the C++ workload'
     }
 
-    Add-Row -Name 'tar' -Version (Get-CommandVersion -Command 'tar' -VersionArguments @('--version')) `
+    Add-Row -Name 'tar' -Found (Test-Tool 'tar') -Version (Get-CommandVersion -Command 'tar' -VersionArguments @('--version')) `
         -IsRequired $true -Advice 'tar is needed to unpack the runtime artifact'
-    Add-Row -Name 'objdump' -Version ((Get-CommandVersion -Command 'llvm-objdump' -VersionArguments @('--version') -Match 'version') ??
+    Add-Row -Name 'objdump' -Found ((Test-Tool 'llvm-objdump') -or (Test-Tool 'objdump')) `
+        -Version ((Get-CommandVersion -Command 'llvm-objdump' -VersionArguments @('--version') -Match 'version') ??
         (Get-CommandVersion -Command 'objdump' -VersionArguments @('--version') -Match 'version')) `
         -IsRequired $true -Advice 'install LLVM (llvm-objdump) or binutils (objdump); the dependency gate reads imported libraries with it'
 
-    Add-Row -Name 'docker' -Version (Get-CommandVersion -Command 'docker' -VersionArguments @('--version')) `
+    Add-Row -Name 'docker' -Found (Test-Tool 'docker') -Version (Get-CommandVersion -Command 'docker' -VersionArguments @('--version')) `
         -IsRequired $false -Advice 'only needed for setup.ps1 libvlc, which builds the runtime in a container'
-    Add-Row -Name 'gh' -Version (Get-CommandVersion -Command 'gh' -VersionArguments @('--version')) `
+    Add-Row -Name 'gh' -Found (Test-Tool 'gh') -Version (Get-CommandVersion -Command 'gh' -VersionArguments @('--version')) `
         -IsRequired $false -Advice 'only needed to download the runtime artifact from CI'
-    if (Get-Command 'gh' -ErrorAction SilentlyContinue) {
+    if (Test-Tool 'gh') {
         & gh auth status *> $null
         if ($LASTEXITCODE -ne 0) {
-            $optional.Add([pscustomobject]@{ Name = 'gh auth'; Version = 'not logged in'; Advice = 'run gh auth login to download the runtime artifact' })
+            $optional.Add([pscustomobject]@{
+                    Name    = 'gh auth'
+                    Found   = $true
+                    Version = 'installed, not logged in'
+                    Advice  = 'run gh auth login to download the runtime artifact'
+                })
         }
     }
 
-    $godot = Get-CommandVersion -Command 'godot' -VersionArguments @('--version')
-    Add-Row -Name 'Godot' -Version $godot -IsRequired $false `
+    # Godot's Windows builds ship two executables, and the GUI one detaches from
+    # the console so its stdout cannot be captured. The console variant is the one
+    # to ask; a candidate that exists but will not answer is still reported as
+    # present, because "no version" and "not installed" are different facts.
+    $godotVersion = $null
+    $godotPresent = $false
+    foreach ($candidate in @('godot_console', 'godot', 'godot4')) {
+        if (-not (Test-Tool $candidate)) { continue }
+        $godotPresent = $true
+        $probed = Get-CommandVersion -Command $candidate -VersionArguments @('--version')
+        if ($probed) { $godotVersion = $probed; break }
+    }
+    Add-Row -Name 'Godot' -Found $godotPresent -Version $godotVersion -IsRequired $false `
         -Advice 'only needed to open demo/; building and the acceptance test do not use the engine'
 
     Write-Host ''
     Write-Host "setup: this machine ($platform)"
     foreach ($row in ($required + $optional)) {
-        $mark = if ($row.Version) { 'ok  ' } elseif ($required.Contains($row)) { 'MISS' } else { '--  ' }
-        $shown = if ($row.Version) { $row.Version } else { 'not found' }
+        $mark = if ($row.Found) { 'ok  ' } elseif ($required.Contains($row)) { 'MISS' } else { '--  ' }
+        $shown = if ($row.Version) { $row.Version }
+        elseif ($row.Found) { 'present; version not readable' }
+        else { 'not found' }
         Write-Host ("  {0} {1,-24} {2}" -f $mark, $row.Name, $shown)
     }
 
     $demoGodot = Get-DemoGodotVersion
-    if ($godot -and $demoGodot -and $godot -notlike "$demoGodot*") {
+    if ($godotVersion -and $demoGodot -and $godotVersion -notlike "$demoGodot*") {
         Write-Host ''
-        Write-Host "  note: demo/project.godot records Godot $demoGodot and this machine has $godot."
+        Write-Host "  note: demo/project.godot records Godot $demoGodot and this machine has $godotVersion."
         Write-Host '        The demo is meant to follow the newest Godot; opening it will update that field.'
     }
 
@@ -234,7 +263,7 @@ function Invoke-Check {
         }
     }
 
-    $missing = @($required | Where-Object { -not $_.Version })
+    $missing = @($required | Where-Object { -not $_.Found })
     if ($missing.Count -gt 0) {
         Write-Host ''
         Write-Host "setup: cannot proceed; $($missing.Count) required tool(s) are missing:" -ForegroundColor Red
