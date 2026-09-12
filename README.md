@@ -3,7 +3,8 @@
 # godot-vlc
 [![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgodotengine.org%2Fasset-library%2Fapi%2Fasset%2F3766&query=%24.version_string&logo=godotengine&label=asset%20library&labelColor=333639)](https://godotengine.org/asset-library/asset/3766)
 
-VLC extension for Godot. Supports Godot 4.3 and newer. Supports Windows and Linux.
+VLC extension for Godot. Supports Godot 4.3 and newer. Supports Windows, Linux and
+Android.
 ## How to use
 Put media files into `res://` and they will be loaded as `VLCMedia`. Then you can play them with `VLCMediaPlayer` node.
 
@@ -20,12 +21,22 @@ There are some other features, such as subtitles and chapters, can be accessed t
 |---|---|
 | Windows x64 | supported |
 | Linux x64 | supported; requires glibc 2.35 or newer |
-| macOS, Linux arm64, Windows arm64 | not supported |
+| Android arm64 (`arm64-v8a`) | supported; requires Android 7.0 (API 24) or newer |
+| macOS, Linux arm64, Windows arm64, Android armeabi-v7a and x86_64 | not supported |
 
 Nothing has to be installed on the user's machine: the addon ships its own
 LibVLC and does not use a system VLC. The Linux requirement above comes from how
 the extension is built, not from a choice in the code; the bound is recorded in
 `build/vlc/glibc-baseline.txt` and enforced by `scripts/check_glibc_floor.ps1`.
+
+The Android runtime differs from the two desktop ones in ways that are visible
+from a game: it is a single monolithic `libvlc.so` with every module linked into
+it, because Android will not load a plugin tree out of an application's assets,
+so there is no `libvlccore.so` and no `plugins/` directory to go with it. Video
+reaches Godot through the software `vmem` output -- frames are decoded to memory
+and uploaded to a texture -- because LibVLC 4 has no Android engine for the
+output-callbacks API the Windows GPU path uses. Everything under `res://` is
+handed to LibVLC as an in-memory buffer, so no media is ever unpacked to disk.
 
 ## Building from source
 
@@ -67,6 +78,25 @@ pwsh scripts/setup.ps1 accept    # decode a real H.264 file through the addon
 pwsh scripts/setup.ps1 reset     # delete the generated directories
 ```
 
+The Android runtime is a separate build, because VLC's Android build system is
+not the one in `build/vlc/`: it drives the NDK into a single monolithic
+`libvlc.so` instead of autotools into a modular tree. It runs in its own
+container, the same way the desktop ones do.
+
+```sh
+docker build -f build/vlc-android/Dockerfile -t godot-vlc/vlc-android-build build
+docker run --rm -v "$PWD/artifacts:/out" godot-vlc/vlc-android-build arm64-v8a /out
+
+pwsh scripts/stage_libvlc.ps1 -Platforms android-arm64
+```
+
+`build/vlc-android/README.md` explains what that build has to do differently from
+upstream, and why: the runtime VideoLAN publishes has no dummy vout window module
+and no licence this repository can ship. Building the *extension* for Android also
+needs the NDK (r28 or r29, the Linux one) and
+`rustup target add aarch64-linux-android`; `scripts/host-provided-libs-android.txt`
+records which libraries Android itself is expected to supply.
+
 Fetching is not a shortcut around verification. The artifact is the one CI built
 and ran its own acceptance test against, its `build-info.txt` is checked against
 the pinned revision in `build/vlc/vlc.lock` before anything is unpacked, and the
@@ -89,6 +119,12 @@ addon**, through LibVLC directly rather than through the `vlc` command-line tool
 `build/vlc/README.md` for the build environment, the pinned revision and the
 measured state of both platforms.
 
+Android cannot be checked that way, because the answer lives on a device:
+`scripts/acceptance_test_android.ps1` builds, assembles, exports, installs and
+then asserts from the device's own log that LibVLC opened the `vmem` video
+output. That is the memory output, the only one the extension can turn into a
+texture, and a runtime without it plays audio and shows nothing.
+
 Common failures, and what they mean:
 
 | Message | Meaning |
@@ -109,6 +145,18 @@ Common failures, and what they mean:
 - The Linux extension and the bundled LibVLC runtime are both built on ubuntu
   22.04, so both require glibc 2.35. `build/vlc/glibc-baseline.txt` records the
   bound and `scripts/check_glibc_floor.ps1` enforces it across the whole runtime.
+- The Android runtime is monolithic, so a module cannot be added or removed
+  without rebuilding it. That is also why the build has to intervene on
+  `libvlcjni`'s module blacklist: the vmem output this extension renders through
+  needs the dummy *vout window* module, and the access module behind `imem://` is
+  what lets media inside `res://` be played at all.
+- Android video goes through the software `vmem` output only. LibVLC 4 offers no
+  Android engine for the output-callbacks API, so there is no zero-copy path to
+  compare with the Windows D3D11 one; frames are copied to memory and uploaded.
+- Android is built for `arm64-v8a` alone. `armeabi-v7a` and `x86_64` are not
+  built, so an x86_64 emulator cannot run the addon.
+- The Android runtime and the extension are both built for 16 KB memory pages,
+  which Android 15 and later require; a runtime built elsewhere may not be.
 - macOS, Linux arm64 and Windows arm64 are not supported.
 
 
