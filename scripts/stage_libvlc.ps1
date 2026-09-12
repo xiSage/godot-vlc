@@ -4,21 +4,24 @@ Unpacks the self-compiled LibVLC runtime into thirdparty/vlc/<platform>/.
 
 .DESCRIPTION
 This script performs no network access. It consumes the artifact produced by
-build/vlc/ and unpacks only its include/ and lib/ subtrees into the layout that
-build.rs already expects:
+build/vlc/ and unpacks it into the layout build.rs expects:
 
     thirdparty/vlc/<platform>/include/vlc/**
     thirdparty/vlc/<platform>/lib/**
+    thirdparty/vlc/<platform>/libexec/**
+    thirdparty/vlc/<platform>/share/**
 
-tools/ (the vlc CLI, used by the acceptance test) is deliberately not unpacked,
-so the CLI can never end up inside an addon.
+libexec and share are runtime rather than build-time: the first holds the
+out-of-process preparser and the plugin cache generator, the second the Lua
+scripts. Without them every plugin still loads and no interface can start.
 
-When both platforms are staged, the provenance recorded in each artifact's
-build-info.txt is compared. Both platforms must come from the same VLC commit
-and report the same plugin ABI string: the plugin ABI check inside LibVLC is an
-exact string compare with no compatibility range, and building the two platforms
-from two different VLC revisions makes any cross-platform behaviour difference
-impossible to attribute.
+tools/ (the vlc CLI) is not unpacked unless asked for. It is not what ships and
+not what the acceptance test uses -- that drives libvlc directly, from
+src/acceptance.rs -- so it is here for looking at a runtime by hand.
+
+Provenance is not compared here. scripts/check_vlc_provenance.ps1 reads the
+artifacts directly, because CI stages one platform per job and a check needing
+both staged in one run never executed.
 
 .PARAMETER Platforms
 Which platforms to stage. Defaults to both.
@@ -27,9 +30,8 @@ Which platforms to stage. Defaults to both.
 Directory holding vlc-<platform>.tar.gz, relative to the repository root.
 
 .PARAMETER IncludeTools
-Also unpack tools/ (the vlc CLI) into thirdparty/vlc/<platform>/tools/. It is
-needed by scripts/acceptance_test.ps1. It is never part of an addon:
-assemble_addon.ps1 only copies what the manifest declares.
+Also unpack tools/ (the vlc CLI), for running a runtime by hand. It never reaches
+an addon: assemble_addon.ps1 only copies what the manifest declares.
 #>
 [CmdletBinding()]
 param(
@@ -102,6 +104,26 @@ foreach ($platform in $Platforms) {
         if ($line -match '^([^=#]+)=(.*)$') { $info[$Matches[1].Trim()] = $Matches[2].Trim() }
     }
     $buildInfo[$platform] = $info
+
+    # Linux ships its SONAME chains as symlinks, and the extraction must keep them
+    # that way. Which tar ran decides that: on Windows the bundled bsdtar recreates
+    # links, while the msys64 GNU tar that Git Bash uses silently writes a copy of
+    # the target instead, producing a runtime that looks complete, loads, and is
+    # not the tree CI verified. Nothing downstream can tell the difference -- the
+    # file count, the sizes and ldd all agree -- so it is checked here, with the
+    # same names build/vlc/build.ps1 asserts on the way out.
+    if ($platform -eq 'linux-x64') {
+        foreach ($name in @('libvlc.so', "libvlc.so.$($info['vlc_abi_major'])",
+                            'libvlccore.so', "libvlccore.so.$($info['vlc_core_abi_major'])")) {
+            $item = Get-Item -LiteralPath (Join-Path $targetDir "lib/$name") -Force -ErrorAction SilentlyContinue
+            if (-not $item) {
+                throw "'$artifactName' has no lib/$name; the runtime is incomplete."
+            }
+            if (-not $item.LinkTarget) {
+                throw "'$artifactName' unpacked lib/$name as a regular file, so the SONAME chain was flattened into copies. This happens with msys64's GNU tar; use the tar Windows ships (bare 'tar') or Git Bash with MSYS=winsymlinks:nativestrict."
+            }
+        }
+    }
 
     Write-Host "staged $platform (vlc $($info['vlc_describe']), API $($info['vlc_api_version_string']))"
 }
