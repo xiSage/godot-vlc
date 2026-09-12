@@ -101,6 +101,19 @@ if (-not $adb -and $env:ANDROID_HOME) {
 if (-not $adb) { throw 'adb is not on PATH and ANDROID_HOME/platform-tools does not have it' }
 $script:adb = $adb
 
+# Started detached, and deliberately: adb's server is a daemon that inherits the
+# handles of whatever started it, and one holding this script's stdout keeps a
+# wrapper that captures the output -- a CI step, an editor task, another shell --
+# waiting for a pipe that will not close, long after the verdict has been printed.
+# Started here, it inherits the console of the process created for it instead.
+#
+# Without -Wait, which matters more than it looks: on Windows -Wait waits for the
+# process tree, and start-server forks the daemon, so -Wait never returns at all.
+# The sleep is what keeps the next command from racing it and starting a second
+# server of its own, which would inherit our handles and undo this.
+Start-Process -FilePath $adb -ArgumentList 'start-server' -WindowStyle Hidden | Out-Null
+Start-Sleep -Seconds 3
+
 $devices = Invoke-Adb -Arguments @('devices')
 $ready = @($devices | Select-String -Pattern "`tdevice$" | ForEach-Object { ($_.Line -split "`t")[0] })
 $unauthorized = @($devices | Select-String -Pattern "`tunauthorized$" | Measure-Object).Count
