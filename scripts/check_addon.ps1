@@ -22,6 +22,22 @@ Runs the invariant that the previous Linux runtime violated:
      This is what turns "we believe the runtime is self-contained" into an
      assertion.
 
+  3. DEBUG INFORMATION -- no shared object in the shipped payload may carry
+     debug information. A section nothing ever reads is not a feature; it is
+     download weight, and a forgotten strip is invisible in behaviour and
+     enormous in bytes. Measured on the payload this check was added for, DWARF
+     was 666.0 MB of the 798.7 MB linux-x64 runtime and 827.1 MB of the
+     1025.7 MB win-x64 one, against 0 bytes in the stripped android-arm64 one:
+     five times the download, for information no user can act on. The strip
+     happens in build/vlc/postprocess.ps1, and this asserts the outcome at the
+     addon boundary so that any layer which forgets it fails loudly here
+     instead of quietly multiplying what users download.
+
+     One exception is carved out deliberately: the extension library the
+     manifest declares as a debug variant (`*.debug.*` in [libraries]). That
+     file is this repository's own cargo debug build rather than the vendored
+     runtime, and its debug information is the point of the artifact.
+
 The three platforms do not share an inspector, because they do not share a
 binary format or a runtime shape:
 
@@ -41,11 +57,16 @@ no libvlccore.so, so the entire closure is a handful of platform libraries on a
 single file plus the one dependency the extension has on the runtime shipped
 beside it.
 
-Both checks refuse to report success when they could not actually run: a missing
-inspector, a shared object the inspector could not read, or a declared directory
-that yielded no shared objects, is a failure rather than a pass. The previous
-revision of this script reported "0 shared objects inspected" and exited 0,
-because Get-ChildItem -Recurse does not descend directory symlinks.
+The debug-information check splits by file format rather than by platform: both
+ELF payloads (linux-x64, android-arm64) are read with `llvm-readelf -S` (or
+readelf -S) and the PE payload with `llvm-objdump -h` (or objdump -h).
+
+Every check refuses to report success when it could not actually run: a missing
+inspector, a shared object the inspector could not read, a declared directory
+that yielded no shared objects, a section table the inspector never printed, or a
+section table that parsed to zero sections, is a failure rather than a pass. The
+previous revision of this script reported "0 shared objects inspected" and
+exited 0, because Get-ChildItem -Recurse does not descend directory symlinks.
 
 Run scripts/assemble_addon.ps1 first: this inspects the assembled addon, not the
 source tree, because the assembled addon is what users receive.
@@ -175,6 +196,140 @@ function Get-ElfNeededEntry {
         }
     }
     @($entries)
+}
+
+# Parses section names out of `llvm-readelf -S` / `readelf -S` output.
+#
+# Input shape -- a section headers table, one section per row:
+#
+#   There are 6 section headers, starting at offset 0x81c:
+#
+#   Section Headers:
+#     [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+#     [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+#     [ 1] .dynsym           DYNSYM          0000000000000308 000308 000af8 18   A  6   1  8
+#     [ 3] .debug_info       PROGBITS        0000000000000000 020000 061ca5 00      0   0  1
+#
+# binutils prints the same table two lines per section (address and offset on the
+# first line, size and alignment on the second); LLVM prints one line per
+# section. Requiring an index, a name, a type and an address on the *same* line
+# matches exactly one row per section in both layouts: the second line of a
+# binutils entry carries no index, and the column header row's index column is
+# the literal "Nr" rather than a number.
+#
+# The type token is required to start with a letter, or to be a `0x`-prefixed
+# number (which is how both tools render a section type they have no name for).
+# That is what makes section 0 -- whose name is empty, so its row is an
+# all-whitespace field followed by the type "NULL" -- come back with an empty
+# name instead of with "NULL" taken for the name: a name of "NULL" would leave
+# the *address* in the type column, and an address is neither letter-initial nor
+# 0x-prefixed. The distinction is invisible to a check that matches a name
+# prefix, but it is what lets this parser count rows, and the caller compares
+# that count against Get-ElfSectionCount's summary line. A regex that silently
+# stopped matching rows would otherwise drop a `.debug_*` section the same way
+# the addon would quietly drop a strip step, which is the failure mode this file
+# exists to make loud.
+#
+# The name is deliberately not bounded to its column width. Both tools truncate
+# a long name (`[...]`) when not asked for wide output, and they do not agree on
+# the truncated width -- binutils pads to 17 columns, LLVM's padding has varied
+# between releases -- so a bound would have to be either too tight (dropping
+# rows) or meaningless. An unbounded name cannot hide a section either way: a
+# `.debug_str_offsets` printed as `.debug_str_o[...]` still starts with
+# `.debug`, and the match in Get-DebugSection is a prefix match.
+function Get-ElfSectionName {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Output)
+
+    $names = @()
+    foreach ($line in $Output) {
+        if ($line -match '^\s*\[\s*\d+\]\s(?<name>\S*)\s+(?:[A-Za-z_][A-Za-z0-9_]*|0x[0-9a-fA-F]+)\s+[0-9a-fA-F]{8,}') {
+            $names += $Matches['name']
+        }
+    }
+    @($names)
+}
+
+# The number of section headers readelf says it printed, from the summary line
+# above the table, or -1 when it printed no such line:
+#
+#   There are 28 section headers, starting at offset 0x2cc7fc0:
+#
+# This is the honest half of the parse: a table that claims 28 sections and
+# yields 3 rows means the regex above has stopped matching the tool's layout, and
+# the sections it failed to match are exactly the ones a check must not skip. The
+# caller fails on a disagreement rather than trusting the short list.
+#
+# Reading it line by line rather than with `$Output -match` is deliberate:
+# PowerShell does not populate $Matches when -match is applied to a collection,
+# so an array match would silently report 0.
+function Get-ElfSectionCount {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Output)
+
+    foreach ($line in $Output) {
+        if ($line -match 'There are (?<count>\d+) section headers') { return [int]$Matches['count'] }
+    }
+    -1
+}
+
+# Parses section names out of `llvm-objdump -h` / `objdump -h` output.
+#
+# Input shape -- a header row, then one row per section:
+#
+#   libvlc.dll:	file format coff-x86-64
+#
+#   Sections:
+#   Idx Name            Size     VMA              Type
+#     0 .text           00016b80 0000000140001000 TEXT, DATA
+#    13 .debug_info     00061ca5 000000014002d000 DATA, DEBUG
+#
+# binutils prints a wider table (an extra LMA column, File off and Algn) and a
+# trailing flags line with no index:
+#
+#   Idx Name          Size      VMA               LMA               File off  Algn
+#     0 .text         00016b80  0000000140001000  0000000140001000  00000200  2**4
+#                     CONTENTS, ALLOC, LOAD, READONLY, CODE
+#
+# Requiring a row to start with an index, then a name, then two hexadecimal
+# fields covers both and rejects both the header row and the flags line. PE
+# section names are at most 8 bytes and are never truncated, unlike readelf's
+# 17-column names.
+function Get-PeSectionName {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Output)
+
+    $names = @()
+    foreach ($line in $Output) {
+        if ($line -match '^\s+(?<index>\d+)\s+(?<name>\S+)\s+[0-9a-fA-F]+\s+[0-9a-fA-F]+') {
+            $names += $Matches['name']
+        }
+    }
+    @($names)
+}
+
+# The subset of a section table that carries debug information.
+#
+# Matched by prefix rather than by equality for two reasons. The DWARF section
+# family is open-ended -- .debug_info, .debug_abbrev, .debug_line,
+# .debug_line_str, .debug_str_offsets, .debug_addr, .debug_rnglists and whatever
+# the next revision adds -- and an exhaustive list would silently miss the next
+# one. And a long name comes back truncated from the tools' columns, so an
+# equality test against the full name would match nothing at all.
+#
+# `.zdebug*` is the same information after `objcopy
+# --compress-debug-sections`: smaller, and still megabytes of debug data that no
+# consumer can use. The rule is about what a download weighs, and a compressed
+# section is not a stripped one.
+#
+# The comparison is case-sensitive (-clike) because section names are: a
+# hypothetical `.DEBUG_INFO` is a different section from `.debug_info`, and the
+# tools that put DWARF in a PE (mingw) spell it in lower case.
+function Get-DebugSection {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Names)
+
+    $debug = @()
+    foreach ($name in $Names) {
+        if ($name -clike '.debug*' -or $name -clike '.zdebug*') { $debug += $name }
+    }
+    @($debug)
 }
 
 # Rewrites entries whose DLL is shipped inside the addon so that the shared
@@ -577,6 +732,171 @@ function Invoke-SelfTest {
         (Resolve-ElfNeededEntry -Entries $extension -Shipped $wrongCase -AddonRoot '/addon' |
             Where-Object Name -eq 'libvlc.so').Resolved
 
+    # --- ELF section tables (debug information) ----------------------------
+    # `llvm-readelf -S`, which prints one line per section. The fixture carries
+    # DWARF and a symtab, which is the shape the rule has to reject.
+    $elfSections = @(
+        ''
+        'There are 6 section headers, starting at offset 0x81c:'
+        ''
+        'Section Headers:'
+        '  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al'
+        '  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0'
+        '  [ 1] .dynsym           DYNSYM          0000000000000308 000308 000af8 18   A  6   1  8'
+        '  [ 2] .text             PROGBITS        0000000000010000 010000 016b80 00  AX  0   0 16'
+        '  [ 3] .debug_info       PROGBITS        0000000000000000 020000 061ca5 00      0   0  1'
+        '  [ 4] .debug_abbrev     PROGBITS        0000000000000000 081ca5 000898 00      0   0  1'
+        '  [ 5] .symtab           SYMTAB          0000000000000000 08253d 000c30 18      6 640  8'
+    )
+    $elfNames = Get-ElfSectionName -Output $elfSections
+    Assert-Equal 'parses every row of an llvm-readelf -S table' 6 $elfNames.Count
+    Assert-Equal 'extracts ELF section names and leaves the empty NULL name empty' `
+        ',.dynsym,.text,.debug_info,.debug_abbrev,.symtab' ($elfNames -join ',')
+    Assert-Equal 'flags the DWARF sections of an ELF' '.debug_info,.debug_abbrev' `
+        ((Get-DebugSection -Names $elfNames) -join ',')
+
+    $elfStripped = @(
+        ''
+        'There are 3 section headers, starting at offset 0x1a4:'
+        ''
+        'Section Headers:'
+        '  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al'
+        '  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0'
+        '  [ 1] .dynsym           DYNSYM          0000000000000238 000238 000090 18   A  2   1  8'
+        '  [ 2] .text             PROGBITS        0000000000010000 010000 016b80 00  AX  0   0 16'
+    )
+    Assert-Equal 'accepts a stripped ELF' 0 `
+        (Get-DebugSection -Names (Get-ElfSectionName -Output $elfStripped)).Count
+
+    # binutils prints the same table as two lines per section and truncates a
+    # name to 17 columns, so a long DWARF name arrives shortened --
+    # `.debug_str_offsets` becomes `.debug_str_o[...]` on this payload. The
+    # match has to be a prefix match, or the gate would stop seeing exactly the
+    # sections it exists for. `.zdebug_*` is the same data after
+    # --compress-debug-sections: smaller, and still not stripped.
+    $elfTruncated = @(
+        'There are 4 section headers, starting at offset 0x81c:'
+        ''
+        'Section Headers:'
+        '  [Nr] Name              Type             Address           Offset'
+        '       Size              EntSize          Flags  Link  Info  Align'
+        '  [ 0]                   NULL             0000000000000000  00000000'
+        '       0000000000000000  0000000000000000           0     0     0'
+        '  [ 1] .debug_str_o[...] PROGBITS         0000000000000000  02000000'
+        '       0000000000001234  0000000000000000           0     0     1'
+        '  [ 2] .zdebug_line      PROGBITS         0000000000000000  03000000'
+        '       0000000000000400  0000000000000000           0     0     1'
+        '  [ 3] .text             PROGBITS         0000000000010000  01000000'
+        '       0000000000016b80  0000000000000000  AX       0     0    16'
+    )
+    $truncatedNames = Get-ElfSectionName -Output $elfTruncated
+    Assert-Equal 'parses a two-line-per-section binutils table once per section' 4 $truncatedNames.Count
+    Assert-Equal 'flags a DWARF name the tool truncated to its column' 1 `
+        @(Get-DebugSection -Names $truncatedNames | Where-Object { $_ -clike '.debug*' }).Count
+    Assert-Equal 'flags compressed debug sections' 1 `
+        @(Get-DebugSection -Names $truncatedNames | Where-Object { $_ -clike '.zdebug*' }).Count
+
+    # The guard the main pass relies on: a table the tool printed but that
+    # parses to no rows at all is a parser/tool mismatch, not a clean object,
+    # and must fail rather than pass.
+    $elfNoRows = @(
+        ''
+        'There are 1 section headers, starting at offset 0x40:'
+        ''
+        'Section Headers:'
+        '  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al'
+    )
+    Assert-Equal 'parses no section out of a section table with no rows' 0 `
+        (Get-ElfSectionName -Output $elfNoRows).Count
+
+    # The summary line readelf prints above its table is the honest half of the
+    # parse, and the caller fails when it disagrees with the rows parsed: a
+    # parser that stopped matching rows would drop exactly the `.debug_*`
+    # sections this check exists for.
+    Assert-Equal 'reads the section count readelf declares' 6 `
+        (Get-ElfSectionCount -Output $elfSections)
+    Assert-Equal 'reports no declared count when the tool printed no summary line' -1 `
+        (Get-ElfSectionCount -Output @('', 'Section Headers:'))
+
+    $elfPartial = @(
+        ''
+        'There are 4 section headers, starting at offset 0x40:'
+        ''
+        'Section Headers:'
+        '  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al'
+        '  [ 1] .text             PROGBITS        0000000000010000 010000 016b80 00  AX  0   0 16'
+        '  [ 2] .vendor          0x70000001      0000000000020000 020000 000010 00      0   0  8'
+        '  [ 3] .debug_info      PROGBITS        0x2000000 0x61ca5'
+        '  [ 4] .debug_abbrev    PROGBITS        0x81ca5 0x898'
+    )
+    Assert-Equal 'parses a row whose section type readelf has no name for' '.text,.vendor' `
+        ((Get-ElfSectionName -Output $elfPartial) -join ',')
+    # Rows 3 and 4 are deliberately in a layout this parser does not recognise
+    # (0x-prefixed addresses), which is what a tool version change looks like:
+    # the two numbers disagreeing is the whole signal, and the caller turns that
+    # into a failure rather than reading the short list as a clean object.
+    Assert-Equal 'exposes a short parse against the declared count' 4 `
+        (Get-ElfSectionCount -Output $elfPartial)
+
+    # --- PE section tables (debug information) -----------------------------
+    # `llvm-objdump -h`, which the Windows pass prefers. The column header row
+    # must not be mistaken for a section.
+    $peSections = @(
+        ''
+        "libvlc.dll:`tfile format coff-x86-64"
+        ''
+        'Sections:'
+        'Idx Name            Size     VMA              Type'
+        '  0 .text           00016b80 0000000140001000 TEXT, DATA'
+        '  1 .rdata          00003500 0000000140019000 DATA'
+        ' 12 .debug_info     00061ca5 000000014002d000 DATA, DEBUG'
+        ' 13 .debug_abbrev   00008980 000000014008f000 DATA, DEBUG'
+        ' 14 .reloc          000000e4 000000014002b000 DATA'
+    )
+    $peNames = Get-PeSectionName -Output $peSections
+    Assert-Equal 'parses every row of an llvm-objdump -h table' 5 $peNames.Count
+    Assert-Equal 'extracts PE section names and ignores the column header' `
+        '.text,.rdata,.debug_info,.debug_abbrev,.reloc' ($peNames -join ',')
+    Assert-Equal 'flags the DWARF sections of a PE' '.debug_info,.debug_abbrev' `
+        ((Get-DebugSection -Names $peNames) -join ',')
+
+    $peStripped = @(
+        ''
+        "libvlc.dll:`tfile format coff-x86-64"
+        ''
+        'Sections:'
+        'Idx Name            Size     VMA              Type'
+        '  0 .text           00016b80 0000000140001000 TEXT, DATA'
+        '  1 .data           000000b0 0000000140018000 DATA'
+        '  2 .rsrc           00000808 000000014002a000 DATA'
+    )
+    Assert-Equal 'accepts a stripped PE' 0 `
+        (Get-DebugSection -Names (Get-PeSectionName -Output $peStripped)).Count
+
+    # binutils objdump -h, the fallback on a machine without LLVM: an extra LMA
+    # column, and a flags line under each section that carries no index and so
+    # must not become a section of its own.
+    $binutilsSections = @(
+        ''
+        'libvlc.dll:     file format pei-x86-64'
+        ''
+        'Sections:'
+        'Idx Name          Size      VMA               LMA               File off  Algn'
+        '  0 .text         00016b80  0000000140001000  0000000140001000  00000200  2**4'
+        '                  CONTENTS, ALLOC, LOAD, READONLY, CODE'
+        '  1 .debug_info   00061ca5  000000014002d000  000000014002d000  0017c000  2**0'
+        '                  CONTENTS, READONLY, DEBUGGING, EXCLUDE'
+        '  2 .reloc        000000e4  000000014002b000  000000014002b000  0017ac00  2**0'
+        '                  CONTENTS, ALLOC, LOAD, READONLY, DATA'
+    )
+    $binutilsNames = Get-PeSectionName -Output $binutilsSections
+    Assert-Equal 'parses binutils objdump -h rows and ignores the flags lines' `
+        '.text,.debug_info,.reloc' ($binutilsNames -join ',')
+    Assert-Equal 'flags DWARF sections in binutils objdump output' '.debug_info' `
+        ((Get-DebugSection -Names $binutilsNames) -join ',')
+    Assert-Equal 'parses no section out of a PE table with no rows' 0 `
+        (Get-PeSectionName -Output @('Sections:', 'Idx Name            Size     VMA              Type')).Count
+
     # --- dependency rules --------------------------------------------------
     $hostPatterns = @('libc.so*', 'libm.so*', 'ld-linux*.so*', 'linux-vdso.so*', 'libxkbcommon-x11.so*')
     $declared = @('bin/linux-x64/libvlccore.so.9', 'bin/linux-x64/vlc')
@@ -768,9 +1088,20 @@ foreach ($platform in $Platforms) {
 
     $keys = Get-PlatformManifestKeys -Platform $platform
     $extensionPaths = @()
+    $debugExtensionPaths = @()
     foreach ($libraryKey in $keys.Libraries) {
-        $extensionPaths += Get-GdextensionPaths -Lines $manifestLines -Section 'libraries' -Key $libraryKey |
-            ForEach-Object { Get-AddonRelativePath -ResPath $_ -Prefix $AddonPrefix }
+        $libraryPaths = @(
+            Get-GdextensionPaths -Lines $manifestLines -Section 'libraries' -Key $libraryKey |
+                ForEach-Object { Get-AddonRelativePath -ResPath $_ -Prefix $AddonPrefix }
+        )
+        $extensionPaths += $libraryPaths
+
+        # The debug variant is the one artifact whose debug information is the
+        # point of it: it is this repository's own cargo debug build, and the
+        # debug-information rule below is about the vendored runtime rather than
+        # about it. Recognised by the same `*.debug.*` key shape
+        # scripts/assemble_addon.ps1 uses to pick the cargo profile.
+        if ($libraryKey -match '\.debug\.') { $debugExtensionPaths += $libraryPaths }
     }
 
     $declaredPaths = @(
@@ -929,6 +1260,83 @@ foreach ($platform in $Platforms) {
         }
     }
 
+    # 4. No debug information in anything that ships.
+    #
+    # A section nothing ever reads is not a feature, it is download weight, and a
+    # strip step that gets skipped is invisible in behaviour: the addon works
+    # exactly as it did before, and only what users download changes. Measured on
+    # the payload this check was added for, DWARF was 666.0 MB of the 798.7 MB
+    # linux-x64 runtime and 827.1 MB of the 1025.7 MB win-x64 one, against 0
+    # bytes in the stripped android-arm64 one. The strip happens in
+    # build/vlc/postprocess.ps1; asserting the outcome here is what makes any
+    # layer that forgets it fail loudly instead of quietly multiplying the
+    # download.
+    #
+    # The one deliberate exception is the extension library the manifest
+    # declares as a debug variant ($debugExtensionPaths): that is this
+    # repository's own cargo debug build, where the debug information is the
+    # point of the artifact, rather than the vendored runtime this rule is about.
+    $debugTool = if ($platform -eq 'win-x64') { $peTool } else { $elfTool }
+    if (-not $debugTool) {
+        $debugTools = if ($platform -eq 'win-x64') { 'llvm-objdump nor objdump' } else { 'llvm-readelf nor readelf' }
+        $allViolations += "${platform}: neither $debugTools is available, so the payload could not be checked for debug information"
+    } else {
+        foreach ($sharedObject in $sharedObjects) {
+            $relative = "bin/$platform/$($sharedObject.FullName.Substring($platformDir.Length + 1).Replace('\', '/'))"
+            if ($debugExtensionPaths -contains $relative) { continue }
+
+            if ($platform -eq 'win-x64') {
+                # -h is the section table; -p (the import table) is a different
+                # question that the closure check above already asked.
+                $raw = @(& $debugTool.Source -h $sharedObject.FullName 2>&1)
+                $hasSectionTable = [bool]($raw -cmatch 'Sections:')
+            } else {
+                # -W asks for untruncated names. The match below is a prefix
+                # match, so wide output is for the message rather than for the
+                # detection.
+                $raw = @(& $debugTool.Source -S -W $sharedObject.FullName 2>&1)
+                # Matched case-sensitively against the table's title line: the
+                # summary line above it ("There are N section headers") carries
+                # the same two words in lower case, and a file without a section
+                # table reports "no sections in this file" the same way.
+                $hasSectionTable = [bool]($raw -cmatch 'Section Headers:')
+            }
+
+            if (-not $hasSectionTable) {
+                $allViolations += "${platform}: $relative has no readable section table (read with '$($debugTool.Name)'), so it was not checked for debug information"
+                continue
+            }
+
+            if ($platform -eq 'win-x64') {
+                $sectionNames = Get-PeSectionName -Output $raw
+            } else {
+                $sectionNames = Get-ElfSectionName -Output $raw
+            }
+
+            if ($sectionNames.Count -eq 0) {
+                $allViolations += "${platform}: $relative printed a section table that parsed to no sections (read with '$($debugTool.Name)'), so the debug-information check did not run"
+                continue
+            }
+
+            # A parser that silently stopped matching rows would drop a trailing
+            # `.debug_*` section, which is the same class of silent omission as a
+            # skipped strip, so the row count is cross-checked against the count
+            # the tool reported for its own table.
+            if ($platform -ne 'win-x64') {
+                $declaredSections = Get-ElfSectionCount -Output $raw
+                if ($declaredSections -ge 0 -and $declaredSections -ne $sectionNames.Count) {
+                    $allViolations += "${platform}: $relative printed a table of $declaredSections section header(s) of which $($sectionNames.Count) parsed (read with '$($debugTool.Name)'), so the debug-information check did not run"
+                    continue
+                }
+            }
+
+            $debugSections = Get-DebugSection -Names $sectionNames
+            if ($debugSections.Count -gt 0) {
+                $allViolations += "${platform}: $relative carries debug information ($($debugSections -join ', ')); the shipped runtime must be stripped"
+            }
+        }
+    }
+
     Write-Host "  inspected $($inspectedPaths.Count) shared object(s)"
 }
 
@@ -950,7 +1358,8 @@ if ($allViolations.Count -gt 0) {
     Write-Host ''
     Write-Host 'A host library in the list means the build did not internalise it; prefer fixing the'
     Write-Host 'build over extending the host-provided list. A file that is present but undeclared'
-    Write-Host 'means the manifest and the runtime have drifted apart.'
+    Write-Host 'means the manifest and the runtime have drifted apart. Debug information means a'
+    Write-Host 'strip step was skipped: fix the strip (build/vlc/postprocess.ps1), never this check.'
     exit 1
 }
 
