@@ -14,8 +14,11 @@ out:
 
     include/vlc/**              headers, for build.rs / bindgen
     lib/**                      the shipped runtime (see postprocess.ps1)
-    tools/vlc                   the CLI; used by the acceptance test, never
-                                copied into an addon
+    tools/vlc                   the CLI, for looking at a runtime by hand;
+                                never copied into an addon
+    libexec/vlc, share/vlc      the out-of-process preparser, the plugin cache
+                                generator and the Lua scripts, without which no
+                                interface can start
     build-info.txt              provenance
 
 VLC's own build system is autotools, so bootstrap / contrib/bootstrap /
@@ -92,8 +95,7 @@ $contribArgs += "--host=$hostTriplet"
 $configureArgs += @("--host=$hostTriplet", "--build=$(& gcc -dumpmachine)")
 
 # No GUI. VLC's Qt interface is the desktop application; this extension embeds
-# libvlc behind its own renderer, and the only VLC executable the package uses is
-# the CLI the acceptance test drives. Without this, configure refuses to continue
+# libvlc behind its own renderer. Without this, configure refuses to continue
 # ("If you want to build VLC without GUI, pass --disable-qt") because no Qt is
 # present, in contrib or on the system.
 $configureArgs += '--disable-qt'
@@ -382,8 +384,10 @@ $configureArgs += "--with-contrib=$(Join-Path $src "contrib/$hostTriplet")"
 # ---------------------------------------------------------------------------
 Write-Host 'build: configure'
 # ---------------------------------------------------------------------------
-# --disable-vlc is deliberately NOT passed: the vlc CLI is the cheapest headless
-# acceptance test available, and it is staged under tools/ only.
+# --disable-vlc is deliberately NOT passed: the vlc CLI is the cheapest way to
+# look at a runtime by hand when the acceptance test reports something, and it is
+# staged under tools/ only. It is not what the acceptance test uses -- that drives
+# libvlc directly, from src/acceptance.rs -- and it never reaches an addon.
 Invoke-Native -Command './configure' -Arguments $configureArgs -WorkingDirectory $src
 
 # ---------------------------------------------------------------------------
@@ -504,6 +508,20 @@ if ($Platform -eq 'linux-x64') {
     Copy-Item -LiteralPath $pluginsDir.FullName -Destination (Join-Path $runtime 'lib/plugins') -Recurse -Force
     Copy-Tree -From $includeDir.FullName -To (Join-Path $runtime 'include/vlc')
 
+    # Build-only artifacts inside the module tree. The mingw build leaves a .la
+    # and a .dll.a beside every plug-in, and the module tree is copied whole, so
+    # they reached the assembled addon: 383 of each, which
+    # scripts/forbidden-in-addon.txt now exists to refuse.
+    #
+    # lib/ itself is not swept. The import libraries the extension links against
+    # (libvlc.dll.a, libvlccore.dll.a, vlc.lib, vlccore.lib) live there, and they
+    # are build-time inputs rather than residue; the manifest does not declare
+    # them, so they are never shipped.
+    foreach ($item in @(Get-ChildItem -LiteralPath (Join-Path $runtime 'lib/plugins') -Recurse -Force -File |
+            Where-Object { $_.Name -like '*.la' -or $_.Name -like '*.a' })) {
+        Remove-Item -LiteralPath $item.FullName -Force
+    }
+
     # There is no mingw runtime DLL to stage, and this is deliberate rather than
     # an omission. Plug-ins used to import libgcc_s_seh-1.dll, and LibVLC's loader
     # could not resolve it: it opens every plug-in with
@@ -519,7 +537,7 @@ if ($Platform -eq 'linux-x64') {
     # nothing uses, and scripts/check_addon.ps1 would report it as present but
     # undeclared.
 
-    # The CLI, for the acceptance test only.
+    # The CLI, for looking at a runtime by hand.
     if (Test-Path -LiteralPath $stagedBin -PathType Container) {
         foreach ($tool in Get-ChildItem -LiteralPath $stagedBin -Force -File |
                 Where-Object { $_.Extension -in @('.exe', '.dll') }) {
