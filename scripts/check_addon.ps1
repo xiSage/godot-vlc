@@ -38,6 +38,7 @@ param(
     [string]$GdextensionPath = 'gdextension_template/godot_vlc.gdextension',
     [string]$HostProvidedListPath = 'scripts/host-provided-libs.txt',
     [string]$HostProvidedDllListPath = 'scripts/host-provided-dlls.txt',
+    [string]$ForbiddenListPath = 'scripts/forbidden-in-addon.txt',
     [string]$AddonPrefix = 'res://addons/godot-vlc/',
 
     [switch]$SelfTest
@@ -268,6 +269,43 @@ function Test-InspectedCoverage {
     @($violations)
 }
 
+# Files that only exist to build something, and so must never be shipped.
+#
+# A directory declared in the manifest declares its whole subtree, which is what
+# keeps the manifest readable, and the consequence is that anything nested inside
+# it goes unchecked. That is how 766 libtool and import-library files reached the
+# assembled addon from the mingw module tree without this script noticing: they
+# were inside a declared directory rather than at the top level. This is the check
+# for that class, and it walks the whole platform directory rather than only its
+# declared entries.
+function Test-ForbiddenNames {
+    <#
+    .SYNOPSIS
+    Every path whose file name matches a forbidden pattern.
+
+    .DESCRIPTION
+    Takes paths relative to the platform directory, so the message names the file
+    as it appears in the addon. Matched against the file name, so a pattern
+    applies at any depth.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Paths,
+        [Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$ForbiddenPatterns
+    )
+
+    $violations = @()
+    foreach ($path in $Paths) {
+        $name = [System.IO.Path]::GetFileName($path)
+        foreach ($pattern in $ForbiddenPatterns) {
+            if ($name -like $pattern) {
+                $violations += "shipped a file that only exists to build something: $path (matches '$pattern')"
+                break
+            }
+        }
+    }
+    @($violations)
+}
+
 #endregion Pure helpers
 
 #region Self-test
@@ -428,6 +466,26 @@ function Invoke-SelfTest {
         Remove-Item -Recurse -Force -LiteralPath $coverageRoot -ErrorAction SilentlyContinue
     }
 
+    # --- forbidden names ---------------------------------------------------
+    # The class that reached the addon from the mingw module tree: nested, so the
+    # top-level declaration check could not see it.
+    $forbidden = @('*.la', '*.a', '*.lib', '*.exp', '*.pdb')
+    Assert-Equal 'accepts a plugin and its data' 0 `
+        (Test-ForbiddenNames -ForbiddenPatterns $forbidden -Paths @(
+                'bin/win-x64/plugins/codec/libavcodec_plugin.dll'
+                'bin/win-x64/libexec/vlc/vlc-cache-gen.exe'
+                'bin/win-x64/share/vlc/lua/playlist/youtube.luac')).Count
+    Assert-Equal 'rejects a libtool archive beside a plugin' 1 `
+        (Test-ForbiddenNames -ForbiddenPatterns $forbidden -Paths @('bin/win-x64/plugins/codec/libavcodec_plugin.la')).Count
+    Assert-Equal 'rejects a mingw import library beside a plugin' 1 `
+        (Test-ForbiddenNames -ForbiddenPatterns $forbidden -Paths @('bin/win-x64/plugins/codec/libavcodec_plugin.dll.a')).Count
+    Assert-Equal 'rejects debug symbols' 1 `
+        (Test-ForbiddenNames -ForbiddenPatterns $forbidden -Paths @('bin/win-x64/godot_vlc.pdb')).Count
+    Assert-Equal 'is not fooled by a similar extension' 0 `
+        (Test-ForbiddenNames -ForbiddenPatterns $forbidden -Paths @('bin/win-x64/plugins/a.so', 'bin/win-x64/plugins/a.dll', 'bin/win-x64/plugins/liblua_plugin.so')).Count
+    Assert-Equal 'reports every offender, not just the first' 2 `
+        (Test-ForbiddenNames -ForbiddenPatterns $forbidden -Paths @('bin/win-x64/plugins/x.la', 'bin/win-x64/plugins/y.dll.a')).Count
+
     if ($script:selfTestFailures -ne 0) {
         Write-Host "self-test: $($script:selfTestFailures) case(s) failed" -ForegroundColor Red
         exit 1
@@ -457,7 +515,7 @@ function Read-HostProvidedPatterns {
 
     $absolute = Join-Path $repoRoot $RelativePath
     if (-not (Test-Path -LiteralPath $absolute)) {
-        throw "'$RelativePath' not found; the closure check cannot tell which libraries the host is expected to provide."
+        throw "'$RelativePath' not found; a policy list this check relies on is missing."
     }
     @(
         Get-Content -LiteralPath $absolute |
@@ -470,6 +528,8 @@ $hostPatterns = @{
     'linux-x64' = Read-HostProvidedPatterns -RelativePath $HostProvidedListPath
     'win-x64'   = Read-HostProvidedPatterns -RelativePath $HostProvidedDllListPath
 }
+
+$forbiddenPatterns = Read-HostProvidedPatterns -RelativePath $ForbiddenListPath
 
 # Windows builds ship the PE tools with LLVM; binutils is not guaranteed there.
 $peTool = @('llvm-objdump', 'objdump') |
@@ -521,6 +581,16 @@ foreach ($platform in $Platforms) {
     )
     $allViolations += Test-ManifestCoverage -PresentPaths $presentPaths `
         -ExtensionPaths $extensionPaths -DeclaredPaths $declaredPaths |
+        ForEach-Object { "${platform}: $_" }
+
+    # 2b. Nothing that only exists to build something, at any depth. Step 2 sees
+    # only the top level, and a declared directory deliberately covers its whole
+    # subtree, so this is the check for what can hide inside one.
+    $allPaths = @(
+        Get-ChildItem -LiteralPath $platformDir -Recurse -Force -File |
+            ForEach-Object { "bin/$platform/$($_.FullName.Substring($platformDir.Length + 1).Replace('\', '/'))" }
+    )
+    $allViolations += Test-ForbiddenNames -Paths $allPaths -ForbiddenPatterns $forbiddenPatterns |
         ForEach-Object { "${platform}: $_" }
 
     # 3. Closure.

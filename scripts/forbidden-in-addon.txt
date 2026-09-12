@@ -1,0 +1,35 @@
+# Names the assembled addon must never contain.
+#
+# The rule: a file that exists only to build something has no place in a package
+# that is loaded at runtime. The addon is what users receive, so build residue in
+# it is dead weight at best and a false description of the package at worst.
+#
+# This list exists because of a case that got through. The mingw build leaves a
+# .la and a .dll.a beside every plugin, the Windows staging copied the module tree
+# whole, and 766 of those files reached the assembled addon. It was found by
+# reading a tarball listing by hand, not by this gate: the gate enumerated only
+# the top level of bin/<platform>, and the files were nested inside the declared
+# plugins/ directory.
+#
+# Why the gate does not simply require every nested file to be declared: a
+# directory in the manifest declares its whole subtree, which is what keeps the
+# manifest readable. The consequence is that anything nested is unchecked, so this
+# list is the check for the one class that must never appear anywhere.
+#
+# Patterns are globs matched with PowerShell's -like against the file name, so
+# they apply at any depth.
+#
+# *.la      libtool archive. Records absolute paths and library dependencies from
+#           the machine that built it; meaningless to a user, and it names the
+#           build host.
+# *.a       static library, which covers mingw's import libraries (*.dll.a) as
+#           well. Nothing links against the addon at runtime.
+# *.lib     MSVC import library, the same thing by another name.
+# *.exp     export file written beside an MSVC import library.
+# *.pdb     debug symbols. Worth having next to a local build, not worth shipping;
+#           the CI copy of it stays in bin/ and never enters the addon.
+*.la
+*.a
+*.lib
+*.exp
+*.pdb
