@@ -284,6 +284,104 @@ jobs:
         name: win64
         path: bin/*
 
+  # The extension for Android, which no other job compiles. Its #[cfg] code is
+  # built nowhere else, so this is also the only place clippy sees it -- the same
+  # reason the Linux and Windows jobs lint separately rather than once.
+  #
+  # The device check (scripts/acceptance_test_android.ps1) cannot run here: it
+  # needs the device. What CI can do is everything up to it -- build the extension
+  # with the NDK, assemble the addon, and put it through the gate.
+  #
+  # Nothing consumes this artifact yet. The distributable addon still contains the
+  # two desktop platforms, and adding Android to it is a separate decision.
+  build_android64:
+    needs: [ build_vlc_android_arm64 ]
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v7
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: vlc-android-arm64
+        path: artifacts
+
+    - name: Stage the LibVLC runtime
+      run: ./scripts/stage_libvlc.ps1 -Platforms android-arm64
+
+    # The NDK is fetched rather than installed through sdkmanager: the extension is
+    # built with r28, the revision build/vlc-android pins too, and one cached
+    # download beats populating a cmdline-tools SDK to install the same thing.
+    - name: Restore the Android NDK
+      id: ndk
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/android-ndk-r28b
+        key: android-ndk-r28b-linux
+
+    - name: Fetch the Android NDK
+      if: steps.ndk.outputs.cache-hit != 'true'
+      run: |
+        curl -sSL -o "$env:RUNNER_TEMP/ndk.zip" https://dl.google.com/android/repository/android-ndk-r28b-linux.zip
+        unzip -q "$env:RUNNER_TEMP/ndk.zip" -d "$env:RUNNER_TEMP"
+
+    # The NDK's own bin goes on PATH as well, so that the gate reads DT_NEEDED with
+    # the same toolchain that produced the library.
+    - name: Point the build at the NDK
+      run: |
+        $ndk = "$env:RUNNER_TEMP/android-ndk-r28b"
+        $toolchain = "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        "ANDROID_NDK_HOME=$ndk" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "AR_aarch64_linux_android=$toolchain/llvm-ar" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android24-clang" | Out-File -FilePath $env:GITHUB_ENV -Append
+        $toolchain | Out-File -FilePath $env:GITHUB_PATH -Append
+
+    # Run from the repository, so that rustup resolves the pin in
+    # rust-toolchain.toml and the target is added to the toolchain CI actually
+    # builds and lints with.
+    - name: Add the Android target to the pinned toolchain
+      run: rustup target add aarch64-linux-android
+
+    # After staging, like the other two: the build script generates its bindings
+    # from the staged runtime's vlc.h.
+    - name: Clippy Check (the Android target)
+      run: cargo clippy --workspace --all-targets --target aarch64-linux-android -- -D warnings
+
+    # No Test step. The crate's tests drive the runtime on the host, and the
+    # extension cannot be executed here at all; the device is what runs it.
+    - name: Build Debug
+      run: cargo build --target aarch64-linux-android
+
+    - name: Build Release
+      run: cargo build --release --target aarch64-linux-android
+
+    - name: Assemble the addon
+      run: ./scripts/assemble_addon.ps1 -Platforms android-arm64
+
+    - name: Check the addon is complete and self-contained
+      run: ./scripts/check_addon.ps1 -Platforms android-arm64
+
+    # Android 15 and later refuse a native library whose segments are not 16 KB
+    # aligned. The NDK's linker produces that today, and this is what would notice
+    # if a later revision stopped.
+    - name: Check the extension is 16 KB aligned
+      run: |
+        $alignment = llvm-readelf -l target/release/libgodot_vlc.so |
+          Select-String ' LOAD ' | ForEach-Object { ($_.Line -split '\s+')[-1] } | Sort-Object -Unique
+        if ($alignment -ne '0x4000') { throw "LOAD alignment is '$alignment', expected 0x4000 (16 KB)" }
+        Write-Host 'the extension is 16 KB aligned'
+
+    - name: Copy Binary
+      run: |
+        New-Item -Path "bin/" -ItemType Directory -Force | Out-Null
+        Copy-Item -Path "target/aarch64-linux-android/debug/libgodot_vlc.so" -Destination "bin/libgodot_vlc_debug.so"
+        Copy-Item -Path "target/aarch64-linux-android/release/libgodot_vlc.so" -Destination "bin/libgodot_vlc.so"
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: android64
+        path: bin/*
+
   # The distributable addon contains both platforms, so it can only be assembled
   # where both are present. This job is also the only place the required
   # cross-platform gate can run: asserting that two artifacts share a commit and
