@@ -26,7 +26,7 @@ jobs:
     name: script self-tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: RUNPATH checker
       run: ./build/vlc/check-runpath.ps1 -SelfTest
@@ -48,7 +48,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Rustfmt Check
       run: cargo fmt --all -- --check
@@ -66,11 +66,11 @@ jobs:
     name: LibVLC (linux-x64)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Restore the LibVLC artifact
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: artifacts
         key: vlc-linux-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}
@@ -94,11 +94,11 @@ jobs:
     name: LibVLC (win-x64, mingw cross)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Restore the LibVLC artifact
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: artifacts
         key: vlc-win-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}
@@ -128,10 +128,10 @@ jobs:
     needs: [ build_vlc_linux64 ]
     runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     # Keep this in step with the actions/upload-artifact version used above.
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: vlc-linux-x64
         path: artifacts
@@ -194,7 +194,7 @@ jobs:
     needs: [ build_vlc_win64 ]
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Install LLVM and Clang # required for bindgen to work, see https://github.com/rust-lang/rust-bindgen/issues/1797
       uses: KyleMayes/install-llvm-action@v2
@@ -206,7 +206,7 @@ jobs:
       run: echo "LIBCLANG_PATH=$((gcm clang).source -replace "clang.exe")" >> $env:GITHUB_ENV
 
     # Keep this in step with the actions/upload-artifact version used above.
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: vlc-win-x64
         path: artifacts
@@ -254,14 +254,14 @@ jobs:
     needs: [ build_vlc_linux64, build_vlc_win64, build_linux64, build_win64 ]
     runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: vlc-linux-x64
         path: artifacts
 
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: vlc-win-x64
         path: artifacts
@@ -269,12 +269,12 @@ jobs:
     - name: Assert both runtimes share a commit and an ABI
       run: ./scripts/check_vlc_provenance.ps1
 
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: linux64
         path: bin/linux
 
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: win64
         path: bin/win
