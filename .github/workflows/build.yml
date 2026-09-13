@@ -6,9 +6,7 @@ defaults:
 
 on:
   push:
-    # build_workflow is listed so that this branch is actually validated; drop it
-    # once the branch is merged.
-    branches: [ "master", "build_workflow" ]
+    branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
   # So the pipeline can be re-run from the Actions tab without adding a commit.
