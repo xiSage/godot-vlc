@@ -1,6 +1,6 @@
 [package]
 name = "godot-vlc"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 # The oldest compiler this crate builds with. Derived rather than guessed: the
 # highest requirement in the source is slice::as_chunks, stable since 1.88.0
