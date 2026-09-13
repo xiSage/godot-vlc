@@ -7,9 +7,8 @@ defaults:
 on:
   push:
     # build_workflow is listed so that this branch is actually validated; drop it
-    # once the branch is merged. android is listed for the same reason: it is
-    # where the Android runtime and the extension's Android target are built.
-    branches: [ "master", "build_workflow", "android" ]
+    # once the branch is merged.
+    branches: [ "master", "build_workflow" ]
   pull_request:
     branches: [ "master" ]
   # So the pipeline can be re-run from the Actions tab without adding a commit.
