@@ -59,35 +59,85 @@ jobs:
   # platforms from two different VLC revisions made any cross-platform behaviour
   # difference impossible to attribute.
   #
-  # The artifact is cached on the hash of the build inputs, so bumping
-  # build/vlc/vlc.lock rebuilds it while an unchanged pin does not pay the one
-  # to two hour contrib build on every run.
+  # A runtime is reused rather than rebuilt while its inputs are unchanged, and it
+  # is found by the hash of those inputs, which is part of its artifact name -- so
+  # the lookup that finds one is also what says it may be used: a runtime built by
+  # different scripts cannot be found under this name.
+  #
+  # This was an actions/cache entry until it was measured doing the opposite of
+  # its job. Caches are scoped to the branch that created them, and a
+  # pull_request run belongs to its base branch, so the cache a push to a feature
+  # branch had just written was invisible to the pull request for that branch: the
+  # key matched, and the one to two hour contrib build ran anyway. Artifacts are
+  # repository-scoped, so a run on any branch can fetch what was built for these
+  # inputs wherever it was built.
+  #
+  # What keeps reuse honest is unchanged, and still runs on whatever the run ends
+  # up using: the provenance gate compares the pin and the ABI across the
+  # artifacts, and the acceptance test decodes a real file through the runtime.
   build_vlc_linux64:
     name: LibVLC (linux-x64)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
 
-    - name: Restore the LibVLC artifact
-      id: cache
-      uses: actions/cache@v6
+    - name: Name the runtime after the inputs it is built from
+      run: |
+        "RUNTIME_ARTIFACT=vlc-linux-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}" |
+          Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Look for a runtime built from these inputs
+      id: existing
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Repository-wide, because finding one built on another branch is the
+        # point; newest first, and any of them will do.
+        $found = @(gh api --paginate --jq '.artifacts[] | select(.expired == false) | "\(.created_at) \(.workflow_run.id)"' `
+            "repos/${{ github.repository }}/actions/artifacts?name=$env:RUNTIME_ARTIFACT&per_page=100" |
+          Sort-Object -Descending)
+        if ($found.Count -gt 0) {
+          $run = ($found[0] -split ' ')[1]
+          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "run-id=$run" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "reusing the runtime built by run $run"
+        } else {
+          "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host 'nothing built from these inputs is available; building one'
+        }
+
+    - name: Fetch that runtime
+      if: steps.existing.outputs.found == 'true'
+      uses: actions/download-artifact@v8
       with:
+        name: ${{ env.RUNTIME_ARTIFACT }}
+        run-id: ${{ steps.existing.outputs.run-id }}
+        github-token: ${{ github.token }}
         path: artifacts
-        key: vlc-linux-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}
 
     - name: Build the pinned build environment
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.existing.outputs.found != 'true'
       run: docker build -t godot-vlc/vlc-build build/vlc
 
     - name: Build LibVLC
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.existing.outputs.found != 'true'
       run: |
         New-Item -Path artifacts -ItemType Directory -Force | Out-Null
         docker run --rm -v "$($PWD.Path)/artifacts:/out" godot-vlc/vlc-build linux-x64 /out
 
+    # Under a stable name for the rest of this run, whether it was fetched or
+    # built, which is what the jobs below download; and under its input-derived
+    # name only when it was built here, because that is the copy a later run with
+    # the same inputs is meant to find.
     - uses: actions/upload-artifact@v7
       with:
         name: vlc-linux-x64
+        path: artifacts/vlc-linux-x64.tar.gz
+
+    - uses: actions/upload-artifact@v7
+      if: steps.existing.outputs.found != 'true'
+      with:
+        name: ${{ env.RUNTIME_ARTIFACT }}
         path: artifacts/vlc-linux-x64.tar.gz
 
   build_vlc_win64:
@@ -96,15 +146,41 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
-    - name: Restore the LibVLC artifact
-      id: cache
-      uses: actions/cache@v6
+    # Reuse by input hash, for the reason written out above the Linux runtime.
+    - name: Name the runtime after the inputs it is built from
+      run: |
+        "RUNTIME_ARTIFACT=vlc-win-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}" |
+          Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Look for a runtime built from these inputs
+      id: existing
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $found = @(gh api --paginate --jq '.artifacts[] | select(.expired == false) | "\(.created_at) \(.workflow_run.id)"' `
+            "repos/${{ github.repository }}/actions/artifacts?name=$env:RUNTIME_ARTIFACT&per_page=100" |
+          Sort-Object -Descending)
+        if ($found.Count -gt 0) {
+          $run = ($found[0] -split ' ')[1]
+          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "run-id=$run" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "reusing the runtime built by run $run"
+        } else {
+          "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host 'nothing built from these inputs is available; building one'
+        }
+
+    - name: Fetch that runtime
+      if: steps.existing.outputs.found == 'true'
+      uses: actions/download-artifact@v8
       with:
+        name: ${{ env.RUNTIME_ARTIFACT }}
+        run-id: ${{ steps.existing.outputs.run-id }}
+        github-token: ${{ github.token }}
         path: artifacts
-        key: vlc-win-x64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc/Dockerfile', 'build/vlc/*.ps1', 'build/vlc/lib/*.ps1', 'build/vlc/patches/*') }}
 
     - name: Build the pinned build environment
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.existing.outputs.found != 'true'
       # The Windows runtime is cross-compiled from a newer base than the Linux
       # one, because its mingw-w64 decides only what cross-compiles and nothing
       # about the artifact's glibc floor: a Windows runtime is PE. mingw-w64 9 on
@@ -114,7 +190,7 @@ jobs:
       run: docker build --build-arg BASE_IMAGE=ubuntu:24.04 -t godot-vlc/vlc-build-win build/vlc
 
     - name: Build LibVLC
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.existing.outputs.found != 'true'
       run: |
         New-Item -Path artifacts -ItemType Directory -Force | Out-Null
         docker run --rm -v "$($PWD.Path)/artifacts:/out" godot-vlc/vlc-build-win win-x64 /out
@@ -124,34 +200,64 @@ jobs:
         name: vlc-win-x64
         path: artifacts/vlc-win-x64.tar.gz
 
+    - uses: actions/upload-artifact@v7
+      if: steps.existing.outputs.found != 'true'
+      with:
+        name: ${{ env.RUNTIME_ARTIFACT }}
+        path: artifacts/vlc-win-x64.tar.gz
+
   # The Android runtime comes from a different build system from the two desktop
   # ones: VLC's own Android build system, driving the NDK into a single
   # monolithic libvlc.so. It is a job of its own rather than a matrix entry, and
   # the container supplies the toolchain exactly as it does for the desktop
   # runtimes -- which is also why it is Linux-only.
   #
-  # Cached on the same inputs as the desktop artifacts, plus the revision of the
-  # Android build system, so an unchanged pin does not pay for the contrib build
-  # again.
+  # Reused by input hash like the desktop runtimes, over its own inputs: the same
+  # pin and the revision of the Android build system.
   build_vlc_android_arm64:
     name: LibVLC (android-arm64)
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v7
 
-    - name: Restore the LibVLC artifact
-      id: cache
-      uses: actions/cache@v6
+    - name: Name the runtime after the inputs it is built from
+      run: |
+        "RUNTIME_ARTIFACT=vlc-android-arm64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc-android/Dockerfile', 'build/vlc-android/build.sh') }}" |
+          Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Look for a runtime built from these inputs
+      id: existing
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $found = @(gh api --paginate --jq '.artifacts[] | select(.expired == false) | "\(.created_at) \(.workflow_run.id)"' `
+            "repos/${{ github.repository }}/actions/artifacts?name=$env:RUNTIME_ARTIFACT&per_page=100" |
+          Sort-Object -Descending)
+        if ($found.Count -gt 0) {
+          $run = ($found[0] -split ' ')[1]
+          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "run-id=$run" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "reusing the runtime built by run $run"
+        } else {
+          "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host 'nothing built from these inputs is available; building one'
+        }
+
+    - name: Fetch that runtime
+      if: steps.existing.outputs.found == 'true'
+      uses: actions/download-artifact@v8
       with:
+        name: ${{ env.RUNTIME_ARTIFACT }}
+        run-id: ${{ steps.existing.outputs.run-id }}
+        github-token: ${{ github.token }}
         path: artifacts
-        key: vlc-android-arm64-${{ hashFiles('build/vlc/vlc.lock', 'build/vlc-android/Dockerfile', 'build/vlc-android/build.sh') }}
 
     - name: Build the pinned build environment
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.existing.outputs.found != 'true'
       run: docker build -f build/vlc-android/Dockerfile -t godot-vlc/vlc-android-build build
 
     - name: Build LibVLC
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.existing.outputs.found != 'true'
       run: |
         New-Item -Path artifacts -ItemType Directory -Force | Out-Null
         docker run --rm -v "$($PWD.Path)/artifacts:/out" godot-vlc/vlc-android-build arm64-v8a /out
@@ -159,6 +265,12 @@ jobs:
     - uses: actions/upload-artifact@v7
       with:
         name: vlc-android-arm64
+        path: artifacts/vlc-android-arm64.tar.gz
+
+    - uses: actions/upload-artifact@v7
+      if: steps.existing.outputs.found != 'true'
+      with:
+        name: ${{ env.RUNTIME_ARTIFACT }}
         path: artifacts/vlc-android-arm64.tar.gz
 
   build_linux64:
@@ -311,6 +423,11 @@ jobs:
     # The NDK is fetched rather than installed through sdkmanager: the extension is
     # built with r28, the revision build/vlc-android pins too, and one cached
     # download beats populating a cmdline-tools SDK to install the same thing.
+    # Still a cache, unlike the runtimes above: it is one download of a fixed
+    # archive from Google, so the artifact that would replace it -- zipped again on
+    # the way out -- is the same size and no faster. The cost of the branch scoping
+    # here is a few minutes on a pull request, against the one to two hours the
+    # runtimes were paying.
     - name: Restore the Android NDK
       id: ndk
       uses: actions/cache@v6
