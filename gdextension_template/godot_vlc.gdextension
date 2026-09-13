@@ -10,6 +10,9 @@ windows.release.x86_64 = "res://addons/godot-vlc/bin/win-x64/godot_vlc.dll"
 linux.debug.x86_64 = "res://addons/godot-vlc/bin/linux-x64/libgodot_vlc_debug.so"
 linux.release.x86_64 = "res://addons/godot-vlc/bin/linux-x64/libgodot_vlc.so"
 
+android.debug.arm64 = "res://addons/godot-vlc/bin/android-arm64/libgodot_vlc_debug.so"
+android.release.arm64 = "res://addons/godot-vlc/bin/android-arm64/libgodot_vlc.so"
+
 [dependencies]
 windows.x86_64 = {
 	"res://addons/godot-vlc/bin/win-x64/libvlc.dll": "",
@@ -24,6 +27,10 @@ linux.x86_64 = {
 	"res://addons/godot-vlc/bin/linux-x64/vlc": "",
 	"res://addons/godot-vlc/bin/linux-x64/libexec": "",
 	"res://addons/godot-vlc/bin/linux-x64/share": ""
+}
+
+android.arm64 = {
+	"res://addons/godot-vlc/bin/android-arm64/libvlc.so": ""
 }
 
 [icons]

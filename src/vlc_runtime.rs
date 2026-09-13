@@ -56,11 +56,18 @@
 //! Windows is deliberately left alone: the addon already ships
 //! `libvlccore.dll` next to a `plugins` directory, which is exactly what the
 //! Windows derivation produces, and it is known to work.
+//!
+//! Android needs none of the three overrides. Its runtime is monolithic: every
+//! module is linked into `libvlc.so` itself, so there is no plugin tree to point
+//! at, and `config_GetSysPath(VLC_SYSDATA_DIR)` is compiled as
+//! `/system/usr/share` rather than derived. What is missing there instead is
+//! `HOME`, which is not a directory LibVLC derives but the one it starts from --
+//! see `configure_vlc_paths` below.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use godot::prelude::*;
 
 /// Environment variable LibVLC 4 reads to override its library directory.
@@ -195,8 +202,156 @@ fn own_module_dir() -> Option<PathBuf> {
     own_module_dir_from_maps(&maps, own_address)
 }
 
+/// The C library's `HOME`, which LibVLC's Android platform layer reads as the
+/// root of its user data, cache and config directories.
+#[cfg(target_os = "android")]
+pub const HOME: &str = "HOME";
+
+/// Asks the VM for its own handle.
+///
+/// `JNI_GetCreatedJavaVMs` is implemented by the VM, not by a stable NDK
+/// library, so it is resolved by name rather than linked. `libnativehelper` is
+/// tried as well, because that is where some releases export it from. Returns
+/// `None` when neither library offers it.
+#[cfg(target_os = "android")]
+unsafe fn created_java_vm() -> Option<*mut std::ffi::c_void> {
+    use std::ffi::c_void;
+
+    type GetCreatedJavaVMs = unsafe extern "C" fn(*mut *mut c_void, i32, *mut i32) -> i32;
+
+    unsafe {
+        for library in [c"libart.so", c"libnativehelper.so"] {
+            let handle = libc::dlopen(library.as_ptr(), libc::RTLD_NOW);
+            if handle.is_null() {
+                continue;
+            }
+            let address = libc::dlsym(handle, c"JNI_GetCreatedJavaVMs".as_ptr());
+            if address.is_null() {
+                continue;
+            }
+
+            let get_created = std::mem::transmute::<*mut c_void, GetCreatedJavaVMs>(address);
+            let mut vm: *mut c_void = std::ptr::null_mut();
+            let mut count: i32 = 0;
+            if get_created(&mut vm, 1, &mut count) == 0 && !vm.is_null() && count >= 1 {
+                return Some(vm);
+            }
+        }
+
+        None
+    }
+}
+
+/// Runs LibVLC's own `JNI_OnLoad`.
+///
+/// libvlc.so implements it to remember the JavaVM in `s_jvm`, and everything
+/// JNI-backed in the Android build then reads that: the audio output wraps
+/// Java's `AudioTrack`, the MediaCodec decoder needs a `Surface`, and the
+/// platform layer's directory and proxy lookups go through JNI too. The dynamic
+/// linker does not call `JNI_OnLoad` for a library that arrives through
+/// `DT_NEEDED` -- only `java.lang.System.loadLibrary` does -- and Godot loads
+/// GDExtension libraries from native code, so nothing calls it and `s_jvm` stays
+/// null. This does what a Java host would have done, without a line of Java.
+///
+/// Nothing here is fatal. The software video path uses no JNI at all, so a
+/// failure is reported and playback is left to proceed: the video outcome has to
+/// stay readable even when this handshake does not.
+#[cfg(target_os = "android")]
+fn call_libvlc_jni_on_load() {
+    use std::ffi::c_void;
+
+    type JniOnLoad = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
+
+    unsafe {
+        // libvlc.so is already loaded as a link-time dependency, so this returns
+        // the handle the linker created rather than loading a second copy.
+        let handle = libc::dlopen(c"libvlc.so".as_ptr(), libc::RTLD_NOW);
+        if handle.is_null() {
+            godot_error!("godot-vlc: libvlc.so could not be opened to reach its JNI_OnLoad");
+            return;
+        }
+
+        let address = libc::dlsym(handle, c"JNI_OnLoad".as_ptr());
+        if address.is_null() {
+            godot_error!("godot-vlc: libvlc.so exports no JNI_OnLoad");
+            return;
+        }
+
+        let Some(vm) = created_java_vm() else {
+            godot_error!(
+                "godot-vlc: no JavaVM in this process; JNI-backed modules (audio output, MediaCodec) will not load"
+            );
+            return;
+        };
+
+        let on_load = std::mem::transmute::<*mut c_void, JniOnLoad>(address);
+        let version = on_load(vm, std::ptr::null_mut());
+        if version > 0 {
+            godot_print!("godot-vlc: LibVLC accepted the JavaVM (JNI version {version:#010x})");
+        } else {
+            godot_error!(
+                "godot-vlc: LibVLC's JNI_OnLoad refused the JavaVM (returned {version}); the calling thread is probably not attached to it"
+            );
+        }
+    }
+}
+
+/// Points LibVLC at a home directory it is allowed to write to.
+///
+/// The Android platform layer builds `$HOME/.share`, `$HOME/.cache` and
+/// `$HOME/.config` from this variable. With it unset, `platform_GetUserDir`
+/// falls back to a hardcoded `/sdcard/Android/data/org.videolan.vlc` -- VLC's own
+/// package directory, which this application cannot write to. Godot's user data
+/// directory is the writable location this process already owns, and asking
+/// Godot for it is the only way to learn it: nothing in the NDK exposes the
+/// application's own data directory without going through Java.
+///
+/// Failing to set it is not loud. LibVLC creates no cache or config under a
+/// directory it cannot use, and carries on.
+///
+/// This is also where LibVLC's `JNI_OnLoad` runs, the other thing that has to
+/// happen before an instance exists; see `call_libvlc_jni_on_load`. The name is
+/// narrower than what the function now does, and is worth widening the next time
+/// this hook is touched.
+#[cfg(target_os = "android")]
+pub fn configure_vlc_paths() {
+    use godot::classes::Os;
+    use std::ffi::CString;
+
+    call_libvlc_jni_on_load();
+
+    if std::env::var_os(HOME).is_some_and(|value| !value.is_empty()) {
+        godot_print!("godot-vlc: {HOME} is already set, leaving it as it is");
+        return;
+    }
+
+    let user_data_dir = Os::singleton().get_user_data_dir();
+    if user_data_dir.is_empty() {
+        godot_error!(
+            "godot-vlc: Godot reported no user data directory; LibVLC will fall back to VLC's own package directory"
+        );
+        return;
+    }
+
+    let (Ok(name), Ok(value)) = (CString::new(HOME), CString::new(user_data_dir.to_string()))
+    else {
+        godot_error!("godot-vlc: {HOME} could not be set to {user_data_dir}");
+        return;
+    };
+
+    // libc::setenv rather than std::env::set_var, for the reason given on Linux:
+    // LibVLC reads the environment through the C library regardless, and Rust's
+    // own API is unsafe because it races with other threads.
+    let result = unsafe { libc::setenv(name.as_ptr(), value.as_ptr(), 1) };
+    if result != 0 {
+        godot_error!("godot-vlc: failed to set {HOME} to {user_data_dir}");
+    } else {
+        godot_print!("godot-vlc: {HOME}={user_data_dir}");
+    }
+}
+
 /// No-op: see the module documentation for why Windows needs no override.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub fn configure_vlc_paths() {}
 
 #[cfg(test)]

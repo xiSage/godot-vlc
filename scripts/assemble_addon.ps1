@@ -33,7 +33,7 @@ or runtime is absent is a hard error rather than a silent skip.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win-x64', 'linux-x64')]
+    [ValidateSet('win-x64', 'linux-x64', 'android-arm64')]
     [string[]]$Platforms = @('win-x64', 'linux-x64'),
 
     [string]$GdextensionPath = 'gdextension_template/godot_vlc.gdextension',
@@ -54,8 +54,16 @@ $binDir = Join-Path $addonRoot 'bin'
 # must end up, which is not the name the linker produces: the debug extension is
 # shipped as godot_vlc_debug.dll but built as godot_vlc.dll.
 $linkerOutput = @{
-    'win-x64'   = 'godot_vlc.dll'
-    'linux-x64' = 'libgodot_vlc.so'
+    'win-x64'       = 'godot_vlc.dll'
+    'linux-x64'     = 'libgodot_vlc.so'
+    'android-arm64' = 'libgodot_vlc.so'
+}
+
+# Where cargo leaves that output. A host build lands in target/<profile>; a cross
+# build lands under the target triple, so the Android extension is not beside the
+# desktop ones.
+$linkerTriple = @{
+    'android-arm64' = 'aarch64-linux-android'
 }
 
 $gdextensionAbs = Join-Path $repoRoot $GdextensionPath
@@ -67,9 +75,10 @@ Builds the full (destination, source) plan first. Any missing input aborts
 before the existing payload is removed.
 #>
 function New-AddonPlan {
-    param([Parameter(Mandatory)][ValidateSet('win-x64', 'linux-x64')][string]$Platform)
+    param([Parameter(Mandatory)][ValidateSet('win-x64', 'linux-x64', 'android-arm64')][string]$Platform)
 
     $keys = Get-PlatformManifestKeys -Platform $Platform
+    $targetDir = if ($linkerTriple.ContainsKey($Platform)) { "target/$($linkerTriple[$Platform])" } else { 'target' }
     $plan = [System.Collections.Generic.List[object]]::new()
 
     foreach ($libraryKey in $keys.Libraries) {
@@ -77,7 +86,7 @@ function New-AddonPlan {
         foreach ($resPath in Get-GdextensionPaths -Lines $manifestLines -Section 'libraries' -Key $libraryKey) {
             $plan.Add([pscustomobject]@{
                     Dest   = Get-AddonRelativePath -ResPath $resPath -Prefix $AddonPrefix
-                    Source = "target/$profile/$($linkerOutput[$Platform])"
+                    Source = "$targetDir/$profile/$($linkerOutput[$Platform])"
                 })
         }
     }

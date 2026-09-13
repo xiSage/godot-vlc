@@ -91,12 +91,22 @@ function Get-PlatformManifestKeys {
     <#
     .SYNOPSIS
     The [libraries] / [dependencies] keys belonging to one platform.
+
+    .DESCRIPTION
+    The Android keys name the architecture the way GDExtension does -- arm64, not
+    arm64-v8a -- because the export plugin matches [libraries] against the arch
+    names the export platform is given. A key written with the ABI name never
+    matches, and the library is then absent from the APK without the export
+    failing: Godot writes an entry for a declared library it cannot find, and that
+    entry is empty.
     #>
-    param([Parameter(Mandatory)][ValidateSet('win-x64', 'linux-x64')][string]$Platform)
+    param([Parameter(Mandatory)][ValidateSet('win-x64', 'linux-x64', 'android-arm64')][string]$Platform)
 
     if ($Platform -eq 'win-x64') {
         @{ Libraries = @('windows.debug.x86_64', 'windows.release.x86_64'); Dependencies = 'windows.x86_64' }
-    } else {
+    } elseif ($Platform -eq 'linux-x64') {
         @{ Libraries = @('linux.debug.x86_64', 'linux.release.x86_64'); Dependencies = 'linux.x86_64' }
+    } else {
+        @{ Libraries = @('android.debug.arm64', 'android.release.arm64'); Dependencies = 'android.arm64' }
     }
 }

@@ -17,7 +17,7 @@
 * USA
 */
 
-use crate::{util::cstring_from_gstring, vlc};
+use crate::{util::cstring_from_gstring, vlc, vlc_media::VlcMedia};
 use godot::{
     classes::{
         Engine, ProjectSettings, class_macros::sys::GDEXTENSION_VARIANT_TYPE_STRING,
@@ -83,11 +83,35 @@ impl IObject for VLCInstance {
         );
         ProjectSettings::singleton().add_property_info(&info);
         ProjectSettings::singleton().set_restart_if_changed("vlc/arguments", true);
-        let arguments: Array<GString> = ProjectSettings::singleton()
+        let configured_arguments: Array<GString> = ProjectSettings::singleton()
             .get_setting("vlc/arguments")
             .try_to()
             .unwrap_or_default();
-        let args: Vec<CString> = arguments.iter_shared().map(cstring_from_gstring).collect();
+
+        // Copied rather than used in place: a Godot Array is reference-counted,
+        // so appending the Android default to it would edit the project setting.
+        #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+        let mut arguments: Vec<GString> = configured_arguments.iter_shared().collect();
+
+        // Android has no window for LibVLC to draw into, and the software
+        // callbacks are the only output that can produce a texture, so `vmem` is
+        // what this extension always wants there. Registering those callbacks
+        // already sets the media player's own `vout`, which outranks an instance
+        // option; this default earns its place when that registration did not
+        // happen, where it turns a silent "no video" into vmem's own "missing
+        // lock callback" error -- the difference between a symptom and a reason.
+        #[cfg(target_os = "android")]
+        {
+            let already_chosen = arguments.iter().any(|argument| {
+                let argument = argument.to_string();
+                argument.starts_with("--vout") || argument.starts_with(":vout")
+            });
+            if !already_chosen {
+                arguments.push(GString::from("--vout=vmem"));
+            }
+        }
+
+        let args: Vec<CString> = arguments.into_iter().map(cstring_from_gstring).collect();
         let argc = args.len() as c_int;
         let args: Vec<_> = args.iter().map(|s| s.as_ptr()).collect();
         let argv = args.as_ptr();
@@ -122,6 +146,20 @@ impl IObject for VLCInstance {
 impl VLCInstance {
     pub fn get_vlc_instance(&self) -> *mut vlc::libvlc_instance_t {
         self.instance.unwrap()
+    }
+
+    /// Loads a media file on behalf of the resource format loader.
+    ///
+    /// The loader is a GDScript, and it cannot name `VLCMedia` itself: a script is
+    /// parsed while the project is imported, which happens before a GDExtension
+    /// has registered any class. `VLCMedia.load_from_file(...)` is therefore a
+    /// parse error there, and a parse error is not local -- it takes the whole
+    /// custom loader out of the exported project, so every media file fails to
+    /// load as an unrecognised resource. The loader reaches this through the
+    /// engine singleton by name instead, which needs no class to be declared.
+    #[func]
+    pub fn load_media_file(&self, path: GString) -> Gd<VlcMedia> {
+        VlcMedia::load_from_file(path)
     }
 
     unsafe extern "C" fn log_callback_impl(
