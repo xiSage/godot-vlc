@@ -84,8 +84,12 @@ docker run --rm -v "$PWD/artifacts:/out" -v godot-vlc-work:/tmp/vlc-build \
     godot-vlc/vlc-build linux-x64 /out
 ```
 
-In CI the whole container run is skipped on a cache hit, keyed on the contents
-of `vlc.lock` and the build scripts.
+In CI the whole container run is skipped when the same inputs have already been
+built: the runtime is named after the hash of those inputs, and a run on any branch
+fetches the one built for them, wherever it was built. That is an artifact rather
+than an `actions/cache` entry, which is scoped to the branch that created it -- so a
+pull request, whose run belongs to its base branch, used to miss the cache a push to
+the same branch had just written and rebuild for one to two hours anyway.
 
 ## Build configuration
 
