@@ -119,7 +119,11 @@ struct VlcMediaPlayer {
     #[var(set=set_bus)]
     bus: StringName,
     player_ptr: *mut libvlc_media_player_t,
-    self_gd: Option<Box<Gd<Self>>>,
+    /// Where the player's event callbacks leave what they received, for the main
+    /// thread to turn into signals once a frame (`events.rs`). Boxed because the
+    /// events are attached with this address, and it is written from libvlc's
+    /// threads.
+    event_park: Box<events::EventPark>,
     /// The buffering percentage libvlc reported last, as `f32::to_bits`, or
     /// [NO_BUFFERING_REPORT] while it has reported nothing. Boxed because this
     /// exact address is what the buffering event is attached with
@@ -179,7 +183,7 @@ impl IControl for VlcMediaPlayer {
             mix_target: MixTarget::Stereo,
             bus: StringName::from("Master"),
             player_ptr,
-            self_gd: None,
+            event_park: Box::new(events::EventPark::new()),
             buffering_percent: Box::new(AtomicU32::new(NO_BUFFERING_REPORT.to_bits())),
             buffering_reported: NO_BUFFERING_REPORT,
             texture,
@@ -213,6 +217,9 @@ impl IControl for VlcMediaPlayer {
                 }
                 self.signals().video_frame().emit();
             }
+            // Everything libvlc has reported since the last frame goes out here,
+            // on the main thread, in the order it arrived.
+            self.emit_parked_events();
             // The buffering value is reported from here, not from the event
             // callback, so that a burst of upstream reports costs one signal
             // per frame at most -- and only when the value actually moved.
@@ -224,7 +231,6 @@ impl IControl for VlcMediaPlayer {
                 self.signals().buffering().emit(percent);
             }
         } else if what == ControlNotification::READY {
-            self.self_gd = Some(Box::new(self.to_gd()));
             self.register_player_callbacks();
             let texture_rect = self.texture_rect.clone();
             self.base_mut()
@@ -332,10 +338,6 @@ impl VlcMediaPlayer {
     #[constant]
     const POSITION_BOTTOM_RIGHT: c_int = libvlc_position_t_libvlc_position_bottom_right;
 
-    /// @deprecated: use [signal opening] instead.
-    #[deprecated]
-    #[signal]
-    fn openning();
     #[signal]
     fn opening();
     /// Emitted while the input is filling its buffer, with the completion
@@ -377,6 +379,62 @@ impl VlcMediaPlayer {
     fn backward();
     #[signal]
     fn stopping();
+    /// Emitted with the playback position as a fraction of the media, `0.0`-`1.0`,
+    /// together with [signal time_changed] and just before it: about four times a
+    /// second, and only while playback is not paused.
+    ///
+    /// # Note
+    /// - While the input is buffering the position is reported as `0.0`, and the
+    ///   first moments of playback report nothing at all, because libvlc treats a
+    ///   timestamp of `0` as "unknown".
+    /// - `0.0` is clamped, `1.0` is not: a container whose timestamps overshoot
+    ///   its duration can report slightly more than one, so clamp before drawing
+    ///   with it.
+    #[signal]
+    fn position_changed(position: f64);
+    /// Emitted with the current playback time in milliseconds, just after
+    /// [signal position_changed] and about four times a second while not paused.
+    ///
+    /// # Note
+    /// - This is a signal for a UI, not a clock for gameplay: synchronising
+    ///   anything with the picture needs a value that advances with the output,
+    ///   and libvlc's timer for that is not exposed by this binding.
+    /// - Playback ending does not produce a final value -- the last one can be
+    ///   around 250 ms short of the end -- so finish a progress bar from
+    ///   [method get_length] rather than by waiting for this to reach it.
+    #[signal]
+    fn time_changed(time: i64);
+    /// Emitted with the length of the media in milliseconds, once libvlc knows it.
+    ///
+    /// # Note
+    /// - It cannot arrive before [signal playing]: libvlc does not know the
+    ///   length before playback starts.
+    /// - Nothing is emitted while the length is unknown (a live stream, or a
+    ///   demuxer that reports no duration): silence here is not a length of `0`.
+    /// - It can arrive again for a corrected duration or for the next media on
+    ///   this player, and [method get_length] rounds the same value, so the two
+    ///   can differ by a millisecond.
+    #[signal]
+    fn length_changed(length: i64);
+    /// Emitted when the input starts or stops being seekable.
+    ///
+    /// # Note
+    /// - Only a change is emitted, so an input that cannot seek reports nothing
+    ///   at all: no signal does not mean `false`. [method is_seekable] answers the
+    ///   question directly, but also answers `false` before a media opens and
+    ///   after it stops.
+    /// - An input that is stopping usually reports `false` first, so a seek bar
+    ///   can disable itself without polling.
+    #[signal]
+    fn seekable_changed(seekable: bool);
+    /// Emitted when the input starts or stops being pausable.
+    ///
+    /// # Note
+    /// - Only a change is emitted: an input that cannot be paused reports nothing
+    ///   at all. [method can_pause] answers the question directly, but also
+    ///   answers `false` before a media opens and after it stops.
+    #[signal]
+    fn pausable_changed(pausable: bool);
     #[signal]
     fn video_frame();
 
@@ -557,6 +615,10 @@ impl VlcMediaPlayer {
 
     /// Can this media player be paused?
     ///
+    /// # Note
+    /// `false` is also what this answers before a media opens and after it stops,
+    /// so on its own it cannot tell "cannot be paused" from "nothing to pause".
+    ///
     /// # Return values
     /// - `true` media player can be paused
     /// - `false` media player cannot be paused
@@ -613,14 +675,24 @@ impl VlcMediaPlayer {
 
     /// Get the current movie length (in ms).
     ///
+    /// # Note
+    /// libvlc's own header promises `-1` when there is no media, but what it
+    /// returns is `0` -- the same "unknown" that stops [signal length_changed]
+    /// from being emitted at all.
+    ///
     /// # Returns
-    /// the movie length (in ms), or -1 if there is no media.
+    /// the movie length (in ms), or `0` while it is unknown.
     #[func]
     fn get_length(&self) -> i64 {
         unsafe { libvlc_media_player_get_length(self.player_ptr) }
     }
 
     /// Get movie position as percentage between 0.0 and 1.0.
+    ///
+    /// # Note
+    /// Unlike [method get_time] and [method get_length], this one really does
+    /// report `-1.0` when there is nothing to report; [signal position_changed]
+    /// never carries that value.
     ///
     /// # Returns
     /// movie position, or -1. in case of error.
@@ -652,8 +724,12 @@ impl VlcMediaPlayer {
 
     /// Get the current movie time (in ms).
     ///
+    /// # Note
+    /// `0` while there is nothing to report. libvlc's header promises `-1` here
+    /// too, and its implementation returns the same "unknown" as its length.
+    ///
     /// # Returns
-    /// the movie time (in ms), or -1 if there is no media.
+    /// the movie time (in ms), or `0` while it is unknown.
     #[func]
     fn get_time(&self) -> i64 {
         unsafe { libvlc_media_player_get_time(self.player_ptr) }
@@ -708,6 +784,10 @@ impl VlcMediaPlayer {
     }
 
     /// Is this media player seekable?
+    ///
+    /// # Note
+    /// `false` is also what this answers before a media opens and after it stops,
+    /// so on its own it cannot tell "not seekable" from "nothing to seek in".
     ///
     /// # Return values
     /// - `true` media player can seek
