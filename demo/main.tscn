@@ -76,6 +76,10 @@ func _on_h_slider_drag_ended(value_changed: bool) -> void:
 		dragging = false
 
 
+func _on_buffering(percent: float) -> void:
+	%Buffering.text = \"buffering: %.1f\" % percent
+
+
 func _on_playing() -> void:
 	video_tracks = get_tracklist(VLCTrack.TYPE_VIDEO, false).get_tracks()
 	audio_tracks = get_tracklist(VLCTrack.TYPE_AUDIO, false).get_tracks()
@@ -242,6 +246,11 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "position:"
 
+[node name="Buffering" type="Label" parent="ScrollContainer/VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "buffering:"
+
 [node name="State" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=552890077]
 unique_name_in_owner = true
 layout_mode = 2
@@ -286,6 +295,7 @@ access = 2
 use_native_dialog = true
 
 [connection signal="playing" from="." to="." method="_on_playing"]
+[connection signal="buffering" from="." to="." method="_on_buffering"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Play" to="." method="_on_play_pressed"]

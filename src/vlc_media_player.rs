@@ -26,7 +26,13 @@ mod software_video;
 #[cfg(all(feature = "gpu", windows))]
 mod gpu_d3d11;
 
-use std::{ffi::c_int, sync::mpsc};
+use std::{
+    ffi::c_int,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        mpsc,
+    },
+};
 
 use crate::{
     vlc::*,
@@ -74,6 +80,14 @@ pub enum MixTarget {
     Center,
 }
 
+/// "libvlc has not reported a buffering percentage yet".
+///
+/// libvlc's own values are always inside `0..=100` (it computes them as
+/// `100 * level`), so a negative sentinel cannot collide with a real report --
+/// which matters, because the first report of a playthrough is a genuine `0.0`
+/// and would otherwise be swallowed as "unchanged".
+const NO_BUFFERING_REPORT: f32 = -1.0;
+
 /// A control used for video playback.\
 /// This control provides a simple way to play video files using the VLC library. It supports most common video formats, including MP4, MKV, AVI, etc.
 #[derive(GodotClass)]
@@ -106,6 +120,15 @@ struct VlcMediaPlayer {
     bus: StringName,
     player_ptr: *mut libvlc_media_player_t,
     self_gd: Option<Box<Gd<Self>>>,
+    /// The buffering percentage libvlc reported last, as `f32::to_bits`, or
+    /// [NO_BUFFERING_REPORT] while it has reported nothing. Boxed because this
+    /// exact address is what the buffering event is attached with
+    /// (`events.rs::register_player_callbacks`), and it is written from
+    /// libvlc's input thread -- hence an atomic rather than an `f32`.
+    buffering_percent: Box<AtomicU32>,
+    /// The value last emitted on [signal buffering]. Main thread only: the
+    /// signal is emitted from `on_notification`, never from the callback.
+    buffering_reported: f32,
     texture: Gd<ImageTexture>,
     texture_rect: Gd<TextureRect>,
     video_tx: Box<mpsc::Sender<(bool, Gd<Image>)>>, // (is_resized, image)
@@ -157,6 +180,8 @@ impl IControl for VlcMediaPlayer {
             bus: StringName::from("Master"),
             player_ptr,
             self_gd: None,
+            buffering_percent: Box::new(AtomicU32::new(NO_BUFFERING_REPORT.to_bits())),
+            buffering_reported: NO_BUFFERING_REPORT,
             texture,
             texture_rect: texture_rect.clone(),
             video_tx,
@@ -187,6 +212,16 @@ impl IControl for VlcMediaPlayer {
                     self.texture.update(&data.1);
                 }
                 self.signals().video_frame().emit();
+            }
+            // The buffering value is reported from here, not from the event
+            // callback, so that a burst of upstream reports costs one signal
+            // per frame at most -- and only when the value actually moved.
+            // `Relaxed` is enough: this is a progress value, not a
+            // synchronisation channel.
+            let percent = f32::from_bits(self.buffering_percent.load(Ordering::Relaxed));
+            if percent != self.buffering_reported {
+                self.buffering_reported = percent;
+                self.signals().buffering().emit(percent);
             }
         } else if what == ControlNotification::READY {
             self.self_gd = Some(Box::new(self.to_gd()));
@@ -303,8 +338,33 @@ impl VlcMediaPlayer {
     fn openning();
     #[signal]
     fn opening();
+    /// Emitted while the input is filling its buffer, with the completion
+    /// percentage libvlc reports: [param percent] is `0`-`100`, and libvlc sends
+    /// the literal `1.0` once the buffer is full, so `100` is exact.
+    ///
+    /// Only a report that differs from the previous one is emitted, and at most
+    /// once per frame: libvlc raises this event once per PCR -- hundreds of
+    /// times while a single buffer fills -- and a handler cannot draw more often
+    /// than that anyway. [method get_buffering_percent] reads the same value
+    /// without listening for it.
+    ///
+    /// # Warning
+    /// - `0` means the input is opening, or that a seek reset the buffer; `100`
+    ///   means the buffer filled. There is no separate "started"/"finished"
+    ///   event, only these values.
+    /// - A buffer that is cut short -- [method stop_async], a decode error, a
+    ///   media that ends -- never gets a closing `100`. Do not read "reached
+    ///   100" as "playback started"; ask [method get_state] for
+    ///   [constant STATE_PLAYING].
+    /// - The order against [signal playing] and [signal stopped] is not defined,
+    ///   and a late report can still arrive after [signal stopping].
+    /// - It arrives only while the input is buffering, not periodically for the
+    ///   whole of playback.
+    /// - This signal carries an argument now. A handler written before it did --
+    ///   one that takes no parameters -- is no longer called by Godot, which
+    ///   reports the argument mismatch each time the signal is emitted.
     #[signal]
-    fn buffering();
+    fn buffering(percent: f32);
     #[signal]
     fn playing();
     #[signal]
@@ -503,6 +563,22 @@ impl VlcMediaPlayer {
     #[func]
     fn can_pause(&self) -> bool {
         unsafe { libvlc_media_player_can_pause(self.player_ptr) }
+    }
+
+    /// The last buffering percentage libvlc reported, in `0`-`100`, or `0` if it
+    /// has reported nothing yet.
+    ///
+    /// This is the value [signal buffering] carries, cached so that a script
+    /// which connects late -- or polls instead of listening -- still has it.
+    /// "Is the player buffering *right now*" is a different question: ask
+    /// [method get_state] for [constant STATE_BUFFERING].
+    ///
+    /// # Returns
+    /// the last reported percentage, or `0` before the first report.
+    #[func]
+    fn get_buffering_percent(&self) -> f32 {
+        // `max` is what turns [NO_BUFFERING_REPORT] into the documented `0`.
+        f32::from_bits(self.buffering_percent.load(Ordering::Relaxed)).max(0.0)
     }
 
     /// Get movie chapter.
