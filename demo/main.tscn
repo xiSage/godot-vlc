@@ -11,8 +11,6 @@ var dragging = false
 var video_tracks: Array[VLCTrack]
 var audio_tracks: Array[VLCTrack]
 var text_tracks: Array[VLCTrack]
-var last_time := 0
-var last_length := 0
 
 
 func _process(_delta: float) -> void:
@@ -28,27 +26,16 @@ func _process(_delta: float) -> void:
 		STATE_STOPPED :state_text = \"stopped\"
 		STATE_STOPPING: state_text = \"stopping\"
 	%State.text = \"state: \" + state_text
+	# The progress display is polled on purpose. get_time() and get_position() are
+	# interpolated against the system clock, so they read smoothly at whatever rate
+	# this runs at; time_changed/position_changed are paced by libvlc instead and
+	# arrive only a few times a second.
+	%Time.text = \"time: {0} / {1}\".format([get_time(), get_length()])
+	var pos = get_position()
+	%Position.text = \"position: %.6f\" % pos
 	%GPUOutput.text = \"gpu output: \" + str(is_gpu_output_active())
-
-
-func _refresh_time_label() -> void:
-	%Time.text = \"time: {0} / {1}\".format([last_time, last_length])
-
-
-func _on_time_changed(time: int) -> void:
-	last_time = time
-	_refresh_time_label()
-
-
-func _on_length_changed(length: int) -> void:
-	last_length = length
-	_refresh_time_label()
-
-
-func _on_position_changed(position: float) -> void:
-	%Position.text = \"position: %.6f\" % position
 	if not dragging:
-		%HSlider.value = position
+		%HSlider.value = pos
 
 
 func _on_seekable_changed(seekable: bool) -> void:
@@ -318,9 +305,6 @@ use_native_dialog = true
 
 [connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="buffering" from="." to="." method="_on_buffering"]
-[connection signal="time_changed" from="." to="." method="_on_time_changed"]
-[connection signal="length_changed" from="." to="." method="_on_length_changed"]
-[connection signal="position_changed" from="." to="." method="_on_position_changed"]
 [connection signal="seekable_changed" from="." to="." method="_on_seekable_changed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
