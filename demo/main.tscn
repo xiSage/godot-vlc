@@ -11,6 +11,8 @@ var dragging = false
 var video_tracks: Array[VLCTrack]
 var audio_tracks: Array[VLCTrack]
 var text_tracks: Array[VLCTrack]
+var last_time := 0
+var last_length := 0
 
 
 func _process(_delta: float) -> void:
@@ -26,12 +28,31 @@ func _process(_delta: float) -> void:
 		STATE_STOPPED :state_text = \"stopped\"
 		STATE_STOPPING: state_text = \"stopping\"
 	%State.text = \"state: \" + state_text
-	%Time.text = \"time: {0} / {1}\".format([get_time(), get_length()])
-	var pos = get_position()
-	%Position.text = \"position: %.6f\" % pos
 	%GPUOutput.text = \"gpu output: \" + str(is_gpu_output_active())
+
+
+func _refresh_time_label() -> void:
+	%Time.text = \"time: {0} / {1}\".format([last_time, last_length])
+
+
+func _on_time_changed(time: int) -> void:
+	last_time = time
+	_refresh_time_label()
+
+
+func _on_length_changed(length: int) -> void:
+	last_length = length
+	_refresh_time_label()
+
+
+func _on_position_changed(position: float) -> void:
+	%Position.text = \"position: %.6f\" % position
 	if not dragging:
-		%HSlider.value = pos
+		%HSlider.value = position
+
+
+func _on_seekable_changed(seekable: bool) -> void:
+	%HSlider.editable = seekable
 
 
 func _on_play_pressed() -> void:
@@ -235,6 +256,7 @@ unique_name_in_owner = true
 layout_mode = 2
 max_value = 1.0
 step = 0.0
+editable = false
 
 [node name="Time" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1802034036]
 unique_name_in_owner = true
@@ -296,6 +318,10 @@ use_native_dialog = true
 
 [connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="buffering" from="." to="." method="_on_buffering"]
+[connection signal="time_changed" from="." to="." method="_on_time_changed"]
+[connection signal="length_changed" from="." to="." method="_on_length_changed"]
+[connection signal="position_changed" from="." to="." method="_on_position_changed"]
+[connection signal="seekable_changed" from="." to="." method="_on_seekable_changed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Play" to="." method="_on_play_pressed"]
