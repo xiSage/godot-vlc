@@ -380,10 +380,14 @@ impl VlcMediaPlayer {
     #[signal]
     fn stopping();
     /// Emitted with the playback position as a fraction of the media, `0.0`-`1.0`,
-    /// together with [signal time_changed] and just before it: about four times a
-    /// second, and only while playback is not paused.
+    /// together with [signal time_changed] and just before it.
     ///
     /// # Note
+    /// - It is a notification, not a clock. libvlc paces it with its statistics
+    ///   interval: at most about four times a second, often fewer, nothing while
+    ///   paused, and nothing while the input is buffering. For a smooth progress
+    ///   bar, read [method get_position] between them instead -- unlike this
+    ///   signal, it is interpolated against the system clock.
     /// - While the input is buffering the position is reported as `0.0`, and the
     ///   first moments of playback report nothing at all, because libvlc treats a
     ///   timestamp of `0` as "unknown".
@@ -393,12 +397,17 @@ impl VlcMediaPlayer {
     #[signal]
     fn position_changed(position: f64);
     /// Emitted with the current playback time in milliseconds, just after
-    /// [signal position_changed] and about four times a second while not paused.
+    /// [signal position_changed].
     ///
     /// # Note
-    /// - This is a signal for a UI, not a clock for gameplay: synchronising
-    ///   anything with the picture needs a value that advances with the output,
-    ///   and libvlc's timer for that is not exposed by this binding.
+    /// - Its pace is libvlc's, not the caller's: the statistics interval
+    ///   (`stats-min-report-interval`, 250 ms by default) is a floor rather than a
+    ///   period, the rate it settles at depends on the input and the container,
+    ///   and it stops entirely while the input is buffering. [method get_time] is
+    ///   the one to read for a smooth display.
+    /// - It is also not a clock for gameplay: synchronising anything with the
+    ///   picture needs a value that advances with the output, and libvlc's timer
+    ///   for that is not exposed by this binding.
     /// - Playback ending does not produce a final value -- the last one can be
     ///   around 250 ms short of the end -- so finish a progress bar from
     ///   [method get_length] rather than by waiting for this to reach it.
