@@ -229,7 +229,21 @@ echo "== building contribs, engine and libvlc.so =="
 cd "$src_dir"
 export ANDROID_NDK="$ndk"
 export MAKEFLAGS="-j$jobs"
-set -- -a "$abi" --release --license a --no-jni
+# --license l is this buildsystem's "LGPLv3 + ad-clauses" mode; its other modes
+# are a: LGPLv2.1 + ad-clauses and g: GPL (the default). The desktop runtimes
+# build the same combination, and the two lines have to agree -- a runtime that
+# is LGPLv2.1 on one platform and LGPLv3 on another is a licence statement
+# nobody can make.
+#
+# l is also what buys TLS on Android: contrib builds GnuTLS only when
+# version-3 (L)GPL code is allowed, because its crypto backend (nettle, then
+# gmp) is LGPLv3+/GPLv2+, and without GnuTLS no plugin provides LibVLC's
+# "tls client" capability, so https:// and everything else over TLS fails to
+# open. The desktop runtimes reach the same tier by passing --disable-gpl and
+# --enable-ad-clauses and *not* passing --disable-gnuv3; build/vlc/build.ps1
+# carries the long version of this reasoning, and README.md's "Licensing"
+# section records what it means for whoever bundles these runtimes.
+set -- -a "$abi" --release --license l --no-jni
 if [ "$prebuilt_contribs" = 1 ]; then
     set -- "$@" --with-prebuilt-contribs
 fi
@@ -271,7 +285,7 @@ fi
 # one somebody eventually deletes.
 if "$toolchain/llvm-strings" -a "$built_lib" |
     grep -qE 'sout-x264-|H\.264/MPEG-4 Part 10/AVC encoder \(x264\)'; then
-    echo "FAIL: VLC's x264 encoder module is in the runtime; --license a was not honoured" >&2
+    echo "FAIL: VLC's x264 encoder module is in the runtime; --license l was not honoured" >&2
     fail=1
 fi
 

@@ -164,6 +164,11 @@ Common failures, and what they mean:
   1026 MB were `.debug_*` sections, and the packed Linux runtime was 307 MB where
   the same tree stripped is 53 MB. The trade is that a crash inside LibVLC has no
   symbols here; `build/vlc/postprocess.ps1` records the reasoning.
+- `smb://` and `cifs://` reach SMBv1 shares through libdsm, which the desktop
+  runtimes enable with `--enable-libdsm` and the Android runtime enables as part
+  of VideoLAN's own buildsystem. There is no SMB2/3 client on the desktop
+  runtimes: VLC's `smb2` module needs libsmb2, and contrib has no package for it.
+  The Android runtime is built by the other buildsystem and carries both.
 - macOS, Linux arm64 and Windows arm64 are not supported.
 
 
@@ -172,14 +177,63 @@ Common failures, and what they mean:
 This library is LGPL-2.1-or-later; see `LICENSE`.
 
 The bundled LibVLC runtime is built with `contrib/bootstrap --disable-gpl
---disable-gnuv3 --enable-ad-clauses`. VideoLAN's own Apple, Android and wasm
-builds use the same set, and `contrib/bootstrap` reports the resulting licence
-as *"Lesser GPL version 2.1, with advertisement clauses"* — so this is LGPL with
-advertisement clauses, not plain LGPLv2.1.
+--enable-ad-clauses`, and *without* `--disable-gnuv3` — GnuTLS and the rest of
+the version-3 (L)GPL tier are admitted because contrib defaults that switch to
+on, and `--enable-gnuv3` is not a spelling it accepts. `contrib/bootstrap`
+reports the result as *"Lesser GPL version 3, with advertisement clauses"*. The
+Android runtime builds the same combination through `libvlcjni`'s `--license l`
+mode; the two lines have to agree, because a runtime that is LGPLv2.1 on one
+platform and LGPLv3 on another is a licence statement nobody can make. The
+extension itself stays LGPL-2.1-or-later — the LGPLv3 part is the runtime it
+links.
 
-That is deliberate. VLC's plugin tree is licence-heterogeneous, and bundling
-GPL-licensed modules such as x264 would mean answering licensing questions for
-every project that uses this extension in a commercial game. What the flags
-exclude is encoders and DVD access; H.264, VP9 and AV1 *decoding* go through
-avcodec and dav1d and are unaffected. `--enable-ad-clauses` is what admits
-freetype, VLC's subtitle and OSD text renderer, so it is not optional.
+`--disable-gpl` is what keeps the GPL packages out, and it stays on: x264 and
+x265 are encoders a player does not need (H.264, VP9 and AV1 *decoding* goes
+through avcodec and dav1d), DVD access is GPL, and `aribb24` — the only package
+gated on *both* switches — is excluded by it as well. `--enable-ad-clauses` is
+not optional: freetype is the only package in contrib gated on it, and freetype
+is VLC's subtitle and OSD text renderer.
+
+Not passing `--disable-gnuv3` is not optional either, because that tier is the
+only way to get TLS here. GnuTLS is the only cross-platform provider of LibVLC's
+`tls client` capability, and contrib builds it only when version-3 (L)GPL code is
+allowed, since its crypto backend (`nettle`, then `gmp`) is LGPLv3+/GPLv2+ and
+cannot be used under LGPLv2.1. Measured on the previous win-x64 runtime, **0 of
+383 plugins** carried `tls client`, so nothing over TLS could be opened at all.
+The same switch brings three more packages, each for a reason of its own:
+
+- `live555`, itself LGPLv3-or-later — 444 of its 447 source files grant "version
+  3 … or later" — which is what serves RTSP properly.
+- `srt`, whose contrib rule pins `-DUSE_ENCLIB=gnutls` and so needs the same
+  backend.
+- `asdcplib`, admitted by this switch rather than by a `GPL` one (its gate reads
+  `if GPL … else if GNUV3`) because it is built against nettle. Its own licence
+  is BSD-style ("Redistribution and use in source and binary forms"), and the VLC
+  DCP module it enables is LGPL-2.1-or-later like the rest of the tree, so it
+  adds a capability — Digital Cinema packages — and no licence obligation of its
+  own. Android does not get it: that rule skips the platform.
+
+What LGPLv3 changes for whoever bundles this runtime, and what it does not:
+
+- Games are unaffected. LGPLv3 is still a *weak* copyleft: an application that
+  links the library keeps its own licence and its own source stays closed.
+- The runtime ships as separate shared libraries (`.dll`/`.so`, and a separate
+  `libvlc.so` on Android), which is the "suitable shared library mechanism" of
+  LGPLv3 §4(d)(1); the duties that come with it are passing on the notices and
+  licence texts and letting the user replace the library.
+- LGPLv3 §4(e) requires Installation Information only where GPLv3 §6 would:
+  when the work is conveyed in or with a **User Product**. A game shipped on PC
+  is not one — the player can replace the DLL — but a locked console, handheld
+  or embedded target is.
+- LGPLv3 is **not compatible with GPLv2-only** projects, where LGPLv2.1 was, and
+  it adds the patent (§11) and no-further-restrictions (§4, GPLv3 §10) terms.
+
+The desktop runtimes pass one flag that is not a licence switch at all:
+`--enable-libdsm`. libdsm is an *opt-in* contrib package — its rules never add
+themselves to `PKGS` — and VLC builds its SMB/CIFS access module only when the
+library is present, so without the flag `smb://` had no client here. Its licence
+is LGPLv2.1-or-later ("liBDSM is released under LGPLv2.1 (or later)"), and the
+two GNU libraries it links statically, libtasn1 4.19.0 and libiconv 1.18, carry
+LGPL-2.1 `COPYING` files: all three sit inside the set above. VideoLAN's own
+Android buildsystem already enables it, so this brings the desktop runtimes to
+the same feature set rather than adding one only they have.
