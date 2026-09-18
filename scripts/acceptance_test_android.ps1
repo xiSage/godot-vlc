@@ -284,8 +284,8 @@ if ($log | Select-String -Pattern 'failed to create video output') {
 if ($log | Select-String -Pattern 'Failed loading resource: res://test\.mp4') {
     $failed += 'the demo could not load res://test.mp4 on the device'
 }
-if ($log | Select-String -Pattern "load_media_file.*Nonexistent|Nonexistent function 'load_media_file'") {
-    $failed += 'the format loader called a method this extension build does not have: the APK is older than the source'
+if ($log | Select-String -Pattern 'No loader found for resource: res://test\.mp4') {
+    $failed += 'the device found no loader for res://test.mp4: the APK''s extension does not register one, so the APK is older than the source'
 }
 
 foreach ($line in @('godot-vlc:', 'using vout display module', 'using video decoder module', 'using audio output module')) {

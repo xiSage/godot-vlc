@@ -17,7 +17,7 @@
 * USA
 */
 
-use crate::{util::cstring_from_gstring, vlc, vlc_media::VlcMedia};
+use crate::{util::cstring_from_gstring, vlc};
 use godot::{
     classes::{
         Engine, ProjectSettings, class_macros::sys::GDEXTENSION_VARIANT_TYPE_STRING,
@@ -146,20 +146,6 @@ impl IObject for VLCInstance {
 impl VLCInstance {
     pub fn get_vlc_instance(&self) -> *mut vlc::libvlc_instance_t {
         self.instance.unwrap()
-    }
-
-    /// Loads a media file on behalf of the resource format loader.
-    ///
-    /// The loader is a GDScript, and it cannot name `VLCMedia` itself: a script is
-    /// parsed while the project is imported, which happens before a GDExtension
-    /// has registered any class. `VLCMedia.load_from_file(...)` is therefore a
-    /// parse error there, and a parse error is not local -- it takes the whole
-    /// custom loader out of the exported project, so every media file fails to
-    /// load as an unrecognised resource. The loader reaches this through the
-    /// engine singleton by name instead, which needs no class to be declared.
-    #[func]
-    pub fn load_media_file(&self, path: GString) -> Gd<VlcMedia> {
-        VlcMedia::load_from_file(path)
     }
 
     unsafe extern "C" fn log_callback_impl(
