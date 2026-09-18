@@ -465,6 +465,10 @@ impl Sample {
         unsafe { libvlc_media_player_set_abloop_time(self.player, a_ms, b_ms) }
     }
 
+    fn set_loop_by_position(&self, a_pos: f64, b_pos: f64) -> i32 {
+        unsafe { libvlc_media_player_set_abloop_position(self.player, a_pos, b_pos) }
+    }
+
     fn play(&self) -> i32 {
         unsafe { libvlc_media_player_play(self.player) }
     }
@@ -477,12 +481,13 @@ impl Sample {
         unsafe { libvlc_media_player_get_time(self.player) }
     }
 
-    /// What libvlc reports about the loop, as `(status, a_time, b_time)`.
+    /// What libvlc reports about the loop, as
+    /// `(status, a_time, a_pos, b_time, b_pos)`.
     ///
     /// Only the outputs the status covers are returned. The C API writes all
     /// four of them either way, and when no loop is set two of them are
     /// uninitialised stack memory of libvlc's own frame rather than a value.
-    fn ab_loop(&self) -> (i32, i64, i64) {
+    fn ab_loop(&self) -> (i32, i64, f64, i64, f64) {
         let mut a_time: i64 = -1;
         let mut a_pos: f64 = -1.0;
         let mut b_time: i64 = -1;
@@ -501,7 +506,9 @@ impl Sample {
         (
             status,
             if has_a { a_time } else { -1 },
+            if has_a { a_pos } else { -1.0 },
             if has_b { b_time } else { -1 },
+            if has_b { b_pos } else { -1.0 },
         )
     }
 
@@ -591,7 +598,7 @@ fn loops_between_two_times() {
 
     play_until_playing(&sample);
 
-    let (status, a_time, b_time) = sample.ab_loop();
+    let (status, a_time, _, b_time, _) = sample.ab_loop();
     assert_eq!(
         status, libvlc_abloop_t_libvlc_abloop_b,
         "get_abloop reported status {status}, not the complete-loop status"
@@ -654,7 +661,7 @@ fn a_loop_does_not_survive_a_stop() {
 
     play_until_playing(&sample);
 
-    let (status, _, _) = sample.ab_loop();
+    let (status, ..) = sample.ab_loop();
     assert_eq!(
         status, libvlc_abloop_t_libvlc_abloop_none,
         "the loop outlived the input it was set on"
@@ -666,5 +673,44 @@ fn a_loop_does_not_survive_a_stop() {
     assert!(
         after.len() <= 1,
         "the loop outlived the stop: the backwards moves were {after:?}"
+    );
+}
+
+/// The position entry point sets the same loop, and reports itself in positions.
+///
+/// Worth its own test because it is the entry point that can be got wrong
+/// quietly: the times come back as `-1` afterwards, and a binding that passed
+/// them on as the loop's times would be inventing values.
+#[test]
+fn loops_between_two_positions() {
+    let sample = Sample::new();
+    sample.attach_media();
+    assert_eq!(
+        sample.set_loop_by_position(0.0, 0.4),
+        0,
+        "libvlc refused a loop between positions 0.0 and 0.4"
+    );
+    play_until_playing(&sample);
+
+    let (status, a_time, a_pos, b_time, b_pos) = sample.ab_loop();
+    assert_eq!(
+        status, libvlc_abloop_t_libvlc_abloop_b,
+        "get_abloop reported status {status}, not the complete-loop status"
+    );
+    assert_eq!(
+        a_time, -1,
+        "a loop set by position reported a time of {a_time}; there is none to report"
+    );
+    assert_eq!(
+        b_time, -1,
+        "a loop set by position reported a time of {b_time}; there is none to report"
+    );
+    assert_eq!(a_pos, 0.0, "get_abloop reported a wrong A position");
+    assert_eq!(b_pos, 0.4, "get_abloop reported a wrong B position");
+
+    let (drops, _) = sample.observe(LOOP_OBSERVATION);
+    assert!(
+        drops.len() >= 2,
+        "a loop over positions 0.0-0.4 did not wrap more than once in {LOOP_OBSERVATION:?}: the backwards moves were {drops:?}"
     );
 }

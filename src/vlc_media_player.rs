@@ -713,8 +713,8 @@ impl VlcMediaPlayer {
     ///
     /// # Note
     /// A loop set with [method set_ab_loop] reports its own millisecond value
-    /// here; one libvlc took from a position rather than a time -- which this
-    /// binding has no entry point for -- reports `-1`.
+    /// here; one set with [method set_ab_loop_by_position] reports `-1`, because
+    /// libvlc stored a position and has no time to give back.
     #[func]
     fn get_ab_loop_a_time(&self) -> i64 {
         self.ab_loop().a_time
@@ -724,10 +724,10 @@ impl VlcMediaPlayer {
     /// when there is none.
     ///
     /// # Note
-    /// [method set_ab_loop] stores a time, not a position, so a loop it set
-    /// reports `0` here rather than the fraction the time would work out to. The
-    /// value is reported because libvlc reports it, not because it can be acted
-    /// on.
+    /// The two entry points store different things: a loop set with
+    /// [method set_ab_loop] reports `0` here, because it stored a time, while one
+    /// set with [method set_ab_loop_by_position] reports the fraction it was
+    /// given.
     #[func]
     fn get_ab_loop_a_position(&self) -> f64 {
         self.ab_loop().a_pos
@@ -751,8 +751,9 @@ impl VlcMediaPlayer {
     ///
     /// # Note
     /// Meaningful only while [method get_ab_loop_status] reports
-    /// [constant ABLOOP_B], for the same reason as [method get_ab_loop_b_time],
-    /// and `0` for a loop [method set_ab_loop] set, for the same reason as
+    /// [constant ABLOOP_B], for the same reason as [method get_ab_loop_b_time].
+    /// It carries the fraction [method set_ab_loop_by_position] was given, and
+    /// `0` for a loop set by time, for the same reason as
     /// [method get_ab_loop_a_position].
     #[func]
     fn get_ab_loop_b_position(&self) -> f64 {
@@ -1053,12 +1054,49 @@ impl VlcMediaPlayer {
     ///   for one: they jump back to A exactly as they do for a seek, so a wrap
     ///   cannot be told apart from one. A progress bar will jump back with the
     ///   picture.
+    /// - [method set_ab_loop_by_position] is the same setting expressed as
+    ///   fractions of the media instead of milliseconds; whichever of the two was
+    ///   called last is the loop that runs.
     /// - It can be set before playback -- as soon as [member media] is assigned --
     ///   but not cleared before playback: [method reset_ab_loop] is refused until
     ///   the media is playing.
     #[func]
     fn set_ab_loop(&mut self, a_ms: i64, b_ms: i64) -> i32 {
         unsafe { libvlc_media_player_set_abloop_time(self.player_ptr, a_ms, b_ms) }
+    }
+
+    /// Play the current media over and over between two points, given as
+    /// fractions of its length.
+    ///
+    /// This is [method set_ab_loop] measured in positions rather than in
+    /// milliseconds, and the two are one setting: whichever was called last is the
+    /// loop that runs. Measured on the pinned runtime for a local file, they
+    /// behave the same -- a loop of `0.0`-`0.4` wrapped every ~400 ms, with the
+    /// same 0-100 ms of overshoot on the B point.
+    ///
+    /// # Parameters
+    /// - [param a_pos] where the loop starts, `0.0`-`1.0`.
+    /// - [param b_pos] where the loop goes back to [param a_pos], `0.0`-`1.0`, and
+    ///   above [param a_pos].
+    ///
+    /// # Returns
+    /// `0` when libvlc took it, `-1` when it refused: either value outside
+    /// `0.0`-`1.0`, [param b_pos] not above [param a_pos], or no [member media] on
+    /// this player yet.
+    ///
+    /// # Warning
+    /// - Everything [method set_ab_loop] warns about holds here too: the loop
+    ///   belongs to the input, it cannot be cleared before playback, it needs an
+    ///   input that can seek, and no signal announces it.
+    /// - What the getters report changes with the entry point:
+    ///   [method get_ab_loop_a_time] and [method get_ab_loop_b_time] answer `-1`
+    ///   for a loop set this way, and the position getters carry these fractions.
+    /// - libvlc works the wrap out from the length of the media, so a media that
+    ///   never reports one is the case to be careful with; the time entry point
+    ///   has no such dependency.
+    #[func]
+    fn set_ab_loop_by_position(&mut self, a_pos: f64, b_pos: f64) -> i32 {
+        unsafe { libvlc_media_player_set_abloop_position(self.player_ptr, a_pos, b_pos) }
     }
 
     /// Set movie chapter (if applicable).

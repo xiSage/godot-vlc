@@ -54,7 +54,24 @@ func _init() -> void:
 		_fail("the loop is still reported after reset_ab_loop()")
 		return
 
-	print("ab_loop OK: the loop wrapped %d times and cleared while playing" % drops)
+	# The position entry point is the other half of the same setting, and calling
+	# it from GDScript is the one thing the Rust acceptance test cannot check: that
+	# one drives LibVLC directly.
+	if player.set_ab_loop_by_position(0.0, 0.4) != 0:
+		_fail("set_ab_loop_by_position(0.0, 0.4) was refused")
+		return
+
+	if player.get_ab_loop_a_time() != -1 or player.get_ab_loop_b_time() != -1:
+		_fail("a loop set by position reported times")
+		return
+
+	if player.get_ab_loop_a_position() != 0.0 or player.get_ab_loop_b_position() != 0.4:
+		_fail("a loop set by position reported the wrong fractions")
+		return
+
+	player.reset_ab_loop()
+
+	print("ab_loop OK: the loop wrapped %d times, cleared while playing, and takes positions" % drops)
 	quit(0)
 
 

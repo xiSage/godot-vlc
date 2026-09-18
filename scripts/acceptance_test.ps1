@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 Proves that the shipped LibVLC decodes H.264, reports a media it cannot open, and
-loops between two times.
+loops between two points.
 
 .DESCRIPTION
 The acceptance test for the runtime build, and the question the whole pipeline
@@ -19,9 +19,10 @@ event. Nothing else reports it -- play() returns 0 for a media it cannot open,
 and the error state is not one a caller can observe -- so a runtime that stopped
 raising that event would leave the extension's `error` signal silently useless.
 
-Two more tests cover the A to B loop, which is the only way this runtime offers to
-repeat a piece of a media: one that a loop wraps while playback stays running and
-describes itself through libvlc's getter, and one that it does not outlive the
+Three more tests cover the A to B loop, which is the only way this runtime offers
+to repeat a piece of a media: one that a loop set in milliseconds wraps while
+playback stays running and describes itself through libvlc's getter, one that does
+the same for a loop set as positions, and one that the loop does not outlive the
 input it was set on -- a stop or a new media takes it with it, which is what the
 extension's documentation has to tell its users.
 
@@ -134,4 +135,4 @@ if ($loadFailures.Count -gt 0) {
     exit 1
 }
 
-Write-Host "acceptance: OK ($Platform decoded $Sample, reported a missing media, looped between two times; no plugin failed to load)"
+Write-Host "acceptance: OK ($Platform decoded $Sample, reported a missing media, looped between two points; no plugin failed to load)"
