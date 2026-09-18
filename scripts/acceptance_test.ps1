@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Proves that the shipped LibVLC decodes H.264.
+Proves that the shipped LibVLC decodes H.264 and reports a media it cannot open.
 
 .DESCRIPTION
 The acceptance test for the runtime build, and the question the whole pipeline
@@ -12,12 +12,22 @@ the same software video callbacks the extension uses. It runs against the
 ASSEMBLED ADDON -- the environment below points the loader at the addon rather
 than at the staged tree -- so the bytes under test are the ones users receive.
 
+The second test in that file covers the other half of what the runtime has to get
+right: a media that does not exist has to be reported through libvlc's error
+event. Nothing else reports it -- play() returns 0 for a media it cannot open,
+and the error state is not one a caller can observe -- so a runtime that stopped
+raising that event would leave the extension's `error` signal silently useless.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec
 gap rather than a file that cannot load. So the run fails on plugin-load failures
 as well, because a shipped file that cannot load is a defect in the package
 regardless of whether playback survives it.
+
+That check covers both tests. The media the second one asks for does not exist, so
+its run logs failures of its own -- but not this one: it was measured to produce
+no "cannot load plug-in" line, which is the only thing the check looks for.
 
 Driving the `vlc` command-line tool was tried first and abandoned. It is not what
 ships: the addon is a library the extension loads. On Windows the CLI is also a
@@ -85,11 +95,11 @@ if (-not (Test-Path -LiteralPath $samplePath)) {
 # that the pinning is enough.
 Add-VlcRuntimeToSearchPath -LibDir $runtimeDir -Platform $Platform
 
-Write-Host "acceptance: decoding $Sample with the runtime in $runtimeDir"
+Write-Host "acceptance: decoding $Sample and reporting a missing media, with the runtime in $runtimeDir"
 
 # --nocapture so that LibVLC's own log is visible; it is the only place a
 # plugin-load failure shows up.
-$output = & cargo test --lib acceptance::decodes_the_h264_sample -- --nocapture 2>&1
+$output = & cargo test --lib acceptance:: -- --nocapture 2>&1
 $exitCode = $LASTEXITCODE
 $text = ($output | ForEach-Object { "$_" }) -join "`n"
 
@@ -116,4 +126,4 @@ if ($loadFailures.Count -gt 0) {
     exit 1
 }
 
-Write-Host "acceptance: OK ($Platform decoded $Sample; no plugin failed to load)"
+Write-Host "acceptance: OK ($Platform decoded $Sample, reported a missing media; no plugin failed to load)"
