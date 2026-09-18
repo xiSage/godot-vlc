@@ -8,6 +8,7 @@ script/source = "extends VLCMediaPlayer
 
 
 var dragging = false
+var error_count = 0
 var video_tracks: Array[VLCTrack]
 var audio_tracks: Array[VLCTrack]
 var text_tracks: Array[VLCTrack]
@@ -86,6 +87,14 @@ func _on_h_slider_drag_ended(value_changed: bool) -> void:
 
 func _on_buffering(percent: float) -> void:
 	%Buffering.text = \"buffering: %.1f\" % percent
+
+
+func _on_error() -> void:
+	# Sticky on purpose. The state polled in _process() can leave STATE_ERROR
+	# before a frame is drawn -- a failed open goes through stopping/stopped --
+	# so a label that only showed the current state would rarely show this.
+	error_count += 1
+	%Error.text = \"error: yes (%d)\" % error_count
 
 
 func _on_playing() -> void:
@@ -260,6 +269,11 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "buffering:"
 
+[node name="Error" type="Label" parent="ScrollContainer/VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "error: no"
+
 [node name="State" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=552890077]
 unique_name_in_owner = true
 layout_mode = 2
@@ -305,6 +319,7 @@ use_native_dialog = true
 
 [connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="buffering" from="." to="." method="_on_buffering"]
+[connection signal="error" from="." to="." method="_on_error"]
 [connection signal="seekable_changed" from="." to="." method="_on_seekable_changed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
