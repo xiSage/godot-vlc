@@ -864,7 +864,17 @@ impl VlcMediaPlayer {
     /// Play.
     ///
     /// # Returns
-    /// 0 if playback started (and was already started), or -1 on error.
+    /// A libvlc status code: `0` once the player has been started,
+    /// `VLC_EGENERIC` (`-2147483648`) when there is no media to start, or
+    /// `-ENOMEM` when the input could not be allocated. The `-1` that libvlc's
+    /// own header documents here is never returned; what libvlc returns is what
+    /// this returns.
+    ///
+    /// # Warning
+    /// - It is not "the media can play". A media that cannot be opened at all --
+    ///   a file that is not there, a URL that answers 404 -- is accepted here and
+    ///   fails afterwards, so that failure arrives as [signal error] instead of
+    ///   as a return value.
     #[func]
     fn play(&mut self) -> i32 {
         unsafe { libvlc_media_player_play(self.player_ptr) }
