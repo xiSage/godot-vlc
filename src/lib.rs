@@ -33,10 +33,13 @@ mod vlc {
 }
 #[cfg(test)]
 mod acceptance;
+mod vlc_editor_plugin;
 mod vlc_instance;
 mod vlc_media;
 mod vlc_media_player;
 mod vlc_runtime;
+mod vlc_subtitle;
+mod vlc_subtitle_importer;
 mod vlc_track;
 mod vlc_track_list;
 
