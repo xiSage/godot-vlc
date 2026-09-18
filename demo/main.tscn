@@ -9,6 +9,7 @@ script/source = "extends VLCMediaPlayer
 
 var dragging = false
 var error_count = 0
+var loop_a = -1
 var video_tracks: Array[VLCTrack]
 var audio_tracks: Array[VLCTrack]
 var text_tracks: Array[VLCTrack]
@@ -35,6 +36,7 @@ func _process(_delta: float) -> void:
 	var pos = get_position()
 	%Position.text = \"position: %.6f\" % pos
 	%GPUOutput.text = \"gpu output: \" + str(is_gpu_output_active())
+	_update_loop_label()
 	if not dragging:
 		%HSlider.value = pos
 
@@ -58,6 +60,39 @@ func _on_resume_pressed() -> void:
 func _on_stop_pressed() -> void:
 	stop_async()
 	
+
+
+func _on_set_a_pressed() -> void:
+	# libvlc sets the loop in one call, so the panel holds the first time until the
+	# second button is pressed. The loop belongs to the input: Stop ends it, and
+	# this label goes back to \"none\" with it.
+	loop_a = get_time()
+
+
+func _on_set_b_pressed() -> void:
+	if loop_a < 0:
+		return
+	set_ab_loop(loop_a, get_time())
+	loop_a = -1
+
+
+func _on_reset_loop_pressed() -> void:
+	reset_ab_loop()
+
+
+func _update_loop_label() -> void:
+	# Polled rather than driven by a signal: libvlc raises no event when a loop is
+	# set, cleared or entered, and none when it wraps either.
+	if loop_a >= 0:
+		%Loop.text = \"loop: a=%d (pick b)\" % loop_a
+		return
+	match get_ab_loop_status():
+		ABLOOP_B:
+			%Loop.text = \"loop: %d-%d\" % [get_ab_loop_a_time(), get_ab_loop_b_time()]
+		ABLOOP_A:
+			%Loop.text = \"loop: a=%d, no b\" % get_ab_loop_a_time()
+		_:
+			%Loop.text = \"loop: none\"
 
 
 func _on_load_pressed() -> void:
@@ -202,6 +237,18 @@ text = "Resume"
 layout_mode = 2
 text = "Stop"
 
+[node name="SetA" type="Button" parent="ScrollContainer/VBoxContainer"]
+layout_mode = 2
+text = "Set Loop A"
+
+[node name="SetB" type="Button" parent="ScrollContainer/VBoxContainer"]
+layout_mode = 2
+text = "Set Loop B"
+
+[node name="ResetLoop" type="Button" parent="ScrollContainer/VBoxContainer"]
+layout_mode = 2
+text = "Reset Loop"
+
 [node name="VideoTrack" type="HBoxContainer" parent="ScrollContainer/VBoxContainer" unique_id=845744760]
 unique_name_in_owner = true
 layout_mode = 2
@@ -274,6 +321,11 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "error: no"
 
+[node name="Loop" type="Label" parent="ScrollContainer/VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "loop: none"
+
 [node name="State" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=552890077]
 unique_name_in_owner = true
 layout_mode = 2
@@ -327,6 +379,9 @@ use_native_dialog = true
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Pause" to="." method="_on_pause_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Resume" to="." method="_on_resume_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Stop" to="." method="_on_stop_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/SetA" to="." method="_on_set_a_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/SetB" to="." method="_on_set_b_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/ResetLoop" to="." method="_on_reset_loop_pressed"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/VideoTrack/OptionButton" to="." method="_on_video_option_button_item_selected"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/AudioTrack/OptionButton" to="." method="_on_audio_option_button_item_selected"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/TextTrack/OptionButton" to="." method="_on_text_option_button_item_selected"]
