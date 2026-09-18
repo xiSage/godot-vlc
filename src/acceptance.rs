@@ -720,3 +720,148 @@ fn loops_between_two_positions() {
         "a loop over positions 0.0-0.4 did not wrap more than once in {LOOP_OBSERVATION:?}: the backwards moves were {drops:?}"
     );
 }
+
+/// The per-media start time the option tests ask for, in seconds.
+///
+/// `start-time` is a float option -- the unit is seconds, not milliseconds -- and
+/// the input seeks its demux to it when it starts.
+const START_TIME_SECS: f64 = 0.5;
+
+/// What the sample reports as its length when nothing was skipped, and when the
+/// start time above was.
+///
+/// Measured against the pinned runtime: `:start-time=0.5` on this one-second sample
+/// makes `get_length()` report 500 ms rather than 1000.
+const FULL_LENGTH_MIN_MS: i64 = 900;
+const SHORTENED_LENGTH_MAX_MS: i64 = 700;
+
+/// How much less of the sample a playback that started at `:start-time=0.5` has to
+/// play.
+///
+/// Measured: the sample plays for about 1.1 s from the beginning and about 0.6 s
+/// from the offset. The margin is far below that difference, so it cannot be
+/// satisfied by the shortened length alone -- a playback that skipped nothing would
+/// still have to decode the whole sample.
+const SKIPPED_PLAYBACK_MARGIN: Duration = Duration::from_millis(250);
+
+impl Sample {
+    /// Adds a per-media option to the media.
+    ///
+    /// Where this is called in a test is the point: libvlc reads the options when
+    /// the input is created, and `attach_media` is what does that.
+    fn add_option(&self, option: &str) {
+        let option = CString::new(option).expect("the option contains a NUL byte");
+        unsafe { libvlc_media_add_option(self.media, option.as_ptr()) };
+    }
+
+    fn length(&self) -> i64 {
+        unsafe { libvlc_media_player_get_length(self.player) }
+    }
+
+    /// Waits for playback to stop, and says how long it ran.
+    ///
+    /// Call it as soon as playback is reported playing; the tests below use it to
+    /// measure how much of the sample was played.
+    fn play_out(&self, timeout: Duration) -> Option<Duration> {
+        let begin = Instant::now();
+        self.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, timeout)
+            .then(|| begin.elapsed())
+    }
+}
+
+/// A per-media option is read when the media is attached, and it takes effect.
+///
+/// This is what the extension's `VLCMedia.add_option` rests on. The option is added
+/// before the media is handed to the player -- the only moment it is read -- and the
+/// two things measured here are what "read" means: the length reports the sample
+/// minus the offset, and playback really is that much shorter rather than the
+/// bookkeeping alone having moved.
+///
+/// A control playback without the option is measured in the same run: a shortened
+/// length would otherwise prove nothing on its own.
+#[test]
+fn a_per_media_option_is_read_when_the_media_is_attached() {
+    let control = Sample::new();
+    control.attach_media();
+    play_until_playing(&control);
+    let control_length = control.length();
+    let control_played = control.play_out(PLAYBACK_TIMEOUT);
+
+    let sample = Sample::new();
+    sample.add_option(&format!(":start-time={START_TIME_SECS}"));
+    sample.attach_media();
+    play_until_playing(&sample);
+    let started_length = sample.length();
+    let skipped_played = sample.play_out(PLAYBACK_TIMEOUT);
+
+    println!(
+        "per-media option: without it the sample reports {control_length} ms and plays for \
+         {control_played:?}; with :start-time={START_TIME_SECS} it reports {started_length} ms and \
+         plays for {skipped_played:?}"
+    );
+
+    assert!(
+        control_length >= FULL_LENGTH_MIN_MS,
+        "the control playback reports {control_length} ms; this test needs the whole sample to compare against"
+    );
+    assert!(
+        started_length <= SHORTENED_LENGTH_MAX_MS,
+        ":start-time={START_TIME_SECS} was added before the media was attached, and the length is still {started_length} ms: the option was not read"
+    );
+
+    let (control_played, skipped_played) = match (control_played, skipped_played) {
+        (Some(control_played), Some(skipped_played)) => (control_played, skipped_played),
+        (control_played, skipped_played) => panic!(
+            "playback did not stop within {PLAYBACK_TIMEOUT:?}: the control ran for {control_played:?} and the one with the option for {skipped_played:?}"
+        ),
+    };
+    assert!(
+        skipped_played + SKIPPED_PLAYBACK_MARGIN <= control_played,
+        "a playback that asked to start {START_TIME_SECS} s in ran for {skipped_played:?} against the control's {control_played:?}: it decoded the whole sample instead of starting at the offset"
+    );
+}
+
+/// The moment the option arrives decides whether it is read.
+///
+/// Attaching the media is what creates the input, so an option added afterwards is
+/// not read for the playback it arrives during -- the caller sees it silently do
+/// nothing, which is exactly the mistake the extension's documentation has to warn
+/// about. That it is not lost is the other half: the next input, after a stop, reads
+/// it.
+#[test]
+fn a_per_media_option_added_after_the_media_is_attached_waits_for_the_next_input() {
+    let sample = Sample::new();
+    sample.attach_media();
+
+    sample.add_option(&format!(":start-time={START_TIME_SECS}"));
+    play_until_playing(&sample);
+    let during_length = sample.length();
+
+    assert!(
+        during_length >= FULL_LENGTH_MIN_MS,
+        "an option added after the media was attached was read anyway: the length is {during_length} ms"
+    );
+
+    assert_eq!(
+        unsafe { libvlc_media_player_stop_async(sample.player) },
+        0,
+        "the stop was refused"
+    );
+    assert!(
+        sample.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, PLAYBACK_TIMEOUT),
+        "playback never stopped within {PLAYBACK_TIMEOUT:?}"
+    );
+
+    play_until_playing(&sample);
+    let rebuilt_length = sample.length();
+
+    println!(
+        "per-media option added after the attach: {during_length} ms of length for that playback, \
+         {rebuilt_length} ms once the input was rebuilt"
+    );
+
+    assert!(
+        rebuilt_length <= SHORTENED_LENGTH_MAX_MS,
+        "the option was not read by the rebuilt input either: the length is {rebuilt_length} ms"
+    );
+}
