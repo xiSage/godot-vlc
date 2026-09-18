@@ -72,27 +72,33 @@ func _on_set_a_pressed() -> void:
 func _on_set_b_pressed() -> void:
 	if loop_a < 0:
 		return
-	set_ab_loop(loop_a, get_time())
+	set_abloop_time(loop_a, get_time())
 	loop_a = -1
 
 
 func _on_reset_loop_pressed() -> void:
-	reset_ab_loop()
+	reset_abloop()
 
 
 func _update_loop_label() -> void:
 	# Polled rather than driven by a signal: libvlc raises no event when a loop is
-	# set, cleared or entered, and none when it wraps either.
+	# set, cleared or entered, and none when it wraps either. The status alone
+	# answers whether there is a loop, so the dictionary is only built when there
+	# is something to show.
 	if loop_a >= 0:
 		%Loop.text = \"loop: a=%d (pick b)\" % loop_a
 		return
-	match get_ab_loop_status():
-		ABLOOP_B:
-			%Loop.text = \"loop: %d-%d\" % [get_ab_loop_a_time(), get_ab_loop_b_time()]
-		ABLOOP_A:
-			%Loop.text = \"loop: a=%d, no b\" % get_ab_loop_a_time()
-		_:
-			%Loop.text = \"loop: none\"
+	var status := get_abloop_status()
+	if status == ABLOOP_NONE:
+		%Loop.text = \"loop: none\"
+		return
+	var loop := get_abloop()
+	if status == ABLOOP_A:
+		%Loop.text = \"loop: a=%d, no b\" % loop[\"a_time\"]
+	elif loop[\"a_time\"] >= 0:
+		%Loop.text = \"loop: %d-%d ms\" % [loop[\"a_time\"], loop[\"b_time\"]]
+	else:
+		%Loop.text = \"loop: %.2f-%.2f\" % [loop[\"a_pos\"], loop[\"b_pos\"]]
 
 
 func _on_load_pressed() -> void:

@@ -28,16 +28,17 @@ func _init() -> void:
 		_fail("playback never started")
 		return
 
-	if player.set_ab_loop(0, LOOP_B_MS) != 0:
-		_fail("set_ab_loop(0, %d) was refused" % LOOP_B_MS)
+	if player.set_abloop_time(0, LOOP_B_MS) != 0:
+		_fail("set_abloop_time(0, %d) was refused" % LOOP_B_MS)
 		return
 
-	if player.get_ab_loop_status() != VLCMediaPlayer.ABLOOP_B:
-		_fail("the status is %d after setting a loop, expected ABLOOP_B" % player.get_ab_loop_status())
+	if player.get_abloop_status() != VLCMediaPlayer.ABLOOP_B:
+		_fail("the status is %d after setting a loop, expected ABLOOP_B" % player.get_abloop_status())
 		return
 
-	if player.get_ab_loop_a_time() != 0 or player.get_ab_loop_b_time() != LOOP_B_MS:
-		_fail("the loop reads back as %d-%d, expected 0-%d" % [player.get_ab_loop_a_time(), player.get_ab_loop_b_time(), LOOP_B_MS])
+	var loop := player.get_abloop()
+	if loop["a_time"] != 0 or loop["b_time"] != LOOP_B_MS:
+		_fail("the loop reads back as %s, expected 0-%d" % [loop, LOOP_B_MS])
 		return
 
 	if not await _observe():
@@ -46,30 +47,31 @@ func _init() -> void:
 
 	# Clearing it works while it is playing -- and only then, which is why the
 	# Rust test pins the other half and this one clears it here.
-	if player.reset_ab_loop() != 0:
-		_fail("reset_ab_loop() was refused while playing")
+	if player.reset_abloop() != 0:
+		_fail("reset_abloop() was refused while playing")
 		return
 
-	if player.get_ab_loop_status() != VLCMediaPlayer.ABLOOP_NONE:
-		_fail("the loop is still reported after reset_ab_loop()")
+	if player.get_abloop_status() != VLCMediaPlayer.ABLOOP_NONE:
+		_fail("the loop is still reported after reset_abloop()")
 		return
 
 	# The position entry point is the other half of the same setting, and calling
 	# it from GDScript is the one thing the Rust acceptance test cannot check: that
 	# one drives LibVLC directly.
-	if player.set_ab_loop_by_position(0.0, 0.4) != 0:
-		_fail("set_ab_loop_by_position(0.0, 0.4) was refused")
+	if player.set_abloop_position(0.0, 0.4) != 0:
+		_fail("set_abloop_position(0.0, 0.4) was refused")
 		return
 
-	if player.get_ab_loop_a_time() != -1 or player.get_ab_loop_b_time() != -1:
-		_fail("a loop set by position reported times")
+	loop = player.get_abloop()
+	if loop["a_time"] != -1 or loop["b_time"] != -1:
+		_fail("a loop set by position reported times: %s" % loop)
 		return
 
-	if player.get_ab_loop_a_position() != 0.0 or player.get_ab_loop_b_position() != 0.4:
-		_fail("a loop set by position reported the wrong fractions")
+	if loop["a_pos"] != 0.0 or loop["b_pos"] != 0.4:
+		_fail("a loop set by position reported the wrong fractions: %s" % loop)
 		return
 
-	player.reset_ab_loop()
+	player.reset_abloop()
 
 	print("ab_loop OK: the loop wrapped %d times, cleared while playing, and takes positions" % drops)
 	quit(0)

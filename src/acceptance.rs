@@ -47,6 +47,12 @@
 //! down with it, and quietly.
 
 #![cfg(test)]
+// The bindgen-generated enum types differ per target -- `libvlc_state_t` and
+// `libvlc_abloop_t` come out as `c_int` on Windows and as `u32` on the Linux and
+// Android targets -- so the casts to `i32` below are required by some targets and
+// redundant on the others. `vlc_media_player.rs` carries the same cast, and the
+// same allow, for the `STATE_*` and `ABLOOP_*` constants it exports.
+#![allow(clippy::unnecessary_cast)]
 
 use std::ffi::{CString, c_char, c_uint, c_void};
 use std::path::PathBuf;
@@ -474,7 +480,7 @@ impl Sample {
     }
 
     fn state(&self) -> i32 {
-        unsafe { libvlc_media_player_get_state(self.player) }
+        unsafe { libvlc_media_player_get_state(self.player) as i32 }
     }
 
     fn time(&self) -> i64 {
@@ -504,7 +510,7 @@ impl Sample {
         let has_a = status >= libvlc_abloop_t_libvlc_abloop_a;
         let has_b = status >= libvlc_abloop_t_libvlc_abloop_b;
         (
-            status,
+            status as i32,
             if has_a { a_time } else { -1 },
             if has_a { a_pos } else { -1.0 },
             if has_b { b_time } else { -1 },
@@ -563,7 +569,7 @@ impl Drop for Sample {
 fn play_until_playing(sample: &Sample) {
     assert_eq!(sample.play(), 0, "play was refused");
     assert!(
-        sample.wait_for_state(libvlc_state_t_libvlc_Playing, PLAYBACK_TIMEOUT),
+        sample.wait_for_state(libvlc_state_t_libvlc_Playing as i32, PLAYBACK_TIMEOUT),
         "playback never started within {PLAYBACK_TIMEOUT:?}"
     );
 }
@@ -600,7 +606,7 @@ fn loops_between_two_times() {
 
     let (status, a_time, _, b_time, _) = sample.ab_loop();
     assert_eq!(
-        status, libvlc_abloop_t_libvlc_abloop_b,
+        status, libvlc_abloop_t_libvlc_abloop_b as i32,
         "get_abloop reported status {status}, not the complete-loop status"
     );
     assert_eq!(a_time, 0, "get_abloop reported a wrong A point");
@@ -618,9 +624,9 @@ fn loops_between_two_times() {
     assert!(
         states
             .iter()
-            .all(|state| *state != libvlc_state_t_libvlc_Stopping
-                && *state != libvlc_state_t_libvlc_Stopped
-                && *state != libvlc_state_t_libvlc_Error),
+            .all(|state| *state != libvlc_state_t_libvlc_Stopping as i32
+                && *state != libvlc_state_t_libvlc_Stopped as i32
+                && *state != libvlc_state_t_libvlc_Error as i32),
         "playback left the running states while looping: {states:?}"
     );
 }
@@ -655,7 +661,7 @@ fn a_loop_does_not_survive_a_stop() {
         "the stop was refused"
     );
     assert!(
-        sample.wait_for_state(libvlc_state_t_libvlc_Stopped, PLAYBACK_TIMEOUT),
+        sample.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, PLAYBACK_TIMEOUT),
         "playback never stopped within {PLAYBACK_TIMEOUT:?}"
     );
 
@@ -663,7 +669,7 @@ fn a_loop_does_not_survive_a_stop() {
 
     let (status, ..) = sample.ab_loop();
     assert_eq!(
-        status, libvlc_abloop_t_libvlc_abloop_none,
+        status, libvlc_abloop_t_libvlc_abloop_none as i32,
         "the loop outlived the input it was set on"
     );
 
@@ -694,7 +700,7 @@ fn loops_between_two_positions() {
 
     let (status, a_time, a_pos, b_time, b_pos) = sample.ab_loop();
     assert_eq!(
-        status, libvlc_abloop_t_libvlc_abloop_b,
+        status, libvlc_abloop_t_libvlc_abloop_b as i32,
         "get_abloop reported status {status}, not the complete-loop status"
     );
     assert_eq!(

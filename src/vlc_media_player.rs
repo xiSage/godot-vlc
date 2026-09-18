@@ -353,14 +353,14 @@ impl VlcMediaPlayer {
     #[constant]
     const POSITION_BOTTOM_RIGHT: c_int = libvlc_position_t_libvlc_position_bottom_right;
 
-    /// [method get_ab_loop_status] reports this when no loop is set.
+    /// [method get_abloop_status] reports this when no loop is set.
     #[constant]
     const ABLOOP_NONE: i32 = libvlc_abloop_t_libvlc_abloop_none as i32;
-    /// [method get_ab_loop_status] reports this when only the A point is set.
+    /// [method get_abloop_status] reports this when only the A point is set.
     /// libvlc can be in this state; nothing in this binding leaves it there.
     #[constant]
     const ABLOOP_A: i32 = libvlc_abloop_t_libvlc_abloop_a as i32;
-    /// [method get_ab_loop_status] reports this when both points are set, which
+    /// [method get_abloop_status] reports this when both points are set, which
     /// is the state a loop has to be in to run.
     #[constant]
     const ABLOOP_B: i32 = libvlc_abloop_t_libvlc_abloop_b as i32;
@@ -691,7 +691,47 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_can_pause(self.player_ptr) }
     }
 
-    /// Which parts of the A to B loop are set, as libvlc reports them.
+    /// Get the A to B loop: the five values libvlc reports for it.
+    ///
+    /// # Returns
+    /// a dictionary that always carries these five keys:
+    /// - `status`: int, [constant ABLOOP_NONE], [constant ABLOOP_A] or
+    ///   [constant ABLOOP_B] -- only [constant ABLOOP_B] is a loop that runs
+    /// - `a_time`: int, milliseconds, or `-1`
+    /// - `a_pos`: float, `0.0`-`1.0`, or `-1`
+    /// - `b_time`: int, milliseconds, or `-1`
+    /// - `b_pos`: float, `0.0`-`1.0`, or `-1`
+    ///
+    /// # Note
+    /// - `status` decides which of the four values mean anything: the A pair from
+    ///   [constant ABLOOP_A] up, the B pair only at [constant ABLOOP_B]. The rest
+    ///   read `-1`, and not because libvlc says so: its own values for them are
+    ///   uninitialised memory, since the C API writes all four out-parameters
+    ///   whether or not they apply. Nothing uninitialised is passed on here.
+    /// - The units are those of the entry point that set the loop: one from
+    ///   [method set_abloop_time] reports its times and `0` for its positions, and
+    ///   one from [method set_abloop_position] reports the fractions and `-1` for
+    ///   its times.
+    /// - A loop that has been lost -- [method stop_async], a media that ended, a
+    ///   replaced [member media] -- reports [constant ABLOOP_NONE] here, and that
+    ///   is the only way to notice that it is gone. See [method set_abloop_time].
+    /// - libvlc raises no event when a loop is set, cleared or entered, so this
+    ///   has to be asked rather than listened for.
+    ///   [method get_abloop_status] answers the status alone, without building the
+    ///   dictionary.
+    #[func]
+    fn get_abloop(&self) -> VarDictionary {
+        let loop_state = self.ab_loop();
+        let mut dict = VarDictionary::new();
+        dict.set("status", loop_state.status);
+        dict.set("a_time", loop_state.a_time);
+        dict.set("a_pos", loop_state.a_pos);
+        dict.set("b_time", loop_state.b_time);
+        dict.set("b_pos", loop_state.b_pos);
+        dict
+    }
+
+    /// Get the A to B loop status alone: which parts of it are set.
     ///
     /// # Returns
     /// [constant ABLOOP_NONE] when there is no loop, [constant ABLOOP_A] when
@@ -699,65 +739,12 @@ impl VlcMediaPlayer {
     /// has to be in to run.
     ///
     /// # Note
-    /// - A loop that has been lost -- [method stop_async], a media that ended, a
-    ///   replaced [member media] -- reports [constant ABLOOP_NONE] here, and this
-    ///   is the only way to notice that it is gone. See [method set_ab_loop].
-    /// - libvlc raises no event when a loop is set, cleared or entered, so this
-    ///   has to be asked rather than listened for.
+    /// This is a convenience over [method get_abloop] for the question that gets
+    /// asked most: it reads the same thing, so the two cannot disagree, and it
+    /// costs no dictionary for the callers that ask once per frame.
     #[func]
-    fn get_ab_loop_status(&self) -> i32 {
+    fn get_abloop_status(&self) -> i32 {
         self.ab_loop().status
-    }
-
-    /// The A point of the loop, in milliseconds, or `-1` when there is none.
-    ///
-    /// # Note
-    /// A loop set with [method set_ab_loop] reports its own millisecond value
-    /// here; one set with [method set_ab_loop_by_position] reports `-1`, because
-    /// libvlc stored a position and has no time to give back.
-    #[func]
-    fn get_ab_loop_a_time(&self) -> i64 {
-        self.ab_loop().a_time
-    }
-
-    /// The A point of the loop as a fraction of the media, `0.0`-`1.0`, or `-1`
-    /// when there is none.
-    ///
-    /// # Note
-    /// The two entry points store different things: a loop set with
-    /// [method set_ab_loop] reports `0` here, because it stored a time, while one
-    /// set with [method set_ab_loop_by_position] reports the fraction it was
-    /// given.
-    #[func]
-    fn get_ab_loop_a_position(&self) -> f64 {
-        self.ab_loop().a_pos
-    }
-
-    /// The B point of the loop, in milliseconds, or `-1` when the loop is not
-    /// complete.
-    ///
-    /// # Note
-    /// It is only meaningful while [method get_ab_loop_status] reports
-    /// [constant ABLOOP_B]; either of the other statuses answers `-1`, because
-    /// libvlc's own value for a loop that is not complete is uninitialised
-    /// memory rather than a number.
-    #[func]
-    fn get_ab_loop_b_time(&self) -> i64 {
-        self.ab_loop().b_time
-    }
-
-    /// The B point of the loop as a fraction of the media, `0.0`-`1.0`, or `-1`
-    /// when the loop is not complete.
-    ///
-    /// # Note
-    /// Meaningful only while [method get_ab_loop_status] reports
-    /// [constant ABLOOP_B], for the same reason as [method get_ab_loop_b_time].
-    /// It carries the fraction [method set_ab_loop_by_position] was given, and
-    /// `0` for a loop set by time, for the same reason as
-    /// [method get_ab_loop_a_position].
-    #[func]
-    fn get_ab_loop_b_position(&self) -> f64 {
-        self.ab_loop().b_pos
     }
 
     /// The last buffering percentage libvlc reported, in `0`-`100`, or `0` if it
@@ -998,7 +985,7 @@ impl VlcMediaPlayer {
     ///   stopped playback and started it again has a fresh input and no loop on
     ///   it, whatever this answered before.
     #[func]
-    fn reset_ab_loop(&mut self) -> i32 {
+    fn reset_abloop(&mut self) -> i32 {
         unsafe { libvlc_media_player_reset_abloop(self.player_ptr) }
     }
 
@@ -1027,7 +1014,7 @@ impl VlcMediaPlayer {
     /// - [param b_ms] where the loop goes back to [param a_ms], in milliseconds.
     ///   It has to be above [param a_ms]. Past the end of the media it is not an
     ///   error: the wrap is then driven by the end of the media instead, which
-    ///   makes `set_ab_loop(0, <a large value>)` a way to loop the whole of a
+    ///   makes `set_abloop_time(0, <a large value>)` a way to loop the whole of a
     ///   media without knowing its length first.
     ///
     /// # Returns
@@ -1039,7 +1026,7 @@ impl VlcMediaPlayer {
     /// - **The loop belongs to the input, not to the player.** It is gone after
     ///   [method stop_async], after the media ends, and after [member media] is
     ///   replaced, so a script that starts playback again has to set it again.
-    ///   Nothing here remembers it, and [method get_ab_loop_status] is how to
+    ///   Nothing here remembers it, and [method get_abloop_status] is how to
     ///   notice.
     /// - **It needs an input that can seek.** On one that cannot -- a live source
     ///   -- the call still answers `0` and simply never wraps.
@@ -1054,21 +1041,21 @@ impl VlcMediaPlayer {
     ///   for one: they jump back to A exactly as they do for a seek, so a wrap
     ///   cannot be told apart from one. A progress bar will jump back with the
     ///   picture.
-    /// - [method set_ab_loop_by_position] is the same setting expressed as
+    /// - [method set_abloop_position] is the same setting expressed as
     ///   fractions of the media instead of milliseconds; whichever of the two was
     ///   called last is the loop that runs.
     /// - It can be set before playback -- as soon as [member media] is assigned --
-    ///   but not cleared before playback: [method reset_ab_loop] is refused until
+    ///   but not cleared before playback: [method reset_abloop] is refused until
     ///   the media is playing.
     #[func]
-    fn set_ab_loop(&mut self, a_ms: i64, b_ms: i64) -> i32 {
+    fn set_abloop_time(&mut self, a_ms: i64, b_ms: i64) -> i32 {
         unsafe { libvlc_media_player_set_abloop_time(self.player_ptr, a_ms, b_ms) }
     }
 
     /// Play the current media over and over between two points, given as
     /// fractions of its length.
     ///
-    /// This is [method set_ab_loop] measured in positions rather than in
+    /// This is [method set_abloop_time] measured in positions rather than in
     /// milliseconds, and the two are one setting: whichever was called last is the
     /// loop that runs. Measured on the pinned runtime for a local file, they
     /// behave the same -- a loop of `0.0`-`0.4` wrapped every ~400 ms, with the
@@ -1085,17 +1072,17 @@ impl VlcMediaPlayer {
     /// this player yet.
     ///
     /// # Warning
-    /// - Everything [method set_ab_loop] warns about holds here too: the loop
+    /// - Everything [method set_abloop_time] warns about holds here too: the loop
     ///   belongs to the input, it cannot be cleared before playback, it needs an
     ///   input that can seek, and no signal announces it.
-    /// - What the getters report changes with the entry point:
-    ///   [method get_ab_loop_a_time] and [method get_ab_loop_b_time] answer `-1`
-    ///   for a loop set this way, and the position getters carry these fractions.
+    /// - What [method get_abloop] reports changes with the entry point: the times
+    ///   answer `-1` for a loop set this way, and the positions carry the
+    ///   fractions instead.
     /// - libvlc works the wrap out from the length of the media, so a media that
     ///   never reports one is the case to be careful with; the time entry point
     ///   has no such dependency.
     #[func]
-    fn set_ab_loop_by_position(&mut self, a_pos: f64, b_pos: f64) -> i32 {
+    fn set_abloop_position(&mut self, a_pos: f64, b_pos: f64) -> i32 {
         unsafe { libvlc_media_player_set_abloop_position(self.player_ptr, a_pos, b_pos) }
     }
 
@@ -1193,7 +1180,7 @@ impl VlcMediaPlayer {
     ///   "stop" button pressed twice answers. [signal stopped] has already been
     ///   emitted in that case, which is the signal that says playback is over.
     /// - Stopping ends the input, and the A to B loop goes with it: see
-    ///   [method set_ab_loop].
+    ///   [method set_abloop_time].
     #[func]
     fn stop_async(&mut self) -> i32 {
         unsafe { libvlc_media_player_stop_async(self.player_ptr) }
@@ -1209,6 +1196,7 @@ impl VlcMediaPlayer {
     }
 }
 
+#[allow(clippy::unnecessary_cast)]
 impl VlcMediaPlayer {
     fn update_media(&self) {
         if let Some(media_ptr) = self.get_media_ptr() {
@@ -1277,7 +1265,10 @@ impl VlcMediaPlayer {
         let has_a = status >= libvlc_abloop_t_libvlc_abloop_a;
         let has_b = status >= libvlc_abloop_t_libvlc_abloop_b;
         AbLoop {
-            status,
+            // `as i32`: `libvlc_abloop_t` is `c_int` on Windows and `u32` on the
+            // Linux and Android targets, so the cast is required by some of them
+            // and redundant on the others.
+            status: status as i32,
             a_time: if has_a { a_time } else { -1 },
             a_pos: if has_a { a_pos } else { -1.0 },
             b_time: if has_b { b_time } else { -1 },
