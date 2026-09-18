@@ -47,6 +47,12 @@
 //! down with it, and quietly.
 
 #![cfg(test)]
+// The bindgen-generated enum types differ per target -- `libvlc_state_t` and
+// `libvlc_abloop_t` come out as `c_int` on Windows and as `u32` on the Linux and
+// Android targets -- so the casts to `i32` below are required by some targets and
+// redundant on the others. `vlc_media_player.rs` carries the same cast, and the
+// same allow, for the `STATE_*` and `ABLOOP_*` constants it exports.
+#![allow(clippy::unnecessary_cast)]
 
 use std::ffi::{CString, c_char, c_uint, c_void};
 use std::path::PathBuf;
@@ -161,6 +167,24 @@ fn sample_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)
 }
 
+/// The libvlc arguments for a test whose video goes to its own callbacks.
+///
+/// `libvlc_new` takes `const char *const *`, and an array of `&CStr` is an array
+/// of *fat* pointers: each length sits right after its address, so a second
+/// element would be read as a pointer to a small number and the process would die
+/// dereferencing it. `CStr::as_ptr()` gives the thin pointer the C API wants. One
+/// option happens to work either way, which is exactly why this is spelled out
+/// rather than left as a trap for the next one.
+fn quiet_options() -> [*const c_char; 1] {
+    [c"--no-audio".as_ptr()]
+}
+
+/// The same, for a test that leaves libvlc to choose a video output: no window to
+/// put one in.
+fn headless_options() -> [*const c_char; 2] {
+    [c"--no-audio".as_ptr(), c"--vout=dummy".as_ptr()]
+}
+
 /// Decodes the sample and returns the reported size and the frame count.
 ///
 /// Returns `Err` with an explanation when LibVLC could not be set up at all,
@@ -179,8 +203,8 @@ fn decode_sample() -> Result<(u32, u32, usize), String> {
 
     // No audio: a build machine has no sound device, and audio is not what this
     // test is about.
-    let options = [c"--no-audio"];
-    let instance = unsafe { libvlc_new(options.len() as i32, options.as_ptr().cast()) };
+    let options = quiet_options();
+    let instance = unsafe { libvlc_new(options.len() as i32, options.as_ptr()) };
     if instance.is_null() {
         return Err("libvlc_new returned NULL: the runtime could not be initialised".to_string());
     }
@@ -324,8 +348,8 @@ fn reports_a_media_that_cannot_be_opened() {
 
     // No audio: nothing is going to be decoded, and a build machine has no sound
     // device.
-    let options = [c"--no-audio"];
-    let instance = unsafe { libvlc_new(options.len() as i32, options.as_ptr().cast()) };
+    let options = quiet_options();
+    let instance = unsafe { libvlc_new(options.len() as i32, options.as_ptr()) };
     assert!(
         !instance.is_null(),
         "libvlc_new returned NULL: the runtime could not be initialised"
@@ -382,5 +406,317 @@ fn reports_a_media_that_cannot_be_opened() {
     assert_eq!(
         reported, libvlc_event_e_libvlc_MediaPlayerEncounteredError as libvlc_event_type_t,
         "the event that arrived was of type {reported}, not the error event"
+    );
+}
+
+/// The A to B loop the loop tests ask for: the first 400 ms of the sample.
+///
+/// A short loop is what a game wants it for, and it is also where the runtime's
+/// own behaviour shows: measured against the pinned runtime, a B below about
+/// 400 ms loops at about 400 ms whatever was asked for, so asking for 400 is
+/// asking for what actually happens.
+const LOOP_B_MS: i64 = 400;
+
+/// How long a wrap is watched for, and how long its absence is watched for.
+///
+/// The sample is one second long and the loop closes every ~400 ms, so three
+/// seconds holds several wraps -- and, for a player that is no longer looping,
+/// at most the single backwards jump at the end of the media.
+const LOOP_OBSERVATION: Duration = Duration::from_secs(3);
+
+/// How long playback is given to start or stop. The sample is one second long.
+const PLAYBACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The sample, the instance, and a player for it, released when this drops.
+///
+/// The media is not handed to the player until [Sample::attach_media] does it,
+/// because that is what creates the input a loop belongs to -- which is the
+/// thing these tests are about.
+struct Sample {
+    instance: *mut libvlc_instance_t,
+    media: *mut libvlc_media_t,
+    player: *mut libvlc_media_player_t,
+}
+
+impl Sample {
+    fn new() -> Self {
+        let path = sample_path();
+        let path = CString::new(path.to_str().expect("the sample path is not valid UTF-8"))
+            .expect("the sample path contains a NUL byte");
+
+        // No audio and no window: neither is what this is about, and a build
+        // machine has no sound device.
+        let options = headless_options();
+        let instance = unsafe { libvlc_new(options.len() as i32, options.as_ptr()) };
+        assert!(
+            !instance.is_null(),
+            "libvlc_new returned NULL: the runtime could not be initialised"
+        );
+        let media = unsafe { libvlc_media_new_path(path.as_ptr()) };
+        assert!(!media.is_null(), "libvlc_media_new_path refused the sample");
+        let player = unsafe { libvlc_media_player_new(instance) };
+        assert!(!player.is_null(), "libvlc_media_player_new returned NULL");
+        Self {
+            instance,
+            media,
+            player,
+        }
+    }
+
+    fn attach_media(&self) {
+        unsafe { libvlc_media_player_set_media(self.player, self.media) };
+    }
+
+    fn set_loop(&self, a_ms: i64, b_ms: i64) -> i32 {
+        unsafe { libvlc_media_player_set_abloop_time(self.player, a_ms, b_ms) }
+    }
+
+    fn set_loop_by_position(&self, a_pos: f64, b_pos: f64) -> i32 {
+        unsafe { libvlc_media_player_set_abloop_position(self.player, a_pos, b_pos) }
+    }
+
+    fn play(&self) -> i32 {
+        unsafe { libvlc_media_player_play(self.player) }
+    }
+
+    fn state(&self) -> i32 {
+        unsafe { libvlc_media_player_get_state(self.player) as i32 }
+    }
+
+    fn time(&self) -> i64 {
+        unsafe { libvlc_media_player_get_time(self.player) }
+    }
+
+    /// What libvlc reports about the loop, as
+    /// `(status, a_time, a_pos, b_time, b_pos)`.
+    ///
+    /// Only the outputs the status covers are returned. The C API writes all
+    /// four of them either way, and when no loop is set two of them are
+    /// uninitialised stack memory of libvlc's own frame rather than a value.
+    fn ab_loop(&self) -> (i32, i64, f64, i64, f64) {
+        let mut a_time: i64 = -1;
+        let mut a_pos: f64 = -1.0;
+        let mut b_time: i64 = -1;
+        let mut b_pos: f64 = -1.0;
+        let status = unsafe {
+            libvlc_media_player_get_abloop(
+                self.player,
+                &mut a_time,
+                &mut a_pos,
+                &mut b_time,
+                &mut b_pos,
+            )
+        };
+        let has_a = status >= libvlc_abloop_t_libvlc_abloop_a;
+        let has_b = status >= libvlc_abloop_t_libvlc_abloop_b;
+        (
+            status as i32,
+            if has_a { a_time } else { -1 },
+            if has_a { a_pos } else { -1.0 },
+            if has_b { b_time } else { -1 },
+            if has_b { b_pos } else { -1.0 },
+        )
+    }
+
+    /// Waits for the state libvlc reports to become `want`.
+    fn wait_for_state(&self, want: i32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.state() == want {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// Watches playback for `duration`, returning every time it moved backwards
+    /// and the states seen along the way.
+    ///
+    /// A backwards move of more than a tenth of a second is what a loop looks
+    /// like from outside; the end of a media that is not looping is exactly one
+    /// of them, which is what tells the two apart.
+    fn observe(&self, duration: Duration) -> (Vec<(i64, i64)>, Vec<i32>) {
+        let mut drops = Vec::new();
+        let mut states = Vec::new();
+        let mut previous = self.time();
+        let deadline = Instant::now() + duration;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            let state = self.state();
+            let time = self.time();
+            states.push(state);
+            if time < previous - 100 {
+                drops.push((previous, time));
+            }
+            previous = time;
+        }
+        (drops, states)
+    }
+}
+
+impl Drop for Sample {
+    fn drop(&mut self) {
+        unsafe {
+            libvlc_media_player_release(self.player);
+            libvlc_media_release(self.media);
+            libvlc_release(self.instance);
+        }
+    }
+}
+
+/// Starts the sample and waits for libvlc to report it playing.
+fn play_until_playing(sample: &Sample) {
+    assert_eq!(sample.play(), 0, "play was refused");
+    assert!(
+        sample.wait_for_state(libvlc_state_t_libvlc_Playing as i32, PLAYBACK_TIMEOUT),
+        "playback never started within {PLAYBACK_TIMEOUT:?}"
+    );
+}
+
+/// A loop set before playback runs, and describes itself accurately.
+///
+/// This is what the extension's A to B API rests on: the input wraps and stays in
+/// playback while doing it, and `get_abloop` says which loop is running. It also
+/// pins the two things a caller cannot guess -- that a loop needs a media to
+/// belong to, and that it can be set before playback starts.
+#[test]
+fn loops_between_two_times() {
+    let sample = Sample::new();
+
+    // Before a media is assigned there is no input, and libvlc answers with an
+    // error rather than remembering the request for later.
+    assert_eq!(
+        sample.set_loop(0, LOOP_B_MS),
+        -1,
+        "a loop was accepted for a player with no media; there is nothing for it to belong to"
+    );
+
+    sample.attach_media();
+
+    // An assigned media is enough: the input exists before playback does, which
+    // is what lets a script that knows its clips set the loop up front.
+    assert_eq!(
+        sample.set_loop(0, LOOP_B_MS),
+        0,
+        "libvlc refused a loop between 0 and {LOOP_B_MS} ms"
+    );
+
+    play_until_playing(&sample);
+
+    let (status, a_time, _, b_time, _) = sample.ab_loop();
+    assert_eq!(
+        status, libvlc_abloop_t_libvlc_abloop_b as i32,
+        "get_abloop reported status {status}, not the complete-loop status"
+    );
+    assert_eq!(a_time, 0, "get_abloop reported a wrong A point");
+    assert_eq!(b_time, LOOP_B_MS, "get_abloop reported a wrong B point");
+
+    let (drops, states) = sample.observe(LOOP_OBSERVATION);
+    assert!(
+        drops.len() >= 2,
+        "a {LOOP_B_MS} ms loop did not wrap more than once in {LOOP_OBSERVATION:?}: the backwards moves were {drops:?}"
+    );
+    // The sample is one second long and the loop closes every ~400 ms, so a loop
+    // that is working never reaches the end of the media and never leaves
+    // playback. Buffering is allowed through: a wrap is a seek, and a loaded
+    // machine may report it.
+    assert!(
+        states
+            .iter()
+            .all(|state| *state != libvlc_state_t_libvlc_Stopping as i32
+                && *state != libvlc_state_t_libvlc_Stopped as i32
+                && *state != libvlc_state_t_libvlc_Error as i32),
+        "playback left the running states while looping: {states:?}"
+    );
+}
+
+/// The loop goes away with the input, and nothing brings it back.
+///
+/// A script that stops playback and starts it again has lost its loop, and the
+/// only notice is `get_abloop` reporting nothing. That is worth pinning: it is
+/// the part most likely to be "fixed" by someone who reads the API as
+/// per-player, which it is not.
+#[test]
+fn a_loop_does_not_survive_a_stop() {
+    let sample = Sample::new();
+    sample.attach_media();
+    assert_eq!(
+        sample.set_loop(0, LOOP_B_MS),
+        0,
+        "libvlc refused a loop between 0 and {LOOP_B_MS} ms"
+    );
+    play_until_playing(&sample);
+
+    // It has to be running first, or losing it would prove nothing.
+    let (before, _) = sample.observe(Duration::from_millis(1200));
+    assert!(
+        !before.is_empty(),
+        "the loop was not wrapping before the stop, so this test would pass for the wrong reason"
+    );
+
+    assert_eq!(
+        unsafe { libvlc_media_player_stop_async(sample.player) },
+        0,
+        "the stop was refused"
+    );
+    assert!(
+        sample.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, PLAYBACK_TIMEOUT),
+        "playback never stopped within {PLAYBACK_TIMEOUT:?}"
+    );
+
+    play_until_playing(&sample);
+
+    let (status, ..) = sample.ab_loop();
+    assert_eq!(
+        status, libvlc_abloop_t_libvlc_abloop_none as i32,
+        "the loop outlived the input it was set on"
+    );
+
+    // Nothing loops it now, so the only backwards move left is the media's own
+    // end.
+    let (after, _) = sample.observe(LOOP_OBSERVATION);
+    assert!(
+        after.len() <= 1,
+        "the loop outlived the stop: the backwards moves were {after:?}"
+    );
+}
+
+/// The position entry point sets the same loop, and reports itself in positions.
+///
+/// Worth its own test because it is the entry point that can be got wrong
+/// quietly: the times come back as `-1` afterwards, and a binding that passed
+/// them on as the loop's times would be inventing values.
+#[test]
+fn loops_between_two_positions() {
+    let sample = Sample::new();
+    sample.attach_media();
+    assert_eq!(
+        sample.set_loop_by_position(0.0, 0.4),
+        0,
+        "libvlc refused a loop between positions 0.0 and 0.4"
+    );
+    play_until_playing(&sample);
+
+    let (status, a_time, a_pos, b_time, b_pos) = sample.ab_loop();
+    assert_eq!(
+        status, libvlc_abloop_t_libvlc_abloop_b as i32,
+        "get_abloop reported status {status}, not the complete-loop status"
+    );
+    assert_eq!(
+        a_time, -1,
+        "a loop set by position reported a time of {a_time}; there is none to report"
+    );
+    assert_eq!(
+        b_time, -1,
+        "a loop set by position reported a time of {b_time}; there is none to report"
+    );
+    assert_eq!(a_pos, 0.0, "get_abloop reported a wrong A position");
+    assert_eq!(b_pos, 0.4, "get_abloop reported a wrong B position");
+
+    let (drops, _) = sample.observe(LOOP_OBSERVATION);
+    assert!(
+        drops.len() >= 2,
+        "a loop over positions 0.0-0.4 did not wrap more than once in {LOOP_OBSERVATION:?}: the backwards moves were {drops:?}"
     );
 }
