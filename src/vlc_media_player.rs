@@ -379,6 +379,34 @@ impl VlcMediaPlayer {
     fn backward();
     #[signal]
     fn stopping();
+    /// Emitted when the input gives up on a media: a file that is not there, a
+    /// URL that answers 404 or refuses the connection, a demuxer that fails, a
+    /// stream output that cannot be started.
+    ///
+    /// It is the only report of a failure that happens after [method play]
+    /// returns: that call answers `0` for a media it cannot open, and the error
+    /// state ([constant STATE_ERROR]) is not one a caller can observe -- a failed
+    /// open goes through the same [signal stopping] and [signal stopped] as a
+    /// media that ended, so polling [method get_state] cannot tell the two apart.
+    ///
+    /// # Warning
+    /// - It does not cover every failure. A decoder that cannot cope -- a corrupt
+    ///   bitstream, a codec that will not set up -- is not reported here: the
+    ///   pictures stop arriving and the media ends as if it had played out,
+    ///   [signal stopping] (end of stream) and then [signal stopped]. Nothing but
+    ///   the engine log tells that apart from a normal end.
+    /// - Silence is not proof that playback was fine. Stopping the player while
+    ///   it is still opening discards a failure that had already happened, and an
+    ///   input that fails before it starts reports nothing at all.
+    /// - It is not quick. A missing local file reported it after roughly 140 ms in
+    ///   testing, and a URL that had to time out took roughly 1.4 s.
+    /// - It carries no argument: the libvlc event has no payload and no message
+    ///   travels with it. The reason is in the engine log, as
+    ///   [code]LibVLC: [ERROR] ...[/code].
+    /// - It is raised at most once per input, and it can arrive after
+    ///   [signal stopping].
+    #[signal]
+    fn error();
     /// Emitted with the playback position as a fraction of the media, `0.0`-`1.0`,
     /// together with [signal time_changed] and just before it.
     ///
