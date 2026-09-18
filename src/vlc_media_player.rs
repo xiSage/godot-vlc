@@ -88,6 +88,21 @@ pub enum MixTarget {
 /// and would otherwise be swallowed as "unchanged".
 const NO_BUFFERING_REPORT: f32 = -1.0;
 
+/// What libvlc says about the A to B loop, made safe to read.
+///
+/// `libvlc_media_player_get_abloop` writes its out-parameters before it knows
+/// whether they mean anything, and in the "no loop" case two of them are
+/// uninitialised stack memory rather than a value. Which of them is meaningful is
+/// decided by the status, so that is the only thing this carries unguarded; the
+/// rest are `-1`/`-1.0` where the status says they do not apply.
+struct AbLoop {
+    status: i32,
+    a_time: i64,
+    a_pos: f64,
+    b_time: i64,
+    b_pos: f64,
+}
+
 /// A control used for video playback.\
 /// This control provides a simple way to play video files using the VLC library. It supports most common video formats, including MP4, MKV, AVI, etc.
 #[derive(GodotClass)]
@@ -337,6 +352,18 @@ impl VlcMediaPlayer {
     const POSITION_BOTTOM_LEFT: c_int = libvlc_position_t_libvlc_position_bottom_left;
     #[constant]
     const POSITION_BOTTOM_RIGHT: c_int = libvlc_position_t_libvlc_position_bottom_right;
+
+    /// [method get_ab_loop_status] reports this when no loop is set.
+    #[constant]
+    const ABLOOP_NONE: i32 = libvlc_abloop_t_libvlc_abloop_none as i32;
+    /// [method get_ab_loop_status] reports this when only the A point is set.
+    /// libvlc can be in this state; nothing in this binding leaves it there.
+    #[constant]
+    const ABLOOP_A: i32 = libvlc_abloop_t_libvlc_abloop_a as i32;
+    /// [method get_ab_loop_status] reports this when both points are set, which
+    /// is the state a loop has to be in to run.
+    #[constant]
+    const ABLOOP_B: i32 = libvlc_abloop_t_libvlc_abloop_b as i32;
 
     #[signal]
     fn opening();
@@ -664,6 +691,74 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_can_pause(self.player_ptr) }
     }
 
+    /// Which parts of the A to B loop are set, as libvlc reports them.
+    ///
+    /// # Returns
+    /// [constant ABLOOP_NONE] when there is no loop, [constant ABLOOP_A] when
+    /// only the A point is, [constant ABLOOP_B] when both are -- the state a loop
+    /// has to be in to run.
+    ///
+    /// # Note
+    /// - A loop that has been lost -- [method stop_async], a media that ended, a
+    ///   replaced [member media] -- reports [constant ABLOOP_NONE] here, and this
+    ///   is the only way to notice that it is gone. See [method set_ab_loop].
+    /// - libvlc raises no event when a loop is set, cleared or entered, so this
+    ///   has to be asked rather than listened for.
+    #[func]
+    fn get_ab_loop_status(&self) -> i32 {
+        self.ab_loop().status
+    }
+
+    /// The A point of the loop, in milliseconds, or `-1` when there is none.
+    ///
+    /// # Note
+    /// A loop set with [method set_ab_loop] reports its own millisecond value
+    /// here; one libvlc took from a position rather than a time -- which this
+    /// binding has no entry point for -- reports `-1`.
+    #[func]
+    fn get_ab_loop_a_time(&self) -> i64 {
+        self.ab_loop().a_time
+    }
+
+    /// The A point of the loop as a fraction of the media, `0.0`-`1.0`, or `-1`
+    /// when there is none.
+    ///
+    /// # Note
+    /// [method set_ab_loop] stores a time, not a position, so a loop it set
+    /// reports `0` here rather than the fraction the time would work out to. The
+    /// value is reported because libvlc reports it, not because it can be acted
+    /// on.
+    #[func]
+    fn get_ab_loop_a_position(&self) -> f64 {
+        self.ab_loop().a_pos
+    }
+
+    /// The B point of the loop, in milliseconds, or `-1` when the loop is not
+    /// complete.
+    ///
+    /// # Note
+    /// It is only meaningful while [method get_ab_loop_status] reports
+    /// [constant ABLOOP_B]; either of the other statuses answers `-1`, because
+    /// libvlc's own value for a loop that is not complete is uninitialised
+    /// memory rather than a number.
+    #[func]
+    fn get_ab_loop_b_time(&self) -> i64 {
+        self.ab_loop().b_time
+    }
+
+    /// The B point of the loop as a fraction of the media, `0.0`-`1.0`, or `-1`
+    /// when the loop is not complete.
+    ///
+    /// # Note
+    /// Meaningful only while [method get_ab_loop_status] reports
+    /// [constant ABLOOP_B], for the same reason as [method get_ab_loop_b_time],
+    /// and `0` for a loop [method set_ab_loop] set, for the same reason as
+    /// [method get_ab_loop_a_position].
+    #[func]
+    fn get_ab_loop_b_position(&self) -> f64 {
+        self.ab_loop().b_pos
+    }
+
     /// The last buffering percentage libvlc reported, in `0`-`100`, or `0` if it
     /// has reported nothing yet.
     ///
@@ -886,6 +981,26 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_previous_chapter(self.player_ptr) }
     }
 
+    /// Remove the A to B loop from the current media.
+    ///
+    /// # Returns
+    /// `0` when libvlc removed it, `-1` when it refused.
+    ///
+    /// # Warning
+    /// - It only works while the input can seek, which in practice means **while
+    ///   the media is playing**. Called before playback -- including on a loop
+    ///   that was set before playback, which libvlc accepts -- it answers `-1` and
+    ///   removes nothing: the loop stays on the input and runs when the media
+    ///   plays. The only other way to be rid of it is to let the input go, with
+    ///   [method stop_async] or a new [member media].
+    /// - It says nothing about a loop on a *different* input: a script that
+    ///   stopped playback and started it again has a fresh input and no loop on
+    ///   it, whatever this answered before.
+    #[func]
+    fn reset_ab_loop(&mut self) -> i32 {
+        unsafe { libvlc_media_player_reset_abloop(self.player_ptr) }
+    }
+
     /// Select a track.\
     /// This will unselected the current track.
     ///
@@ -897,6 +1012,53 @@ impl VlcMediaPlayer {
     #[func]
     fn select_track(&mut self, track: Gd<VlcTrack>) {
         unsafe { libvlc_media_player_select_track(self.player_ptr, track.bind().ptr) }
+    }
+
+    /// Play the current media from `a_ms` to `b_ms` over and over.
+    ///
+    /// The loop is libvlc's own: at the B point the input seeks back to A, so the
+    /// media is not re-opened, nothing is re-parsed, and [method get_state] stays
+    /// in [constant STATE_PLAYING] across the wrap.
+    ///
+    /// # Parameters
+    /// - [param a_ms] where the loop starts, in milliseconds. `0` is a valid
+    ///   start; a negative value is refused.
+    /// - [param b_ms] where the loop goes back to [param a_ms], in milliseconds.
+    ///   It has to be above [param a_ms]. Past the end of the media it is not an
+    ///   error: the wrap is then driven by the end of the media instead, which
+    ///   makes `set_ab_loop(0, <a large value>)` a way to loop the whole of a
+    ///   media without knowing its length first.
+    ///
+    /// # Returns
+    /// `0` when libvlc took it, `-1` when it refused: [param b_ms] not above
+    /// [param a_ms], either of them negative, or no [member media] on this player
+    /// yet.
+    ///
+    /// # Warning
+    /// - **The loop belongs to the input, not to the player.** It is gone after
+    ///   [method stop_async], after the media ends, and after [member media] is
+    ///   replaced, so a script that starts playback again has to set it again.
+    ///   Nothing here remembers it, and [method get_ab_loop_status] is how to
+    ///   notice.
+    /// - **It needs an input that can seek.** On one that cannot -- a live source
+    ///   -- the call still answers `0` and simply never wraps.
+    ///   [method is_seekable] is the question to ask, remembering that it answers
+    ///   `false` before a media opens too.
+    /// - **The B point is a threshold, not an exact end.** Measured on the pinned
+    ///   runtime: the wrap lands 0-100 ms after `b_ms`, and a `b_ms` below about
+    ///   400 ms loops at about 400 ms whatever was asked for. A short clip cannot
+    ///   be looped tightly.
+    /// - **Nothing is emitted when the loop wraps.** libvlc has no such event, and
+    ///   neither [signal time_changed] nor [signal position_changed] can stand in
+    ///   for one: they jump back to A exactly as they do for a seek, so a wrap
+    ///   cannot be told apart from one. A progress bar will jump back with the
+    ///   picture.
+    /// - It can be set before playback -- as soon as [member media] is assigned --
+    ///   but not cleared before playback: [method reset_ab_loop] is refused until
+    ///   the media is playing.
+    #[func]
+    fn set_ab_loop(&mut self, a_ms: i64, b_ms: i64) -> i32 {
+        unsafe { libvlc_media_player_set_abloop_time(self.player_ptr, a_ms, b_ms) }
     }
 
     /// Set movie chapter (if applicable).
@@ -1037,6 +1199,41 @@ impl VlcMediaPlayer {
 
     fn get_media_ptr(&self) -> Option<*mut libvlc_media_t> {
         Some(self.media.as_ref()?.bind().media_ptr)
+    }
+
+    /// Reads the A to B loop out of libvlc, following the rules its own
+    /// documentation states but its implementation does not enforce.
+    ///
+    /// `libvlc_media_player_get_abloop` asks the core for four values and then
+    /// copies all four into the caller's pointers, whether or not they mean
+    /// anything: with no loop set, the core leaves them alone, so the time
+    /// outputs end up holding two uninitialised locals of libvlc's stack frame.
+    /// What is meaningful is decided by the status, so this keeps only what the
+    /// status covers -- from [ABLOOP_A] up for the A outputs, [ABLOOP_B] only for
+    /// the B outputs -- and answers `-1`/`-1.0` for the rest.
+    fn ab_loop(&self) -> AbLoop {
+        let mut a_time: i64 = -1;
+        let mut a_pos: f64 = -1.0;
+        let mut b_time: i64 = -1;
+        let mut b_pos: f64 = -1.0;
+        let status = unsafe {
+            libvlc_media_player_get_abloop(
+                self.player_ptr,
+                &mut a_time,
+                &mut a_pos,
+                &mut b_time,
+                &mut b_pos,
+            )
+        };
+        let has_a = status >= libvlc_abloop_t_libvlc_abloop_a;
+        let has_b = status >= libvlc_abloop_t_libvlc_abloop_b;
+        AbLoop {
+            status,
+            a_time: if has_a { a_time } else { -1 },
+            a_pos: if has_a { a_pos } else { -1.0 },
+            b_time: if has_b { b_time } else { -1 },
+            b_pos: if has_b { b_pos } else { -1.0 },
+        }
     }
 
     /// Bring up the GPU output backend. `true` if it activated; `false`
