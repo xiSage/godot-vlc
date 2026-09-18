@@ -38,13 +38,20 @@
 //! scripts/test.ps1 puts the staged runtime on the library search path, and
 //! scripts/acceptance_test.ps1 points it at the assembled addon so that the bytes
 //! under test are the ones users receive.
+//!
+//! The second test here is its counterpart: a media that does not exist has to
+//! be reported through libvlc's error event. That event is the only report of an
+//! asynchronous failure -- `libvlc_media_player_play` returns 0 for a media it
+//! cannot open, and the error state is not one a caller can observe -- so a
+//! runtime that stopped raising it would take the extension's `error` signal
+//! down with it, and quietly.
 
 #![cfg(test)]
 
 use std::ffi::{CString, c_char, c_uint, c_void};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::vlc::*;
@@ -59,6 +66,19 @@ const SAMPLE_HEIGHT: u32 = 64;
 /// How long the decoder is given. The sample is one second long; anything
 /// approaching this bound means it is not going to happen.
 const DECODE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The media the error test asks for, relative to the repository root.
+///
+/// It must not exist -- the failure is the whole point -- so nothing here creates
+/// it, and the test refuses to run if something else did.
+const MISSING_MEDIA: &str = "target/acceptance/this-media-does-not-exist.mp4";
+
+/// How long the error report is given.
+///
+/// Nothing has to be read or connected: this runtime reported the failure about
+/// 140 ms after `play` was called. The bound is far above that, and far below
+/// "it hangs".
+const ERROR_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The state the video callbacks operate on.
 ///
@@ -251,5 +271,116 @@ fn decodes_the_h264_sample() {
     assert!(
         (SAMPLE_HEIGHT..=SAMPLE_HEIGHT + 16).contains(&height),
         "the decoder reported a height of {height}; the sample is {SAMPLE_HEIGHT} high, so something other than the expected video was decoded"
+    );
+}
+
+/// What the error event reported. Written from libvlc's input thread.
+struct ErrorProbe {
+    fired: AtomicBool,
+    event_type: AtomicI32,
+}
+
+impl ErrorProbe {
+    fn new() -> Self {
+        Self {
+            fired: AtomicBool::new(false),
+            event_type: AtomicI32::new(0),
+        }
+    }
+}
+
+/// Records that the error event arrived, and which type it was.
+///
+/// Nothing else may happen here: this runs on libvlc's thread, holding the
+/// player's lock, and it is not the thread that owns the probe.
+unsafe extern "C" fn error_callback(event: *const libvlc_event_t, user_data: *mut c_void) {
+    unsafe {
+        let probe = &*(user_data as *const ErrorProbe);
+        probe.event_type.store((*event).type_, Ordering::Relaxed);
+        probe.fired.store(true, Ordering::Release);
+    }
+}
+
+/// A media that cannot be opened has to be reported, or nothing reports it.
+///
+/// This is the assertion the extension's `error` signal rests on. `play` returns
+/// 0 for a media it cannot open, and a failed open reaches the same
+/// stopping/stopped states as a media that ended, so if the runtime stopped
+/// raising this event the failure would be silent everywhere.
+///
+/// It drives LibVLC directly, so it pins the runtime rather than this binding's
+/// use of it; `demo/tests/error_signal.gd` is the end-to-end half, where the
+/// signal has to arrive in GDScript.
+#[test]
+fn reports_a_media_that_cannot_be_opened() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MISSING_MEDIA);
+    assert!(
+        !path.exists(),
+        "the test needs {} to be absent, and something created it",
+        path.display()
+    );
+    let path = CString::new(path.to_str().expect("the media path is not valid UTF-8"))
+        .expect("the media path contains a NUL byte");
+
+    // No audio: nothing is going to be decoded, and a build machine has no sound
+    // device.
+    let options = [c"--no-audio"];
+    let instance = unsafe { libvlc_new(options.len() as i32, options.as_ptr().cast()) };
+    assert!(
+        !instance.is_null(),
+        "libvlc_new returned NULL: the runtime could not be initialised"
+    );
+
+    let media = unsafe { libvlc_media_new_path(path.as_ptr()) };
+    assert!(!media.is_null(), "libvlc_media_new_path refused the path");
+
+    let player = unsafe { libvlc_media_player_new(instance) };
+    assert!(!player.is_null(), "libvlc_media_player_new returned NULL");
+
+    let mut probe = Box::new(ErrorProbe::new());
+    let opaque = probe.as_mut() as *mut ErrorProbe as *mut c_void;
+
+    let attached = unsafe {
+        libvlc_event_attach(
+            libvlc_media_player_event_manager(player),
+            libvlc_event_e_libvlc_MediaPlayerEncounteredError as libvlc_event_type_t,
+            Some(error_callback),
+            opaque,
+        )
+    };
+    assert_eq!(attached, 0, "the error event could not be attached");
+
+    unsafe { libvlc_media_player_set_media(player, media) };
+
+    // A media that cannot be opened is accepted here: the path is not touched
+    // until the input thread runs. That is the reason this event is needed, so it
+    // is asserted rather than assumed -- a runtime that started reporting the
+    // failure from `play` would make the premise of this test false.
+    let started = unsafe { libvlc_media_player_play(player) };
+    assert_eq!(
+        started, 0,
+        "play returned {started} for a media that cannot be opened; this test expects the failure to arrive asynchronously"
+    );
+
+    let deadline = Instant::now() + ERROR_TIMEOUT;
+    while Instant::now() < deadline && !probe.fired.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let fired = probe.fired.load(Ordering::Acquire);
+    let reported = probe.event_type.load(Ordering::Relaxed);
+
+    unsafe {
+        libvlc_media_player_release(player);
+        libvlc_media_release(media);
+        libvlc_release(instance);
+    }
+
+    assert!(
+        fired,
+        "no event arrived within {ERROR_TIMEOUT:?} for a media that does not exist; a caller would see the failure as nothing happening"
+    );
+    assert_eq!(
+        reported, libvlc_event_e_libvlc_MediaPlayerEncounteredError as libvlc_event_type_t,
+        "the event that arrived was of type {reported}, not the error event"
     );
 }

@@ -47,6 +47,7 @@ pub(crate) enum ParkedEvent {
     Forward,
     Backward,
     Stopping,
+    Error,
     Position(f64),
     Time(i64),
     Length(i64),
@@ -311,6 +312,25 @@ impl VlcMediaPlayer {
                 park_ptr,
             );
 
+            // What libvlc raises when the input gives up: the media cannot be
+            // opened, the demuxer failed, the stream output could not be started.
+            // Nothing is read out of the event, and not because the payload is
+            // uninteresting: this event has none. The union in `libvlc_events.h`
+            // has no member for it and libvlc's sender fills in nothing but the
+            // type, so reading `u` here would read whatever was on that stack.
+            unsafe extern "C" fn error_callback(
+                _event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                unsafe { park(user_data, ParkedEvent::Error) };
+            }
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerEncounteredError as libvlc_event_type_t,
+                Some(error_callback),
+                park_ptr,
+            );
+
             unsafe extern "C" fn position_callback(
                 event: *const libvlc_event_t,
                 user_data: *mut c_void,
@@ -393,6 +413,7 @@ impl VlcMediaPlayer {
                 ParkedEvent::Forward => self.signals().forward().emit(),
                 ParkedEvent::Backward => self.signals().backward().emit(),
                 ParkedEvent::Stopping => self.signals().stopping().emit(),
+                ParkedEvent::Error => self.signals().error().emit(),
                 ParkedEvent::Position(position) => {
                     self.signals().position_changed().emit(position);
                 }
