@@ -1144,7 +1144,18 @@ impl VlcMediaPlayer {
     /// This function is asynchronous. In case of success, the user should wait for the [signal stopped] signal to know when the stop is finished.
     ///
     /// # Returns
-    /// 0 if the player is being stopped, -1 otherwise (no-op)
+    /// `0` when the player is being stopped, or `VLC_EGENERIC` (`-2147483648`)
+    /// when there was nothing to stop -- asking twice, or asking after the media
+    /// ended. The `-1` that libvlc's own header documents here is never returned:
+    /// what libvlc returns is what this returns, measured against the pinned
+    /// runtime.
+    ///
+    /// # Warning
+    /// - A no-op is not an error worth reporting to the user: it is what a
+    ///   "stop" button pressed twice answers. [signal stopped] has already been
+    ///   emitted in that case, which is the signal that says playback is over.
+    /// - Stopping ends the input, and the A to B loop goes with it: see
+    ///   [method set_ab_loop].
     #[func]
     fn stop_async(&mut self) -> i32 {
         unsafe { libvlc_media_player_stop_async(self.player_ptr) }
