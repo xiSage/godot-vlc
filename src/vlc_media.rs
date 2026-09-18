@@ -23,7 +23,10 @@ use std::{
     ptr, slice,
 };
 
-use crate::{util::cstring_from_gstring, vlc::*, vlc_instance, vlc_track_list::VlcTrackList};
+use crate::{
+    util::cstring_from_gstring, vlc::*, vlc_instance, vlc_subtitle::VlcSubtitle,
+    vlc_track_list::VlcTrackList,
+};
 use godot::{
     classes::{WeakRef, file_access::ModeFlags},
     global::weakref,
@@ -96,6 +99,20 @@ impl VlcMedia {
     /// [method add_option] always sets this; [method add_option_flag] does not.
     #[constant]
     const OPTION_UNIQUE: i32 = libvlc_media_option_unique as i32;
+
+    /// The type an external subtitle is added with.
+    /// LibVLC forces its `subtitle` demux, whatever the file is called and whatever
+    /// a `:demux=` option says.
+    #[constant]
+    const SLAVE_TYPE_SUBTITLE: i32 =
+        libvlc_media_slave_type_t_libvlc_media_slave_type_subtitle as i32;
+    /// The type any other external source is added with -- LibVLC's own header also
+    /// calls it `libvlc_media_slave_type_audio`, which is this same value under
+    /// another name. Nothing forces a demux for it, so what the source contains is
+    /// decided by its content.
+    #[constant]
+    const SLAVE_TYPE_GENERIC: i32 =
+        libvlc_media_slave_type_t_libvlc_media_slave_type_generic as i32;
 
     #[constant]
     const META_TITLE: i32 = libvlc_meta_t_libvlc_meta_Title as i32;
@@ -276,6 +293,100 @@ impl VlcMedia {
     fn add_option_flag(&self, option: GString, flags: i32) {
         let option = cstring_from_gstring(option);
         unsafe { libvlc_media_add_option_flag(self.media_ptr, option.as_ptr(), flags as c_uint) }
+    }
+
+    /// Add a subtitle to the media.\
+    /// This is [method slaves_add] with [constant SLAVE_TYPE_SUBTITLE] and the [member VLCSubtitle.mrl] of a resource, which is the form a subtitle normally arrives in.
+    ///
+    /// # When it takes effect
+    /// A slave, like an option, is read once -- when the input is created -- and that
+    /// happens when the media is **assigned to a [VLCMediaPlayer]**, not when
+    /// `play()` is called. So this has to be called first:
+    /// `VLCMedia.load_from_file(...)`, then `add_subtitle(...)`, then
+    /// `player.media = media`. A subtitle added after the assignment is not seen by
+    /// the playback that is running or about to start; it is read by the next input,
+    /// which the same media gets after a [method VLCMediaPlayer.stop_async].
+    /// To add one to the playback that is already running, use
+    /// [method VLCMediaPlayer.add_subtitle] instead -- that is the other half of the
+    /// same thing, and it is the only one that works mid-playback.
+    ///
+    /// # What happens afterwards
+    /// There is no way to take a loaded subtitle away again: LibVLC has no
+    /// remove-a-slave call, [method slaves_clear] only empties the media's list, and
+    /// an empty track selection only unselects -- the track stays. Replacing a
+    /// subtitle therefore means adding another one, or stopping and starting the
+    /// input over.
+    ///
+    /// LibVLC rewrites the media's slave list when the input is created, keeping only
+    /// the slaves that loaded: one whose URI cannot be opened disappears from the
+    /// list for good, with one line in the log about the MRL it could not open.
+    ///
+    /// # Parameters
+    /// - [param subtitle] the subtitle to attach.
+    /// - [param priority] from `0` (low) to `4` (high). It decides which slave wins
+    ///   when several are attached, and `4` is also what a caller with no opinion
+    ///   should pass, since LibVLC folds it and everything above it into its
+    ///   "the user asked for this one" rank.
+    ///
+    /// # Returns
+    /// `0` when LibVLC took it, `-1` when it refused -- never an error code, which is
+    /// what this libvlc revision returns here.
+    #[func]
+    fn add_subtitle(&self, subtitle: Gd<VlcSubtitle>, priority: i32) -> i32 {
+        self.slaves_add(
+            Self::SLAVE_TYPE_SUBTITLE,
+            priority,
+            subtitle.bind().get_mrl(),
+        )
+    }
+
+    /// Add an external source to the media descriptor.
+    ///
+    /// This is `libvlc_media_slaves_add`: a slave is either a subtitle
+    /// ([constant SLAVE_TYPE_SUBTITLE]) or some other source
+    /// ([constant SLAVE_TYPE_GENERIC]), and `uri` is a media resource locator --
+    /// `data:;base64,...` for bytes the caller holds, `file:///...` for a file on the
+    /// host, `http(s)://...` for one on a server. A bare filesystem path is not an
+    /// MRL: `D:\sub.srt` would be split at its colon and read as a `D` scheme, so
+    /// build the MRL with [method VLCSubtitle.load_from_file] or write `file:///`
+    /// yourself.
+    ///
+    /// For a subtitle prefer [method add_subtitle], which does exactly this with the
+    /// subtitle type. This entry point is for the other type, and for callers who
+    /// already have an MRL.
+    ///
+    /// The moment it takes effect, the priority, and what happens to a slave that
+    /// fails to load are all [method add_subtitle]'s, which documents them.
+    ///
+    /// # Parameters
+    /// - [param slave_type] [constant SLAVE_TYPE_SUBTITLE] or [constant SLAVE_TYPE_GENERIC].
+    /// - [param priority] from `0` (low) to `4` (high).
+    /// - [param uri] the slave's media resource locator.
+    ///
+    /// # Returns
+    /// `0` when LibVLC took it, `-1` when it refused.
+    #[func]
+    fn slaves_add(&self, slave_type: i32, priority: i32, uri: GString) -> i32 {
+        let uri = cstring_from_gstring(uri);
+        unsafe {
+            libvlc_media_slaves_add(
+                self.media_ptr,
+                slave_type as libvlc_media_slave_type_t,
+                priority as c_uint,
+                uri.as_ptr(),
+            )
+        }
+    }
+
+    /// Drop every slave the media carries.
+    ///
+    /// This empties the media's own list -- the one the next input will read -- and
+    /// nothing else. A playback that is already running keeps the subtitles it
+    /// loaded, since those live on the input; to be rid of one there, stop the player
+    /// and start it again.
+    #[func]
+    fn slaves_clear(&self) {
+        unsafe { libvlc_media_slaves_clear(self.media_ptr) }
     }
 
     /// Get duration (in ms) of media descriptor object item.\

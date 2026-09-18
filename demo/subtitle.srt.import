@@ -1,0 +1,14 @@
+[remap]
+
+importer="godot_vlc.subtitle"
+type="VLCSubtitle"
+uid="uid://bxax1ucsax7xh"
+path="res://.godot/imported/subtitle.srt-5362890c9e6431b9ce1318f35d4a088c.res"
+
+[deps]
+
+source_file="res://subtitle.srt"
+dest_files=["res://.godot/imported/subtitle.srt-5362890c9e6431b9ce1318f35d4a088c.res"]
+
+[params]
+
