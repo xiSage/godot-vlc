@@ -54,7 +54,7 @@
 // same allow, for the `STATE_*` and `ABLOOP_*` constants it exports.
 #![allow(clippy::unnecessary_cast)]
 
-use std::ffi::{CString, c_char, c_uint, c_void};
+use std::ffi::{CStr, CString, c_char, c_uint, c_void};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -779,6 +779,42 @@ const SHORTENED_LENGTH_MAX_MS: i64 = 700;
 /// still have to decode the whole sample.
 const SKIPPED_PLAYBACK_MARGIN: Duration = Duration::from_millis(250);
 
+/// The subtitle the slave tests attach: two cues over the sample's one second, in the
+/// simplest format the subtitle demux recognises.
+const SAMPLE_SUBTITLE: &str =
+    "1\n00:00:00,000 --> 00:00:00,500\nAAAA\n\n2\n00:00:00,500 --> 00:00:01,000\nBBBB\n";
+
+/// Where that subtitle is written: a generated file, next to the media the tests ask
+/// for and for the same reason.
+const SUBTITLE_FILE: &str = "target/acceptance/subtitle.srt";
+
+/// Writes the subtitle fixture and returns a `file://` MRL for it.
+///
+/// A slave takes a URI, so this is the form a subtitle on disk is handed over in --
+/// and the one VobSub pairs need, since that demux finds its second file by rewriting
+/// the path it was given. Note that a path is not an MRL: a Windows path handed over
+/// as one would be split at its drive colon, which is why the `file:///` is built
+/// here. Nothing in the test path needs percent-encoding; a path that did (a space, a
+/// `#`, a `%`) would, and `VLCSubtitle.load_from_file` is what does that for callers.
+fn subtitle_mrl() -> CString {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SUBTITLE_FILE);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("the subtitle directory could not be created");
+    }
+    std::fs::write(&path, SAMPLE_SUBTITLE).expect("the subtitle fixture could not be written");
+
+    let path = path
+        .to_str()
+        .expect("the subtitle path is not valid UTF-8")
+        .replace('\\', "/");
+    let mrl = if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    };
+    CString::new(mrl).expect("the subtitle MRL contains a NUL byte")
+}
+
 impl Sample {
     /// Adds a per-media option to the media.
     ///
@@ -787,6 +823,75 @@ impl Sample {
     fn add_option(&self, option: &str) {
         let option = CString::new(option).expect("the option contains a NUL byte");
         unsafe { libvlc_media_add_option(self.media, option.as_ptr()) };
+    }
+
+    /// Adds a subtitle to the media descriptor, before it is attached.
+    fn add_slave_to_media(&self, uri: &CStr, priority: c_uint) -> i32 {
+        unsafe {
+            libvlc_media_slaves_add(
+                self.media,
+                libvlc_media_slave_type_t_libvlc_media_slave_type_subtitle,
+                priority,
+                uri.as_ptr(),
+            )
+        }
+    }
+
+    /// Adds a subtitle to the player that exists, if one does.
+    fn add_slave_to_player(&self, uri: &CStr, select: bool) -> i32 {
+        unsafe {
+            libvlc_media_player_add_slave(
+                self.player,
+                libvlc_media_slave_type_t_libvlc_media_slave_type_subtitle,
+                uri.as_ptr(),
+                select,
+            )
+        }
+    }
+
+    /// How many text tracks the player reports right now.
+    fn text_tracks(&self) -> usize {
+        unsafe {
+            let list = libvlc_media_player_get_tracklist(
+                self.player,
+                libvlc_track_type_t_libvlc_track_text,
+                false,
+            );
+            if list.is_null() {
+                return 0;
+            }
+            let count = libvlc_media_tracklist_count(list);
+            libvlc_media_tracklist_delete(list);
+            count
+        }
+    }
+
+    /// Waits for a text track to appear.
+    fn wait_for_text_track(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.text_tracks() > 0 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    fn set_spu_delay(&self, delay_us: i64) -> i32 {
+        unsafe { libvlc_video_set_spu_delay(self.player, delay_us) }
+    }
+
+    fn spu_delay(&self) -> i64 {
+        unsafe { libvlc_video_get_spu_delay(self.player) }
+    }
+
+    fn set_spu_text_scale(&self, scale: f32) {
+        unsafe { libvlc_video_set_spu_text_scale(self.player, scale) }
+    }
+
+    fn spu_text_scale(&self) -> f32 {
+        unsafe { libvlc_video_get_spu_text_scale(self.player) }
     }
 
     fn length(&self) -> i64 {
@@ -898,5 +1003,137 @@ fn a_per_media_option_added_after_the_media_is_attached_waits_for_the_next_input
     assert!(
         rebuilt_length <= SHORTENED_LENGTH_MAX_MS,
         "the option was not read by the rebuilt input either: the length is {rebuilt_length} ms"
+    );
+}
+
+/// A subtitle attached to the media before it is loaded becomes a track.
+///
+/// This is the half of the subtitle API that works before playback: `slaves_add`
+/// writes the media's slave list, and the input reads that list when it is created --
+/// which assigning the media is what does. There is no event for a slave, so the
+/// evidence is the track list: the subtitle demux adds its track as soon as it opens.
+#[test]
+fn a_subtitle_attached_before_playback_becomes_a_track() {
+    let sample = Sample::new();
+    let subtitle = subtitle_mrl();
+
+    assert_eq!(
+        sample.add_slave_to_media(&subtitle, 4),
+        0,
+        "libvlc refused a subtitle for the media"
+    );
+    assert_eq!(
+        sample.text_tracks(),
+        0,
+        "a text track exists before anything was played, so this test would pass for the wrong reason"
+    );
+
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    assert!(
+        sample.wait_for_text_track(Duration::from_secs(5)),
+        "the subtitle never became a track; the media's slave list is read when the input is created"
+    );
+}
+
+/// The player's own entry point needs a playback, and is the only one that has one.
+///
+/// The two entry points do not overlap: this one answers `VLC_EGENERIC` -- which is
+/// `INT_MIN`, not the `-1` its header documents -- while there is no input, and `0`
+/// once there is one. Anything added before the media is assigned has to go through
+/// the media instead.
+#[test]
+fn a_subtitle_added_to_a_player_without_an_input_is_refused() {
+    let sample = Sample::new();
+    let subtitle = subtitle_mrl();
+
+    assert_eq!(
+        sample.add_slave_to_player(&subtitle, true),
+        i32::MIN,
+        "adding a subtitle to a player with no input did not answer VLC_EGENERIC"
+    );
+    assert_eq!(
+        sample.text_tracks(),
+        0,
+        "a text track appeared for a subtitle that was refused"
+    );
+
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    assert_eq!(
+        sample.add_slave_to_player(&subtitle, true),
+        0,
+        "adding a subtitle to a playing player was refused"
+    );
+    assert!(
+        sample.wait_for_text_track(Duration::from_secs(5)),
+        "a subtitle added while playing never became a track"
+    );
+}
+
+/// The subtitle delay belongs to the input and the text scale to the player.
+///
+/// The difference is not cosmetic, it is what a caller has to know: the delay is
+/// accepted and dropped while there is no input -- with `0` returned either way, so
+/// nothing reports it -- and it is gone after a stop, while the scale can be set
+/// before playback and outlives both a stop and a changed media.
+#[test]
+fn the_subtitle_delay_dies_with_the_input_and_the_text_scale_does_not() {
+    let sample = Sample::new();
+
+    assert_eq!(
+        sample.set_spu_delay(250_000),
+        0,
+        "the delay was refused for a player with no input; the header says it cannot fail"
+    );
+    assert_eq!(
+        sample.spu_delay(),
+        0,
+        "a delay set before there was an input was kept somewhere"
+    );
+    sample.set_spu_text_scale(2.0);
+    assert!(
+        (sample.spu_text_scale() - 2.0).abs() < 0.001,
+        "the text scale did not take effect before playback, although it belongs to the player"
+    );
+
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    assert_eq!(
+        sample.set_spu_delay(250_000),
+        0,
+        "the delay was refused while playing"
+    );
+    assert_eq!(
+        sample.spu_delay(),
+        250_000,
+        "the delay did not survive the call while playing"
+    );
+    assert!(
+        (sample.spu_text_scale() - 2.0).abs() < 0.001,
+        "the text scale went away when playback started"
+    );
+
+    assert_eq!(
+        unsafe { libvlc_media_player_stop_async(sample.player) },
+        0,
+        "the stop was refused"
+    );
+    assert!(
+        sample.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, PLAYBACK_TIMEOUT),
+        "playback never stopped within {PLAYBACK_TIMEOUT:?}"
+    );
+
+    assert_eq!(
+        sample.spu_delay(),
+        0,
+        "the delay outlived the input it was set on"
+    );
+    assert!(
+        (sample.spu_text_scale() - 2.0).abs() < 0.001,
+        "the text scale went away with the input, although it belongs to the player"
     );
 }
