@@ -427,6 +427,15 @@ const LOOP_OBSERVATION: Duration = Duration::from_secs(3);
 /// How long playback is given to start or stop. The sample is one second long.
 const PLAYBACK_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most the reported time may rise between two reads and still be the clock
+/// running.
+///
+/// The reads are 10 ms apart, so an ordinary read moves by about that much; a value
+/// more than a tenth of a second above the one before it was not arrived at by
+/// playing, and a backwards move that starts from such a value is not a wrap. See
+/// [Sample::watch].
+const RISE_PER_POLL_MS: i64 = 100;
+
 /// The sample, the instance, and a player for it, released when this drops.
 ///
 /// The media is not handed to the player until [Sample::attach_media] does it,
@@ -530,25 +539,50 @@ impl Sample {
         false
     }
 
-    /// Watches playback for `duration`, returning every time it moved backwards
-    /// and the states seen along the way.
+    /// Watches playback for `timeout`, returning every backwards move it saw and
+    /// the states seen along the way.
+    fn observe(&self, timeout: Duration) -> (Vec<(i64, i64)>, Vec<i32>) {
+        self.watch(None, timeout)
+    }
+
+    /// Watches playback until it moves backwards once, or `timeout` passes.
     ///
-    /// A backwards move of more than a tenth of a second is what a loop looks
-    /// like from outside; the end of a media that is not looping is exactly one
-    /// of them, which is what tells the two apart.
-    fn observe(&self, duration: Duration) -> (Vec<(i64, i64)>, Vec<i32>) {
+    /// The stop test needs the loop to have wrapped before the stop, and how much
+    /// wall-clock time that takes is not fixed: a loaded machine gets through the
+    /// same 400 ms of media more slowly than an idle one, which is how a wrap came
+    /// to be missed inside a 1200 ms window.
+    fn observe_until_a_wrap(&self, timeout: Duration) -> Vec<(i64, i64)> {
+        self.watch(Some(1), timeout).0
+    }
+
+    /// The shared body of the two above: watches until `wanted` backwards moves
+    /// have been seen, or until `timeout` passes.
+    ///
+    /// A backwards move is how a loop shows up from outside, and the end of a media
+    /// that is not looping is one of them too, which is what tells the two apart. It
+    /// is counted when the time comes back down by more than a tenth of a second
+    /// from a value the timeline had *risen into* -- one poll's worth of rise, which
+    /// is what a running clock looks like. That second condition is measured: after
+    /// a restart the reported time sits at `0`, then reads `200` for about 70 ms, and
+    /// only then runs (`96`, `106`, `117`, ...), and the end of that `200` is a
+    /// backwards move of its own that nothing moved for.
+    fn watch(&self, wanted: Option<usize>, timeout: Duration) -> (Vec<(i64, i64)>, Vec<i32>) {
         let mut drops = Vec::new();
         let mut states = Vec::new();
-        let mut previous = self.time();
-        let deadline = Instant::now() + duration;
-        while Instant::now() < deadline {
+        let mut before_previous = self.time();
+        let mut previous = before_previous;
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline && wanted.is_none_or(|wanted| drops.len() < wanted) {
             std::thread::sleep(Duration::from_millis(10));
             let state = self.state();
             let time = self.time();
             states.push(state);
-            if time < previous - 100 {
+            let rose_into_it =
+                previous > before_previous && previous - before_previous <= RISE_PER_POLL_MS;
+            if rose_into_it && time < previous - 100 {
                 drops.push((previous, time));
             }
+            before_previous = previous;
             previous = time;
         }
         (drops, states)
@@ -649,7 +683,7 @@ fn a_loop_does_not_survive_a_stop() {
     play_until_playing(&sample);
 
     // It has to be running first, or losing it would prove nothing.
-    let (before, _) = sample.observe(Duration::from_millis(1200));
+    let before = sample.observe_until_a_wrap(LOOP_OBSERVATION);
     assert!(
         !before.is_empty(),
         "the loop was not wrapping before the stop, so this test would pass for the wrong reason"
@@ -674,7 +708,8 @@ fn a_loop_does_not_survive_a_stop() {
     );
 
     // Nothing loops it now, so the only backwards move left is the media's own
-    // end.
+    // end. A loop that survived wraps every ~400 ms and makes a backwards move per
+    // wrap, so six or so in this window rather than one.
     let (after, _) = sample.observe(LOOP_OBSERVATION);
     assert!(
         after.len() <= 1,
