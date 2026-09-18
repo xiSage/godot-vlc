@@ -93,23 +93,40 @@ the same branch had just written and rebuild for one to two hours anyway.
 
 ## Build configuration
 
-Contribs are built with `--disable-gpl --disable-gnuv3 --enable-ad-clauses`, the
-same set VideoLAN's own Apple, Android and wasm builds use.
+Contribs are built with `--disable-gpl --enable-ad-clauses`, and *without*
+`--disable-gnuv3`, which is how version-3 (L)GPL code is admitted — contrib's
+default for that switch is on, and `--enable-gnuv3` is not a spelling it accepts
+(it becomes a package name and the build dies with `No rule to make target
+'.gnuv3'`). The Android runtime builds the same tier through `libvlcjni`'s
+`--license l` mode, and the two have to agree: a runtime that is LGPLv2.1 on one
+platform and LGPLv3 on another is a licence statement nobody can make.
 
 - `--disable-gpl` drops GPL-licensed libraries. The notable one is x264, an H.264
   *encoder*, which a player does not need; decoding H.264/VP9/AV1 goes through
-  avcodec and dav1d and is unaffected.
-- `--disable-gnuv3` drops (L)GPLv3-only libraries such as libidn2.
+  avcodec and dav1d and is unaffected. `aribb24`, the only package gated on
+  *both* switches, stays out with it.
+- Not disabling version-3 (L)GPL code is what admits GnuTLS, and that is the only
+  way to get TLS here. GnuTLS is the only cross-platform provider of LibVLC's
+  `tls client` capability, and contrib builds it only when that code is allowed,
+  because its crypto backend (`nettle`, then `gmp`) is LGPLv3+/GPLv2+ and cannot
+  be used under LGPLv2.1 — the rule file says so itself. Measured on the previous
+  win-x64 runtime, 0 of 383 plugins carried `tls client`, so nothing over TLS
+  could be opened. The same tier brings `live555`, itself LGPLv3-or-later, which
+  is what serves RTSP properly; `srt`, whose contrib rule pins
+  `-DUSE_ENCLIB=gnutls`; and `asdcplib`, whose gate is `if GPL … else if GNUV3`
+  because it builds against nettle. asdcplib is BSD-licensed and the DCP module
+  it enables is LGPL-2.1-or-later, so it adds Digital Cinema packages and no
+  licence obligation; Android's rule skips that platform.
 - `--enable-ad-clauses` is **not optional**. `freetype` is the only package in the
   entire contrib tree gated on `AD_CLAUSES`; without the flag the build stops
   with `Package "freetype" requires the GPL license`. freetype is VLC's subtitle
   and OSD text renderer, so leaving it out costs a player visible functionality.
 
 `contrib/bootstrap` reports the resulting licence string itself. With this set it
-prints `Lesser GPL version 2.1, with advertisement clauses` — upstream's own
-designation for the combination, not this project's interpretation. That matters
-for the wording in `README.md`: the runtime is LGPL *with advertisement clauses*,
-which is what VideoLAN ships, and it is not the same claim as "plain LGPLv2.1".
+prints `Lesser GPL version 3, with advertisement clauses` — upstream's own
+designation for the combination, not this project's interpretation. `README.md`
+records what the move from LGPLv2.1 to LGPLv3 changes for whoever bundles the
+runtime, and what it does not.
 
 The benefit over a default build is that the plugin tree contains no viral GPL
 modules, so there is no need to explain to users of a commercial Godot project

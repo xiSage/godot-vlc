@@ -317,24 +317,71 @@ Invoke-Native -Command './bootstrap' -WorkingDirectory $src
 # ---------------------------------------------------------------------------
 Write-Host 'build: configuring the contrib dependencies'
 # ---------------------------------------------------------------------------
-# --disable-gpl / --disable-gnuv3 / --enable-ad-clauses are the upstream switches
-# for an LGPL runtime; VideoLAN's own Apple, Android and wasm builds use the same
-# set.
+# --disable-gpl and --enable-ad-clauses are the upstream switches for the LGPL
+# runtime this repository ships, and version-3 (L)GPL code is admitted by *not*
+# passing --disable-gnuv3: contrib/bootstrap defaults GNUV3 to on, and it has no
+# --enable-gnuv3 switch -- that spelling falls through to the generic
+# `--enable-*` branch, which reads it as a package name, and the build then dies
+# with "No rule to make target '.gnuv3'". contrib/bootstrap reports this
+# combination as "Lesser GPL version 3, with advertisement clauses", and
+# VideoLAN's Android buildsystem offers the same one as its `--license l` mode,
+# which likewise passes only --disable-gpl --enable-ad-clauses.
 #
 #   --disable-gpl       drops GPL-licensed libraries. x264 is the notable one,
 #                       and it is an H.264 *encoder*, so a player does not need
 #                       it; decoding H.264/VP9/AV1 goes through avcodec and
-#                       dav1d.
-#   --disable-gnuv3     drops (L)GPLv3-only libraries such as libidn2.
+#                       dav1d. aribb24, the only package gated on *both*
+#                       switches, stays out with it.
+#   (not disabling it)  is what allows version-3 (L)GPL code, and it is the only
+#                       way to get HTTPS here. GnuTLS is the only cross-platform
+#                       provider of LibVLC's "tls client" capability, and
+#                       contrib builds it only with this switch on, because its
+#                       crypto backend (nettle, then gmp) is LGPLv3+/GPLv2+ and
+#                       cannot be used under LGPLv2.1 -- its rule file says so in
+#                       as many words. Without the switch no plugin carries
+#                       "tls client" at all: measured on the previous win-x64
+#                       runtime, 0 of 383 plugins did, so https://, ftps://,
+#                       webdavs://, rtmps:// and HLS/DASH over TLS could not be
+#                       opened.
+#                       The same switch brings live555, which is itself
+#                       LGPLv3-or-later (444 of its 447 source files grant
+#                       "version 3 ... or later") and is what serves RTSP
+#                       properly; srt, whose contrib rule pins
+#                       -DUSE_ENCLIB=gnutls and so needs the same backend; and
+#                       asdcplib, whose own gate is `if GPL ... else if GNUV3`
+#                       because it builds against nettle. asdcplib is
+#                       BSD-licensed and the DCP module it enables is
+#                       LGPL-2.1-or-later, so it adds a capability (Digital
+#                       Cinema packages) and no licence obligation. None of the
+#                       three is GPL, and --disable-gpl still keeps every GPL
+#                       package out.
 #   --enable-ad-clauses is NOT optional. freetype is the only package in the
 #                       whole contrib tree gated on AD_CLAUSES, and without this
 #                       flag the build stops with "Package freetype requires the
 #                       GPL license". freetype is VLC's subtitle and OSD text
 #                       renderer, so omitting it would cost a player visible
-#                       functionality. contrib/bootstrap then reports the licence
-#                       as "Lesser GPL version 2.1, with advertisement clauses",
-#                       which is upstream's own designation for this combination.
-$contribArgs += @('--disable-gpl', '--disable-gnuv3', '--enable-ad-clauses')
+#                       functionality.
+#
+# So the runtime's licence is LGPLv3 + advertisement clauses, not LGPLv2.1 +
+# advertisement clauses. README.md's "Licensing" section records what that
+# changes for whoever bundles this runtime, and what it does not.
+$contribArgs += @('--disable-gpl', '--enable-ad-clauses')
+
+# --enable-libdsm is not a licence switch, it is what makes smb:// playable.
+#
+# libdsm is an opt-in contrib package: its rules.mak never adds itself to PKGS,
+# and nothing DEPS_ on it, so upstream's default build leaves it out. VLC only
+# builds its SMB/CIFS access module when the library is present, which is why
+# this runtime had no SMB client at all -- only the unc module, which is Windows
+# UNC paths. libdsm is LGPLv2.1-or-later (its COPYING says "LGPLv2.1 (or
+# later)"), which the flags above allow, and VideoLAN's own Android buildsystem
+# already enables it for the Android runtime, so this brings the desktop
+# runtimes up to the same feature set rather than inventing a new one.
+#
+# libdsm implements SMBv1 only, and it is a client: nothing here serves shares.
+#
+# Measured on win-x64: one plug-in, 1.2 MB.
+$contribArgs += @('--enable-libdsm')
 
 # contrib/bootstrap only writes a Makefile; it does not build anything. The
 # compilation is the separate `make` below, and it is the slow part.

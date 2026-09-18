@@ -73,13 +73,19 @@ The same device, with the runtime VideoLAN publishes, reports
 ### Licence
 
 VideoLAN's Android build defaults to `--license g`, which means contribs built
-with GPL-licensed libraries — `sout-x264-*`, `dvdread`, `live555` and the rest
-are visible in the published `libvlc.so`. The desktop runtimes here are built
-with `--license`-equivalent flags that exclude them, and `README.md` explains
-why: bundling GPL modules means answering licensing questions for every project
-that ships this extension. `--license a` is the Android equivalent of that
-choice — LGPL v2.1 plus the advertisement clauses, which is what `vlc.lock`
-records for the desktop runtime as well.
+with GPL-licensed libraries — `sout-x264-*`, `dvdread` and the rest are visible in
+the published `libvlc.so`. The runtimes here are built with `--license l`, this
+buildsystem's LGPLv3 + advertisement-clauses mode; the desktop runtimes pass the
+same tier as `--disable-gpl --enable-ad-clauses` (and *without* `--disable-gnuv3`,
+which is how contrib admits version-3 (L)GPL code — `--enable-gnuv3` is not a
+spelling it accepts). The two have to agree, because a runtime that is LGPLv2.1
+on one platform and LGPLv3 on another is a licence statement nobody can make.
+
+`l` and not the older `a` (LGPLv2.1 + ad-clauses) because that tier is also what
+buys TLS: contrib builds GnuTLS only when version-3 (L)GPL code is allowed, its
+crypto backend being LGPLv3+/GPLv2+, and without GnuTLS nothing provides
+LibVLC's `tls client` capability. `README.md` records what LGPLv3 changes for
+whoever bundles these runtimes.
 
 ## What it produces
 
