@@ -18,7 +18,7 @@
 */
 
 use std::{
-    ffi::{CStr, c_int, c_uchar, c_void},
+    ffi::{CStr, c_int, c_uchar, c_uint, c_void},
     io::{Read, Seek, SeekFrom},
     ptr, slice,
 };
@@ -87,6 +87,15 @@ impl VlcMedia {
     /// Set this flag in order to receive a callback when the input is asking for credentials.
     #[constant]
     const PARSE_FLAG_DO_INTERACT: i32 = libvlc_media_parse_flag_t_libvlc_media_do_interact as i32;
+
+    /// Apply the option even where LibVLC would otherwise refuse it as unsafe.
+    /// [method add_option] always sets this; [method add_option_flag] does not.
+    #[constant]
+    const OPTION_TRUSTED: i32 = libvlc_media_option_trusted as i32;
+    /// Ignore the option when the same option string is already on this media.
+    /// [method add_option] always sets this; [method add_option_flag] does not.
+    #[constant]
+    const OPTION_UNIQUE: i32 = libvlc_media_option_unique as i32;
 
     #[constant]
     const META_TITLE: i32 = libvlc_meta_t_libvlc_meta_Title as i32;
@@ -232,6 +241,41 @@ impl VlcMedia {
                 media.bind_mut().self_gd.as_mut().unwrap().as_mut() as *mut _ as *mut c_void,
             );
         }
+    }
+
+    /// Add an option to the media.\
+    /// The option goes onto the media descriptor -- always with [constant OPTION_UNIQUE] and [constant OPTION_TRUSTED], which is what [method add_option_flag] exists to change -- and LibVLC reads the options back once, when the input is created.
+    ///
+    /// # When an option is read
+    /// Assigning the media to a [VLCMediaPlayer] creates that input immediately: `play()` is not what starts an input, so the last moment an option can be added is **before** the assignment. `VLCMedia.load_from_mrl(...)`, then `add_option(":start-time=10")`, then `player.media = media` is the order that works. An option added after the assignment is not read for the playback that is running or about to start; it is read again only when the input is rebuilt, which the same media gets on the next [method VLCMediaPlayer.play] that follows a [method VLCMediaPlayer.stop_async]. Media that arrives as a `res://` resource is assigned by the scene itself, so there is no moment left to call this on it -- build the media with [method load_from_file] or [method load_from_mrl] when it has to carry options.
+    ///
+    /// # What the options are
+    /// The names are VLC's own (`vlc --longhelp` lists them), and a leading `:` is optional. Nothing here validates them: an unknown name, a value that does not parse and a value outside the range its configuration option declares are all discarded without a word, at any log level -- `":start-time=abc"` is applied as `0`, and a misspelled name is never reported. A per-media value also bypasses the range the configuration declares rather than being clamped to it.
+    ///
+    /// An option that names a module only does something where that module runs. On a media from [method load_from_file], whose input is read through an in-memory access, `:http-referrer=`, `:http-user-agent=` and `:network-caching=` have nothing to affect, while input-level options such as `:start-time=`, `:stop-time=` and `:sub-file=` do. Two names are traps rather than options: `:input-repeat=` has no reader for a media player at all -- looping is [method VLCMediaPlayer.set_abloop_time] -- and `imem-*` names belong to the in-memory access behind [method load_from_file], where setting one conflicts with the callbacks that media was built from.
+    ///
+    /// # Parameters
+    /// - [param option] an option, in `"name=value"` form.
+    #[func]
+    fn add_option(&self, option: GString) {
+        let option = cstring_from_gstring(option);
+        unsafe { libvlc_media_add_option(self.media_ptr, option.as_ptr()) }
+    }
+
+    /// Add an option to the media, with the flags given instead of the pair [method add_option] uses.
+    ///
+    /// - [constant OPTION_TRUSTED] applies the option even where LibVLC would refuse it as unsafe. Without it such an option is dropped, and the message that says so -- `unsafe option "..." has been ignored for security reasons` -- is the only option-related line this pair of methods can put in the log.
+    /// - [constant OPTION_UNIQUE] ignores the option when the same string is already on this media. Without it the same string is added again.
+    ///
+    /// `flags = 0` is therefore neither: duplicates accumulate, and options VLC does not consider safe are ignored. Everything else -- reading, validation and the moment the option is read -- is [method add_option].
+    ///
+    /// # Parameters
+    /// - [param option] an option, in `"name=value"` form.
+    /// - [param flags] [constant OPTION_TRUSTED], [constant OPTION_UNIQUE], both, or `0`.
+    #[func]
+    fn add_option_flag(&self, option: GString, flags: i32) {
+        let option = cstring_from_gstring(option);
+        unsafe { libvlc_media_add_option_flag(self.media_ptr, option.as_ptr(), flags as c_uint) }
     }
 
     /// Get duration (in ms) of media descriptor object item.\

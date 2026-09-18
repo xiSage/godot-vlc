@@ -111,7 +111,13 @@ func _on_load_mrl_pressed() -> void:
 
 
 func _on_input_mrl_dialog_confirmed() -> void:
-	media = VLCMedia.load_from_mrl(%MRL.text)
+	# The options go onto the media before it is loaded into the player: assigning a
+	# media is what creates the input, and that is the only moment libvlc reads them.
+	var loaded := VLCMedia.load_from_mrl(%MRL.text)
+	if loaded != null:
+		for option in %Options.text.split(\",\", false):
+			loaded.add_option(option.strip_edges())
+	media = loaded
 	%InputMRLDialog.hide()
 	pass
 
@@ -357,7 +363,7 @@ script = ExtResource("2_uiscale")
 [node name="InputMRLDialog" type="ConfirmationDialog" parent="." unique_id=1361761297]
 unique_name_in_owner = true
 title = "Input MRL"
-size = Vector2i(600, 100)
+size = Vector2i(600, 160)
 
 [node name="MRL" type="TextEdit" parent="InputMRLDialog" unique_id=1358275267]
 unique_name_in_owner = true
@@ -366,6 +372,14 @@ offset_top = 8.0
 offset_right = 592.0
 offset_bottom = 51.0
 text = "https://github.com/xiSage/godot-vlc/raw/refs/heads/master/demo/test.mp4"
+
+[node name="Options" type="TextEdit" parent="InputMRLDialog"]
+unique_name_in_owner = true
+offset_left = 8.0
+offset_top = 59.0
+offset_right = 592.0
+offset_bottom = 102.0
+placeholder_text = ":start-time=10, :stop-time=20 (comma separated)"
 
 [node name="FileDialog" type="FileDialog" parent="." unique_id=683630440]
 title = "Open a File"
