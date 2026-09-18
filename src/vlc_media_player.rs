@@ -35,10 +35,12 @@ use std::{
 };
 
 use crate::{
+    util::cstring_from_gstring,
     vlc::*,
     vlc_instance::{self},
     vlc_media::VlcMedia,
     vlc_media_player::internal_audio_stream::InternalAudioStream,
+    vlc_subtitle::VlcSubtitle,
     vlc_track::VlcTrack,
     vlc_track_list::VlcTrackList,
 };
@@ -150,6 +152,11 @@ struct VlcMediaPlayer {
     buffering_reported: f32,
     texture: Gd<ImageTexture>,
     texture_rect: Gd<TextureRect>,
+    /// The most recent frame the software output produced, kept so that
+    /// [method get_frame] can hand it back. `None` until one arrives, and `None`
+    /// forever when the GPU output is the one running -- that path keeps its frames
+    /// in a texture this binding does not read back.
+    frame: Option<Gd<Image>>,
     video_tx: Box<mpsc::Sender<(bool, Gd<Image>)>>, // (is_resized, image)
     video_rx: mpsc::Receiver<(bool, Gd<Image>)>,
     audio_prod: Box<(HeapProd<AudioFrame>, Gd<AudioStreamPlayer>)>,
@@ -203,6 +210,7 @@ impl IControl for VlcMediaPlayer {
             buffering_reported: NO_BUFFERING_REPORT,
             texture,
             texture_rect: texture_rect.clone(),
+            frame: None,
             video_tx,
             video_rx,
             audio_prod,
@@ -230,6 +238,10 @@ impl IControl for VlcMediaPlayer {
                 } else {
                     self.texture.update(&data.1);
                 }
+                // Kept so that a caller can look at the frame itself: the texture
+                // cannot be read back on every rendering driver, and the software
+                // output path already has the image in hand here.
+                self.frame = Some(data.1.clone());
                 self.signals().video_frame().emit();
             }
             // Everything libvlc has reported since the last frame goes out here,
@@ -513,6 +525,22 @@ impl VlcMediaPlayer {
     #[func]
     fn get_texture(&self) -> Gd<Texture2D> {
         self.texture.clone().upcast()
+    }
+
+    /// The most recent frame, as an [Image].\
+    /// This is ours rather than libvlc's: the frames LibVLC delivers are already images on the software output path, and this hands back the last one instead of making a caller read the texture, which not every rendering driver allows.
+    ///
+    /// # What it is for, and what it is not
+    /// It is the frame **before** Godot draws it: the same pixels the texture received, at the size the decoder produced. Subtitles are part of those pixels -- LibVLC's video output composites them -- so two frames taken at the same point of a media differ by whether a subtitle was shown, which is what makes this usable as evidence that a subtitle was rendered rather than merely attached.
+    ///
+    /// This is not a screenshot facility and not a snapshot API: it does not capture on demand, does not decode anything, and does not look at the GPU path. On Windows with [member force_hardware] the GPU output is driving, its frames live in a texture this binding never reads back, and this returns `null` -- as it does before the first frame of any playback.
+    ///
+    /// # Returns
+    /// the last software-path frame, or `null` when the GPU output is running or no
+    /// frame has arrived yet.
+    #[func]
+    fn get_frame(&self) -> Option<Gd<Image>> {
+        self.frame.clone()
     }
 
     /// Whether the GPU output backend is currently driving this player.
@@ -1193,6 +1221,153 @@ impl VlcMediaPlayer {
     #[func]
     fn unselect_track_type(&mut self, track_type: i32) {
         unsafe { libvlc_media_player_unselect_track_type(self.player_ptr, track_type) }
+    }
+
+    /// Add a subtitle to the playback that is running now.\
+    /// This is `libvlc_media_player_add_slave`: the subtitle is loaded into the input that exists, and its track appears as soon as the subtitle demux has opened it -- there is no need to wait for the first line to be shown.
+    ///
+    /// # When it works
+    /// It needs an input. Before a [member media] has been assigned -- which is what creates the input, not [method play] -- there is nothing to attach a subtitle to, and libvlc returns `VLC_EGENERIC` (`INT_MIN`) without doing anything. Use [method VLCMedia.add_subtitle] before the media is assigned; that is the other half of this, and it is the only one that works there.
+    ///
+    /// # Nothing removes a subtitle again
+    /// LibVLC has no call that unloads one: an empty track selection only unselects, and the track stays. Attaching another subtitle is the way to change what is shown, and ending the input -- [method stop_async], or a different [member media] -- is the only way to be rid of it. [method unselect_track_type] with [constant VLCTrack.TYPE_TEXT] hides one without unloading it.
+    ///
+    /// # Parameters
+    /// - [param subtitle] the subtitle to attach.
+    /// - [param select] whether the subtitle's track is the one to show. LibVLC does
+    ///   not select subtitle tracks on its own, so `false` means "loaded, but not
+    ///   shown"; `true` selects it unless a subtitle that is already showing was not
+    ///   forced either, in which case the one being watched wins.
+    ///
+    /// # Returns
+    /// `0` when the request was queued -- which is not the same as "the subtitle
+    /// loaded" -- `INT_MIN` when there is no input, and a negative `errno` when the
+    /// request could not be allocated. The header documents `-1 on error`; the
+    /// implementation never returns `-1`.
+    #[func]
+    fn add_subtitle(&mut self, subtitle: Gd<VlcSubtitle>, select: bool) -> i32 {
+        self.add_slave(
+            libvlc_media_slave_type_t_libvlc_media_slave_type_subtitle as i32,
+            subtitle.bind().get_mrl(),
+            select,
+        )
+    }
+
+    /// Add an external source to the input that is running now.
+    ///
+    /// This is `libvlc_media_player_add_slave`, and it takes a media resource locator:
+    /// `data:;base64,...` for bytes the caller holds, `file:///...` for a file on the
+    /// host, `http(s)://...` for one on a server. For a subtitle prefer
+    /// [method add_subtitle], which is this with the subtitle type and a resource;
+    /// this entry point is for the generic type, and for callers who have an MRL.
+    ///
+    /// A subtitle and a generic source differ in how LibVLC reads them: the subtitle
+    /// type forces the `subtitle` demux, whatever the file is called, while a generic
+    /// source is probed like any other media and can contribute tracks of any kind.
+    ///
+    /// Everything else -- needing an input, returning `INT_MIN` without one, and
+    /// nothing being able to remove it again -- is [method add_subtitle]'s, which
+    /// documents it.
+    ///
+    /// # Parameters
+    /// - [param slave_type] [constant VLCMedia.SLAVE_TYPE_SUBTITLE] or
+    ///   [constant VLCMedia.SLAVE_TYPE_GENERIC].
+    /// - [param uri] the source's media resource locator.
+    /// - [param select] whether its first track is selected; see [method add_subtitle].
+    ///
+    /// # Returns
+    /// `0` when the request was queued, `INT_MIN` when there is no input, `-errno`
+    /// when it could not be allocated.
+    #[func]
+    fn add_slave(&mut self, slave_type: i32, uri: GString, select: bool) -> i32 {
+        let uri = cstring_from_gstring(uri);
+        unsafe {
+            libvlc_media_player_add_slave(
+                self.player_ptr,
+                slave_type as libvlc_media_slave_type_t,
+                uri.as_ptr(),
+                select,
+            )
+        }
+    }
+
+    /// Delay the display of subtitles, in microseconds.
+    ///
+    /// Positive values show subtitles later and negative ones earlier, which is the
+    /// knob for "the subtitles are ahead of the sound".
+    ///
+    /// # Lifetime: the input's, not the player's
+    /// The delay lives on the input. Before one exists -- before a [member media] is
+    /// assigned -- the call is accepted and thrown away: libvlc returns `0` either
+    /// way and there is nothing to pass on that would distinguish the two, so a delay
+    /// set too early is not an error, it is simply not there. A changed media resets
+    /// it to zero and [method stop_async] takes it away with the input, so it has to
+    /// be set again for every playback. This is the opposite of
+    /// [method set_spu_text_scale], which belongs to the player and survives both.
+    ///
+    /// # Parameters
+    /// - [param delay_us] the delay in microseconds: `250000` is a quarter of a
+    ///   second later, `-250000` a quarter of a second earlier.
+    ///
+    /// # Returns
+    /// `0`. The header promises `-1 on error`; the implementation returns `0` on
+    /// every path, including the one where there is no input and nothing happened.
+    #[func]
+    fn set_spu_delay_us(&mut self, delay_us: i64) -> i32 {
+        unsafe { libvlc_video_set_spu_delay(self.player_ptr, delay_us) }
+    }
+
+    /// The subtitle delay, in microseconds.
+    ///
+    /// # Returns
+    /// the delay in microseconds, or `0` for a player with no input or one that has
+    /// not been given a delay.
+    #[func]
+    fn get_spu_delay_us(&self) -> i64 {
+        unsafe { libvlc_video_get_spu_delay(self.player_ptr) }
+    }
+
+    /// Scale the size of text subtitles.
+    ///
+    /// `1.0` is the size the subtitle itself asks for, `2.0` twice that. Unlike
+    /// [method set_spu_delay_us] this belongs to the **player**: it can be set before
+    /// playback, and it outlives [method stop_async] and a changed [member media].
+    ///
+    /// # What it does not scale
+    /// Only the text renderer reads it. ASS/SSA subtitles are drawn by libass, whose
+    /// font scale is hard-coded to 1.0 in this libvlc, and bitmap subtitles (VobSub,
+    /// DVD) are pictures; neither grows or shrinks with this setting.
+    ///
+    /// # Out-of-range values are refused
+    /// LibVLC's own setter checks the range with an assertion and nothing else, and
+    /// this runtime is built with assertions on: a value outside `0.1`-`5.0` would
+    /// abort the process rather than be clamped or ignored. The value is therefore
+    /// checked here, and a rejected one leaves the current scale alone and writes an
+    /// error to the log instead. [method get_spu_text_scale] reads back what is in
+    /// force.
+    ///
+    /// # Parameters
+    /// - [param scale] the factor to scale by, `0.1`-`5.0`.
+    #[func]
+    fn set_spu_text_scale(&mut self, scale: f64) {
+        const MIN: f64 = 0.1;
+        const MAX: f64 = 5.0;
+        if !(MIN..=MAX).contains(&scale) {
+            godot_error!(
+                "godot-vlc: set_spu_text_scale({scale}) is outside the {MIN}-{MAX} libvlc accepts; the scale was left unchanged"
+            );
+            return;
+        }
+        unsafe { libvlc_video_set_spu_text_scale(self.player_ptr, scale as f32) }
+    }
+
+    /// The subtitle text scale.
+    ///
+    /// # Returns
+    /// the factor, `1.0` until something changes it.
+    #[func]
+    fn get_spu_text_scale(&self) -> f64 {
+        unsafe { libvlc_video_get_spu_text_scale(self.player_ptr) as f64 }
     }
 }
 
