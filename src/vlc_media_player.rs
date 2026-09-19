@@ -21,6 +21,7 @@ mod audio_callbacks;
 mod events;
 mod internal_audio_stream;
 pub mod internal_audio_stream_playback;
+mod list_player;
 mod software_video;
 mod time_watch;
 
@@ -1991,6 +1992,17 @@ impl VlcMediaPlayer {
     #[func]
     fn get_audio_delay_us(&self) -> i64 {
         unsafe { libvlc_audio_get_delay(self.player_ptr) }
+    }
+}
+
+impl VlcMediaPlayer {
+    /// The libvlc player behind this node.
+    ///
+    /// Used by `list_player.rs`, which hands it to
+    /// `libvlc_media_list_player_set_media_player`: that call takes a pointer, not an
+    /// object, and this is the only place one leaves this class.
+    fn player_ptr(&self) -> *mut libvlc_media_player_t {
+        self.player_ptr
     }
 }
 

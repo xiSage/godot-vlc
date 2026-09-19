@@ -51,11 +51,23 @@ const PARKED_LIST_CAPACITY: usize = 64;
 /// callback is what makes the record valid at all, and this is what gives that
 /// reference back -- either to a [VlcMedia] wrapper that takes it over, or, if the
 /// record is dropped before it is drained, to libvlc.
-struct HeldMedia(*mut libvlc_media_t);
+pub(crate) struct HeldMedia(*mut libvlc_media_t);
 
 impl HeldMedia {
+    /// Takes a reference on a media libvlc is lending out.
+    ///
+    /// A list's own events carry a borrowed media, and for a deletion the list's
+    /// reference is gone by the time the callback returns: this is what makes the record
+    /// valid. `list_player.rs` uses it for the same reason.
+    pub(crate) fn retain(media: *mut libvlc_media_t) -> Self {
+        if !media.is_null() {
+            unsafe { libvlc_media_retain(media) };
+        }
+        Self(media)
+    }
+
     /// Takes the reference out, for a wrapper that will own it.
-    fn into_ptr(self) -> *mut libvlc_media_t {
+    pub(crate) fn into_ptr(self) -> *mut libvlc_media_t {
         let ptr = self.0;
         std::mem::forget(self);
         ptr
@@ -97,8 +109,8 @@ struct ListBridge {
     /// asking for one per event would queue a Godot call per item from libvlc's
     /// thread, which is what the queue exists to avoid.
     drain_queued: AtomicBool,
-    /// The list, weakly: the object owns this bridge, so a strong reference here would
-    /// be a cycle that never drops.
+    /// The list itself, weakly: the object owns this bridge, so a strong reference here
+    /// would be a cycle that never drops, while a weak one is safe for a RefCounted.
     self_gd: Mutex<Option<Gd<WeakRef>>>,
 }
 
@@ -154,7 +166,9 @@ impl ListBridge {
             Some(mut list) => {
                 list.call_deferred("drain_parked_events", &[]);
             }
-            None => self.drain_queued.store(false, Ordering::Relaxed),
+            None => {
+                self.drain_queued.store(false, Ordering::Relaxed);
+            }
         }
     }
 
@@ -267,7 +281,8 @@ impl IRefCounted for VlcMediaList {
             events: Box::new(ListBridge::new()),
         };
         // `to_init_gd` is how an object reaches itself from `init`: it is the one moment
-        // there is no other `Gd` to take a weak reference from.
+        // there is no other `Gd` to take a weak reference from. For a `RefCounted` base
+        // that reference is usable, which is why this class uses one.
         let weak = weakref(&list.base.to_init_gd().to_variant()).to::<Gd<WeakRef>>();
         attach_events(ptr, &list.events, weak);
         list
@@ -456,6 +471,13 @@ impl VlcMediaList {
     ///   than once for a media that is parsed again.
     #[signal]
     fn end_reached();
+
+    /// The list itself, for the other half of this binding that needs the raw pointer:
+    /// `list_player.rs` hands it to `libvlc_media_list_player_set_media_list`, which
+    /// takes a pointer rather than an object.
+    pub(crate) fn media_list_ptr(&self) -> *mut libvlc_media_list_t {
+        self.ptr
+    }
 
     /// How many media the list holds.
     ///
