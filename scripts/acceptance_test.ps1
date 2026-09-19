@@ -33,9 +33,10 @@ belongs to the player; and the fields of the track struct, where the test is whi
 member of libvlc's union gets read -- the members a track's type does not name are
 memory libvlc never wrote, so a reader that tested the pointer instead of the type
 would pass heap memory on. Those track tests use two media on purpose: the small
-sample reports no geometry at all (0x0, `sar 0/0`, profile and level -1) while the
-demo's media reports 854x480, `1280:1281` and stereo audio, and both answers are
-asserted, because a caller cannot tell the two cases apart from a track.
+sample's geometry is either the file's own 64x64 at 1:1 and 10 fps, or six zeroes --
+which of the two depends on the platform, so the test accepts both and rejects
+anything else -- while the demo's media reports 854x480, `1280:1281` and stereo audio
+everywhere, and that is asserted outright.
 
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and

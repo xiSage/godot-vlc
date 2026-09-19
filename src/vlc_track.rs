@@ -375,21 +375,21 @@ impl VlcTrack {
     ///   memory libvlc never wrote. libvlc itself dispatches that union on the
     ///   type, and so does this.
     /// - `width` and `height` are the *visible* size: libvlc copies
-    ///   `i_visible_width`/`i_visible_height`, which a demuxer may already have
-    ///   reduced by the crop offset, and which it may never have declared at all.
-    ///   Measured on the shipped runtime: `test/media/h264_64x64_1s.mp4` reports
-    ///   `width`, `height`, `sar_num`, `sar_den` and both frame-rate fields as `0`
-    ///   for its whole playback, on the player's tracklist and on the media
-    ///   descriptor's alike, while `demo/test.mp4` reports `854x480` and
-    ///   `1280:1281` through both. `0` is therefore common rather than
-    ///   exceptional, and it is never the decoded picture's size -- that one comes
-    ///   from the video callbacks, and [method VLCMediaPlayer.get_frame] is the
-    ///   frame itself. Use this to label or to pick a track, not to size anything.
+    ///   `i_visible_width`/`i_visible_height`, whatever a demuxer or a decoder had
+    ///   written when the track was published -- and `0` when that was nothing.
+    ///   Measured, the same file answers both ways: `test/media/h264_64x64_1s.mp4`
+    ///   reports `0x0`, `sar 0/0` and a frame rate of `0/0` on a Windows machine, and
+    ///   its real `64x64`, `1:1` and `10/1` on Linux, while `demo/test.mp4` reports
+    ///   `854x480` and `1280:1281` on both. So these six are the file's numbers or all
+    ///   zero, and which of the two you get is not something a track tells you. `0`
+    ///   never means "no picture": the size of the frames comes from the video
+    ///   callbacks, and [method VLCMediaPlayer.get_frame] is the frame itself. Use this
+    ///   to label or to pick a track, not to size anything.
     /// - `sar_num`, `sar_den`, `frame_rate_num` and `frame_rate_den` can each be
     ///   `0`; a fraction whose denominator is `0` is unknown, not infinite.
-    /// - `profile` and `level` are `-1` for a track libvlc did not fill them in
-    ///   for, which is the measured result for an H.264 sample: a caller that
-    ///   treats `0` as "unknown" reads the wrong thing.
+    /// - `profile` and `level` are `-1` for a track libvlc did not fill them in for,
+    ///   which is what the H.264 sample reports while `demo/test.mp4` reports `77` and
+    ///   `30`: a caller that treats `0` as "unknown" reads the wrong thing.
     /// - `orientation`, `projection` and `multiview` are the video track's
     ///   declared layout, not a promise about the frames: this extension's video
     ///   paths hand a decoded picture to Godot as it is, so nothing here is

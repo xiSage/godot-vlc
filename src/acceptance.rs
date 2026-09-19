@@ -78,6 +78,10 @@ use crate::vlc_track::{TrackInfo, read_info};
 const SAMPLE: &str = "test/media/h264_64x64_1s.mp4";
 const SAMPLE_WIDTH: u32 = 64;
 const SAMPLE_HEIGHT: u32 = 64;
+/// The sample's pixel aspect ratio and frame rate, from `ffprobe` over the checked-in
+/// file: square pixels, ten frames a second.
+const SAMPLE_SAR: (u32, u32) = (1, 1);
+const SAMPLE_FRAME_RATE: (u32, u32) = (10, 1);
 
 /// The second sample, for the track fields the first one cannot show.
 ///
@@ -1253,63 +1257,26 @@ fn the_subtitle_delay_dies_with_the_input_and_the_text_scale_does_not() {
     );
 }
 
-/// A video track carries the numbers libvlc filled in for the sample, and the
-/// size is not among them.
+/// A track's geometry is the file's numbers, or all six fields are zero.
 ///
-/// Nothing read the video member of the union before, so what this pins is that
-/// the member is there, that the binding reads the member its type names, and
-/// that the sample's declared layout is the default one. It also pins the number
-/// the documentation has to warn about: `width`, `height`, the frame rate and
-/// the pixel aspect ratio are all `0` for this file -- not at the moment its
-/// track appears, but for its whole playback, on the player's tracklist and on
-/// the media descriptor's alike. They are the *visible* size, which a demuxer has
-/// to have declared, and not the size of any picture that gets decoded.
-///
-/// `demo/test.mp4` reports `854x480` through the same two paths, so this is a
-/// property of the file rather than of the field, and a caller cannot tell the
-/// two cases apart from the track alone. The size of the pages this extension
-/// hands over comes from the video callbacks; a track is metadata.
+/// Nothing read the video member of the union before, so what this pins is that the
+/// member is there, that the binding reads the member its type names, and that the
+/// sample's declared layout is the default one. It also pins the number the
+/// documentation has to warn about, and that number turned out not to be a property of
+/// the file: measured, this sample answers `0x0`, `sar 0/0` and a frame rate of `0/0`
+/// on a Windows machine -- and its real `64x64`, `1:1` and `10/1` on the Linux CI
+/// runner, and once on the Windows one too, which is what makes the assertion below the
+/// only one a caller can rest on. Which of the two arrives is whatever the demuxer or
+/// the decoder had written when the track was published; a third answer would be a
+/// value libvlc invented. `demo/test.mp4` reports `854x480` and `1280:1281` on both
+/// platforms, and the test below asserts that. Either way the size of the frames this
+/// extension hands over comes from the video callbacks; a track is metadata.
 #[test]
 fn a_video_track_reports_the_sample_it_was_built_from() {
-    let sample = Sample::new();
-    sample.attach_media();
-    play_until_playing(&sample);
+    let track = video_track_of(&Sample::new());
+    assert_sample_geometry(&track, "the sample's video track");
 
-    let tracks = sample.wait_for_track(
-        libvlc_track_type_t_libvlc_track_video,
-        Duration::from_secs(5),
-    );
-    assert_eq!(
-        tracks.len(),
-        1,
-        "the sample has one video track and the player did not report it"
-    );
-    let track = &tracks[0];
-    assert_eq!(
-        track.i_type, libvlc_track_type_t_libvlc_track_video as i32,
-        "the video tracklist reported a track that is not a video track"
-    );
-    let video = track
-        .video
-        .as_ref()
-        .expect("a video track came back without the video member of the union");
-    assert!(
-        track.audio.is_none() && track.subtitle.is_none(),
-        "a video track came back with a member its type does not name"
-    );
-    assert_eq!(
-        (
-            video.width,
-            video.height,
-            video.sar_num,
-            video.sar_den,
-            video.frame_rate_num,
-            video.frame_rate_den,
-        ),
-        (0, 0, 0, 0, 0, 0),
-        "the sample reported geometry; if the runtime now fills these in, the \
-         warning the documentation carries about `0` is about a different one"
-    );
+    let video = track.video.as_ref().expect("checked by video_track_of");
     assert_eq!(
         (video.orientation, video.projection, video.multiview),
         (
@@ -1320,9 +1287,8 @@ fn a_video_track_reports_the_sample_it_was_built_from() {
         "the sample declares no rotation, no projection and no stereoscopy"
     );
 
-    // Printed rather than asserted: what a demuxer puts in a frame rate and
-    // whether an H.264 level reaches the track are the runtime's business, and
-    // the numbers are worth having in the log either way.
+    // Printed rather than asserted: whether an H.264 profile and level reach the track
+    // is the runtime's business, and the numbers are worth having in the log.
     println!(
         "the sample's video track: {}x{}, sar {}/{}, frame rate {}/{}, orientation {}, \
          projection {}, multiview {}, pose {}/{}/{}/{}, profile {}, level {}, fourcc {:#x}",
@@ -1342,6 +1308,71 @@ fn a_video_track_reports_the_sample_it_was_built_from() {
         track.profile,
         track.level,
         track.original_fourcc,
+    );
+}
+
+/// The single video track a player reports, with the member checks every reader of a
+/// track depends on.
+///
+/// It starts the playback itself: a track is created by an input, and the input is
+/// created when the media is handed to the player.
+fn video_track_of(sample: &Sample) -> TrackInfo {
+    sample.attach_media();
+    play_until_playing(sample);
+
+    let tracks = sample.wait_for_track(
+        libvlc_track_type_t_libvlc_track_video,
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        tracks.len(),
+        1,
+        "the sample has one video track and the player did not report it"
+    );
+    let track = tracks.into_iter().next().expect("just checked");
+    assert_eq!(
+        track.i_type, libvlc_track_type_t_libvlc_track_video as i32,
+        "the video tracklist reported a track that is not a video track"
+    );
+    assert!(
+        track.video.is_some(),
+        "a video track came back without the video member of the union"
+    );
+    assert!(
+        track.audio.is_none() && track.subtitle.is_none(),
+        "a video track came back with a member its type does not name"
+    );
+    track
+}
+
+/// A sample's geometry is the file's, or all six of its fields are absent.
+///
+/// Those are the two answers this runtime gives -- see the test above -- and a third
+/// would be a value libvlc invented, which is the one thing a caller cannot guard
+/// against from the outside.
+fn assert_sample_geometry(track: &TrackInfo, decoder: &str) {
+    let video = track.video.as_ref().expect("checked by video_track_of");
+    let geometry = (
+        video.width,
+        video.height,
+        video.sar_num,
+        video.sar_den,
+        video.frame_rate_num,
+        video.frame_rate_den,
+    );
+    let absent = (0, 0, 0, 0, 0, 0);
+    let in_the_file = (
+        SAMPLE_WIDTH,
+        SAMPLE_HEIGHT,
+        SAMPLE_SAR.0,
+        SAMPLE_SAR.1,
+        SAMPLE_FRAME_RATE.0,
+        SAMPLE_FRAME_RATE.1,
+    );
+    assert!(
+        geometry == absent || geometry == in_the_file,
+        "{decoder} reported {geometry:?}; the sample is {in_the_file:?}, and the other \
+         answer this runtime gives is {absent:?}"
     );
 }
 
