@@ -1455,6 +1455,43 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_set_time(self.player_ptr, time, fast) }
     }
 
+    /// Move the movie time by a relative amount, in milliseconds.
+    ///
+    /// `jump_time(-10000)` is what a "rewind ten seconds" button wants: libvlc adds
+    /// [param delta_ms] to **its own** current time inside the player, so this does
+    /// not race a [method get_time] of the caller's. The seek is precise, the same
+    /// as [method set_time] with `fast` false.
+    ///
+    /// # The edges
+    /// - A jump that lands before the start is clamped to the start of the input,
+    ///   and that is not an error. The clamp is to libvlc's own "first tick", which
+    ///   is one microsecond rather than zero, so what [method get_time] reports
+    ///   afterwards is a number very close to zero rather than exactly zero.
+    /// - A jump that lands past the end is **not** clamped: libvlc hands the value
+    ///   to the demuxer, which goes to the end of the stream. Measured on this
+    ///   runtime, playback then runs out of input and ends -- the player reaches
+    ///   [constant STATE_STOPPED] with its clock back at `0` -- and this still
+    ///   answers `0` either way, so a caller that wants to avoid it has to compare
+    ///   with [method get_length] itself.
+    /// - With no input -- no media, or nothing played yet -- it does nothing at all
+    ///   and still answers `0`: the same "accepted and thrown away" as
+    ///   [method set_time].
+    /// - An input that cannot seek fails silently. libvlc writes one warning to its
+    ///   own log and this still answers `0`, so a caller that needs to know should
+    ///   read [method is_seekable] first.
+    ///
+    /// # Parameters
+    /// - [param delta_ms] how far to move, in milliseconds: `10000` is ten seconds
+    ///   forward, `-10000` ten seconds back.
+    ///
+    /// # Returns
+    /// `0`. libvlc's header promises `-1 on error`; its implementation returns `0`
+    /// on every path, including the ones above where nothing happened.
+    #[func]
+    fn jump_time(&mut self, delta_ms: i64) -> i32 {
+        unsafe { libvlc_media_player_jump_time(self.player_ptr, delta_ms) }
+    }
+
     /// Set movie title.
     ///
     /// # Parameters
@@ -1651,6 +1688,64 @@ impl VlcMediaPlayer {
     #[func]
     fn get_spu_text_scale(&self) -> f64 {
         unsafe { libvlc_video_get_spu_text_scale(self.player_ptr) as f64 }
+    }
+
+    /// Delay the sound, in microseconds.
+    ///
+    /// Positive values shift the audio track later and negative ones earlier -- the
+    /// same direction as [method set_spu_delay_us] -- which is the knob for "the
+    /// sound arrives before the picture" and for the opposite complaint.
+    ///
+    /// # Lifetime: the input's, not the player's
+    /// Exactly like [method set_spu_delay_us]. Before an input exists the call is
+    /// accepted and thrown away, a changed [member media] re-seeds the value, and
+    /// [method stop_async] takes it away with the input. It is **not** zero on the
+    /// next playback if the input option `audio-desync` is set: that option seeds
+    /// this same value for every input.
+    ///
+    /// # Milliseconds in, microseconds out
+    /// The input option that seeds this same value, `audio-desync`, is in
+    /// **milliseconds** -- libvlc's own log line calls it "Audio desynchronization
+    /// compensation" and its help text says "The delay must be given in
+    /// milliseconds". This method and [method get_audio_delay_us] are in
+    /// **microseconds**, a thousand times finer. `--audio-desync=250` is what
+    /// [method get_audio_delay_us] reports as `250000`.
+    ///
+    /// # No audio output is needed
+    /// Unlike [method set_spu_text_scale], and unlike every other `libvlc_audio_*`
+    /// setting, this one never asks for an audio output: the value is kept on the
+    /// input and handed to the decoders. It therefore reads back on a player built
+    /// with `--no-audio` -- what cannot happen without an output is an audible
+    /// effect, not the value.
+    ///
+    /// # Parameters
+    /// - [param delay_us] the delay in microseconds: `250000` is a quarter of a
+    ///   second later, `-250000` a quarter of a second earlier.
+    ///
+    /// # Returns
+    /// `0`. The header promises `-1 on error`, and this one cannot fail at all:
+    /// the function it calls returns `void` inside libvlc, so there is no failure
+    /// for the `-1` to describe.
+    #[func]
+    fn set_audio_delay_us(&mut self, delay_us: i64) -> i32 {
+        unsafe { libvlc_audio_set_delay(self.player_ptr, delay_us) }
+    }
+
+    /// The audio delay, in microseconds.
+    ///
+    /// # Returns
+    /// the delay in microseconds, or `0` for a player with no input or one whose
+    /// delay is zero. Those two are the same answer and there is no third one to
+    /// tell them apart: `0` means "no delay" whether or not there is an input to
+    /// have one.
+    ///
+    /// # There is no signal for this
+    /// libvlc has no event for a delay change -- its player core has one, and
+    /// nothing in the libvlc layer listens to it -- so polling this is the only way
+    /// to see a change, including the one the `audio-desync` option makes.
+    #[func]
+    fn get_audio_delay_us(&self) -> i64 {
+        unsafe { libvlc_audio_get_delay(self.player_ptr) }
     }
 }
 

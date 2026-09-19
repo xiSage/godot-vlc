@@ -65,6 +65,15 @@ file and the line. The binding's own half of the log -- the level mapping, the s
 and the runtime setter for the level -- is `demo/tests/log_message.gd` plus a unit
 test in `src/vlc_instance.rs`.
 
+The audio delay is here as well, and it is the one `libvlc_audio_*` setting that needs
+no audio output: the value is kept on the input and handed to the decoders, so this
+harness -- whose instances are built with `--no-audio` -- can still set it and read it
+back, which is what one of the three tests does. They also pin the unit trap that comes
+with it: the `audio-desync` option seeds the same field in milliseconds while the API is
+in microseconds, so an instance built with `--audio-desync=250` has to read back
+`250000`. The relative jump is measured at three of its four edges, including the one
+that has no answer in the source -- past the end, where playback simply ends.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec
