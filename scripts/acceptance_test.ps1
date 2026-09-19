@@ -86,6 +86,16 @@ its own uninitialised stack. The binding's half -- the four signals, the interpo
 method, and the two guards that exist because libvlc would abort or crash rather than
 answer -- is `demo/tests/time_point.gd`.
 
+Media lists are here too, in the half that needs no player: a media's own subitems, which
+are its list of what a playlist file, a disc or a directory holds. The list is live and
+read-only, and reading it means holding libvlc's own lock -- which the binding does --
+because the parsing thread appends to it from behind that same lock. The events are here
+in the shape libvlc sends them: two per change, one before it and one after, each
+carrying the media and its index. The end of a parse has its own event, and it is measured
+to come from `parse_request` rather than from playing the media, because libvlc sends it
+only where it reports a parsed status changing. The wrapper a script builds, and the
+signals arriving with a `VLCMedia` in hand, are `demo/tests/media_list.gd`.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec
