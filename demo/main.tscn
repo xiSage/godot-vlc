@@ -165,7 +165,29 @@ func _track_label(track: VLCTrack) -> String:
 
 
 func _on_playing() -> void:
+	%Media.text = _media_identity()
 	_refresh_tracks()
+
+
+# What is playing: the engine's name for it, libvlc's type, and libvlc's MRL.
+# The three disagree on purpose -- a media from res:// answers \"imem://\" to
+# get_mrl() whatever file is behind it, and one a script built itself has no
+# resource_path at all -- so this line shows both, and the extension's class
+# documentation explains which of them names the file.
+func _media_identity() -> String:
+	if media == null:
+		return \"media: none\"
+	var kind := \"unknown\"
+	match media.get_type():
+		VLCMedia.MEDIA_TYPE_FILE: kind = \"file\"
+		VLCMedia.MEDIA_TYPE_DIRECTORY: kind = \"directory\"
+		VLCMedia.MEDIA_TYPE_DISC: kind = \"disc\"
+		VLCMedia.MEDIA_TYPE_STREAM: kind = \"stream\"
+		VLCMedia.MEDIA_TYPE_PLAYLIST: kind = \"playlist\"
+	var source: String = media.resource_path
+	if source.is_empty():
+		source = \"(no resource path)\"
+	return \"media: %s [%s] %s\" % [source, kind, media.get_mrl()]
 
 
 # The three lists, rebuilt from the player: when a media opens, and again for every
@@ -408,6 +430,12 @@ text = "loop: none"
 unique_name_in_owner = true
 layout_mode = 2
 text = "state:"
+
+[node name="Media" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1421064731]
+unique_name_in_owner = true
+layout_mode = 2
+text = "media:"
+autowrap_mode = 3
 
 [node name="GPUOutput" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=266504373]
 unique_name_in_owner = true
