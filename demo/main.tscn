@@ -144,6 +144,26 @@ func _on_error() -> void:
 	%Error.text = \"error: yes (%d)\" % error_count
 
 
+# A track's name is a title, and empty for a track that came from the media
+# rather than from the player, so the codec and the shape are what tell two
+# tracks apart. One helper, so that the three lists read the same way.
+func _track_label(track: VLCTrack) -> String:
+	var info: Dictionary = track.get_info()
+	var label: String = track.get_name()
+	if label.is_empty():
+		label = track.get_codec_description()
+	match info.get(\"type\", VLCTrack.TYPE_UNKNOWN):
+		VLCTrack.TYPE_VIDEO:
+			label += \" %dx%d\" % [info.get(\"width\", 0), info.get(\"height\", 0)]
+		VLCTrack.TYPE_AUDIO:
+			label += \" %dch %d Hz\" % [info.get(\"channels\", 0), info.get(\"rate\", 0)]
+		VLCTrack.TYPE_TEXT:
+			var encoding: String = info.get(\"encoding\", \"\")
+			if not encoding.is_empty():
+				label += \" (%s)\" % encoding
+	return label
+
+
 func _on_playing() -> void:
 	video_tracks = get_tracklist(VLCTrack.TYPE_VIDEO, false).get_tracks()
 	audio_tracks = get_tracklist(VLCTrack.TYPE_AUDIO, false).get_tracks()
@@ -159,15 +179,15 @@ func _on_playing() -> void:
 	audio_button.add_item(\"disable\")
 	text_button.add_item(\"disable\")
 	for track in video_tracks:
-		video_button.add_item(track.get_name())
+		video_button.add_item(_track_label(track))
 		if track.is_selected():
 			video_button.selected = video_button.item_count - 1
 	for track in audio_tracks:
-		audio_button.add_item(track.get_name())
+		audio_button.add_item(_track_label(track))
 		if track.is_selected():
 			audio_button.selected = video_button.item_count - 1
 	for track in text_tracks:
-		text_button.add_item(track.get_name())
+		text_button.add_item(_track_label(track))
 		if track.is_selected():
 			text_button.selected = video_button.item_count - 1
 

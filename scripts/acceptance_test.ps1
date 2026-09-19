@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-Proves that the shipped LibVLC decodes H.264, reports a media it cannot open, and
-loops between two points.
+Proves that the shipped LibVLC decodes H.264, reports a media it cannot open,
+loops between two points, and fills in the fields of a track.
 
 .DESCRIPTION
 The acceptance test for the runtime build, and the question the whole pipeline
@@ -25,6 +25,18 @@ playback stays running and describes itself through libvlc's getter, one that do
 the same for a loop set as positions, and one that the loop does not outlive the
 input it was set on -- a stop or a new media takes it with it, which is what the
 extension's documentation has to tell its users.
+
+The rest pins what the extension exposes on top of libvlc, one test per promise:
+the per-media options, which are read when the input is created and not after; the
+subtitle entry points, where the delay belongs to the input while the text scale
+belongs to the player; and the fields of the track struct, where the test is which
+member of libvlc's union gets read -- the members a track's type does not name are
+memory libvlc never wrote, so a reader that tested the pointer instead of the type
+would pass heap memory on. Those track tests use two media on purpose: the small
+sample's geometry is either the file's own 64x64 at 1:1 and 10 fps, or six zeroes --
+which of the two depends on the platform, so the test accepts both and rejects
+anything else -- while the demo's media reports 854x480, `1280:1281` and stereo audio
+everywhere, and that is asserted outright.
 
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
@@ -135,4 +147,4 @@ if ($loadFailures.Count -gt 0) {
     exit 1
 }
 
-Write-Host "acceptance: OK ($Platform decoded $Sample, reported a missing media, looped between two points; no plugin failed to load)"
+Write-Host "acceptance: OK ($Platform decoded $Sample, reported a missing media, looped between two points, and read the fields of a track; no plugin failed to load)"
