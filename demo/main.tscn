@@ -15,6 +15,13 @@ var audio_tracks: Array[VLCTrack]
 var text_tracks: Array[VLCTrack]
 
 
+func _ready() -> void:
+	# Static calls, and the only line in the panel that answers which VLC this is:
+	# the runtime's version and the revision it was built from, which is what a bug
+	# report needs and what build/vlc/vlc.lock pins.
+	%VLCVersion.text = \"libvlc: %s (%s)\" % [VLCInstance.get_version(), VLCInstance.get_changeset()]
+
+
 func _process(_delta: float) -> void:
 	var state = get_state()
 	var state_text = \"\"
@@ -435,6 +442,12 @@ text = "state:"
 unique_name_in_owner = true
 layout_mode = 2
 text = "media:"
+autowrap_mode = 3
+
+[node name="VLCVersion" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1421064732]
+unique_name_in_owner = true
+layout_mode = 2
+text = "libvlc:"
 autowrap_mode = 3
 
 [node name="GPUOutput" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=266504373]
