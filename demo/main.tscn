@@ -87,6 +87,25 @@ func _on_reset_loop_pressed() -> void:
 	reset_abloop()
 
 
+func _on_jump_back_pressed() -> void:
+	# A relative seek: libvlc adds the delta to its own current time, so this does not
+	# need to read the clock first. It answers 0 whatever happens, including a jump
+	# past the end, which ends playback rather than being refused.
+	jump_time(-10000)
+
+
+func _on_jump_forward_pressed() -> void:
+	jump_time(10000)
+
+
+func _on_audio_delay_value_changed(value: float) -> void:
+	# The control counts milliseconds and the API counts microseconds, which is the
+	# difference between this method and the `audio-desync` option that writes the same
+	# value. The delay belongs to the input: before one exists the call is accepted and
+	# dropped, so this only has an effect once something is playing.
+	set_audio_delay_us(int(value * 1000.0))
+
+
 func _update_loop_label() -> void:
 	# Polled rather than driven by a signal: libvlc raises no event when a loop is
 	# set, cleared or entered, and none when it wraps either. The status alone
@@ -355,6 +374,22 @@ text = "Set Loop B"
 layout_mode = 2
 text = "Reset Loop"
 
+[node name="Jump" type="HBoxContainer" parent="ScrollContainer/VBoxContainer" unique_id=1421064733]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Back" type="Button" parent="ScrollContainer/VBoxContainer/Jump" unique_id=1421064734]
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "libvlc_media_player_jump_time(-10000): a relative, precise seek"
+text = "-10 s"
+
+[node name="Forward" type="Button" parent="ScrollContainer/VBoxContainer/Jump" unique_id=1421064735]
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "libvlc_media_player_jump_time(10000): a relative, precise seek"
+text = "+10 s"
+
 [node name="VideoTrack" type="HBoxContainer" parent="ScrollContainer/VBoxContainer" unique_id=845744760]
 unique_name_in_owner = true
 layout_mode = 2
@@ -384,6 +419,25 @@ text = "audio track:"
 layout_mode = 2
 size_flags_horizontal = 3
 clip_text = true
+
+[node name="AudioDelay" type="HBoxContainer" parent="ScrollContainer/VBoxContainer" unique_id=1421064736]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label" type="Label" parent="ScrollContainer/VBoxContainer/AudioDelay" unique_id=1421064737]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 0
+text = "audio delay:"
+
+[node name="SpinBox" type="SpinBox" parent="ScrollContainer/VBoxContainer/AudioDelay" unique_id=1421064738]
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "libvlc_audio_set_delay, in milliseconds here and microseconds in the API. Positive delays the sound. The delay belongs to the input, so it only takes effect while something is playing."
+min_value = -1000.0
+max_value = 1000.0
+step = 10.0
+suffix = " ms"
 
 [node name="TextTrack" type="HBoxContainer" parent="ScrollContainer/VBoxContainer" unique_id=862653139]
 unique_name_in_owner = true
@@ -514,7 +568,9 @@ use_native_dialog = true
 [connection signal="multi_selected" from="ScrollContainer/VBoxContainer/TextTrack/ItemList" to="." method="_on_text_item_list_multi_selected"]
 [connection signal="drag_ended" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_drag_ended"]
 [connection signal="drag_started" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_drag_started"]
-[connection signal="value_changed" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_value_changed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/Jump/Back" to="." method="_on_jump_back_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/Jump/Forward" to="." method="_on_jump_forward_pressed"]
+[connection signal="value_changed" from="ScrollContainer/VBoxContainer/AudioDelay/SpinBox" to="." method="_on_audio_delay_value_changed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Statics" to="." method="_on_statics_pressed"]
 [connection signal="confirmed" from="InputMRLDialog" to="." method="_on_input_mrl_dialog_confirmed"]
 [connection signal="file_selected" from="FileDialog" to="." method="_on_file_dialog_file_selected"]
