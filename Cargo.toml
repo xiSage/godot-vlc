@@ -50,4 +50,4 @@ default = ["gpu"]
 gpu = ["dep:windows"]
 
 [build-dependencies]
-bindgen = "0.72"
+bindgen = "0.73"
