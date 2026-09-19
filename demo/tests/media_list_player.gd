@@ -98,14 +98,12 @@ func _init() -> void:
 	# extension's audio node, and freeing the player while that is still running is a
 	# use-after-free inside libvlc's own thread -- measured as an abort on
 	# `AudioStreamPlayer::upcast_ref`. A player is freed after its playback has stopped.
+	# Stopped, but not waited on: this is the teardown that used to abort -- a player freed
+	# while libvlc's audio thread was still calling this extension's callbacks -- and it is
+	# deliberate here. That the process survives it is the point of the check in
+	# `audio_callbacks.rs`; `demo/tests/player_teardown.gd` is the file that says more about
+	# it.
 	list_player.stop_async()
-	deadline = Time.get_ticks_msec() + WAIT_TIMEOUT_MS
-	while Time.get_ticks_msec() < deadline and player.get_state() != VLCMediaPlayer.STATE_STOPPED:
-		await process_frame
-	if player.get_state() != VLCMediaPlayer.STATE_STOPPED:
-		_fail("the player never reached STATE_STOPPED after the list was stopped")
-		return
-
 	# The player node is freed, and the list player goes with it, because it is its child:
 	# Godot frees children first, so libvlc's reference to the player is given back before
 	# the callbacks that point into it disappear. Nothing is asserted *on* the list player
