@@ -63,7 +63,7 @@
 // same allow, for the `STATE_*` and `ABLOOP_*` constants it exports.
 #![allow(clippy::unnecessary_cast)]
 
-use std::ffi::{CStr, CString, c_char, c_uint, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::Mutex;
@@ -72,6 +72,7 @@ use std::time::{Duration, Instant};
 
 use crate::vlc::*;
 use crate::vlc_track::{TrackInfo, c_string, read_info};
+use printf::printf;
 
 /// Where the sample is, and what it contains. The decoder's report is checked
 /// against these numbers so that "a frame arrived" cannot be satisfied by some
@@ -2412,4 +2413,231 @@ fn duplicating_a_media_copies_it_and_leaves_the_original_alone() {
     );
 
     unsafe { libvlc_media_release(copy) };
+}
+
+/// The commit `build/vlc/vlc.lock` pins, read from the lock rather than written down
+/// here so that a re-pin moves the assertion with it.
+fn pinned_vlc_commit() -> String {
+    let lock = std::fs::read_to_string(path_of("build/vlc/vlc.lock"))
+        .expect("build/vlc/vlc.lock could not be read");
+    lock.lines()
+        .find_map(|line| line.strip_prefix("VLC_COMMIT="))
+        .expect("build/vlc/vlc.lock has no VLC_COMMIT line")
+        .trim()
+        .to_string()
+}
+
+/// What libvlc recorded for the last failure on this thread, or `""` for none.
+fn error_message() -> String {
+    unsafe { c_string(libvlc_errmsg()) }
+}
+
+/// The runtime answers which LibVLC it is, and the answer names the pinned revision.
+///
+/// This is the runtime half of a question the repository otherwise answers only at
+/// build time: `build/vlc/vlc.lock` pins the revision, `build-info.txt` records it
+/// inside the artifact, and `check_vlc_provenance.ps1` compares the platforms -- none
+/// of which a running game can read. Both strings are compile-time constants of the
+/// runtime, so nothing here is freed or waited for.
+#[test]
+fn the_runtime_reports_which_libvlc_it_is() {
+    let version = unsafe { CStr::from_ptr(libvlc_get_version()) }
+        .to_str()
+        .expect("the version string is not UTF-8")
+        .to_string();
+    let changeset = unsafe { CStr::from_ptr(libvlc_get_changeset()) }
+        .to_str()
+        .expect("the changeset string is not UTF-8")
+        .to_string();
+    let pinned = pinned_vlc_commit();
+    println!("the runtime is libvlc {version}, changeset {changeset}; vlc.lock pins {pinned}");
+
+    assert!(
+        version.contains("4.0"),
+        "the version string is {version:?}, which does not name the 4.0 runtime this addon ships"
+    );
+    // A `git describe` value, not a bare hash: the abbreviated commit is in it, and
+    // that is what makes it comparable to the pin.
+    assert!(
+        changeset.contains(&pinned),
+        "the changeset {changeset:?} does not name the pinned commit {pinned:?}"
+    );
+}
+
+/// The error status belongs to the thread that failed, and success does not clear it.
+///
+/// This is the contract the binding's failure logs rest on. `libvlc_errmsg` keeps one
+/// message per thread, a call that succeeds leaves it alone, and the only way to be
+/// sure an answer belongs to *your* call is to clear it first -- which is what
+/// `clear_last_error` exists for.
+///
+/// The ordering in this test is part of what it pins, and it was measured the hard
+/// way: asking for the message **before any instance exists** does not answer NULL,
+/// it crashes. libvlc creates the thread-local that holds the message while it
+/// initialises, so those two calls are only safe once `libvlc_new` has returned --
+/// which in this extension is always, since the instance is built at `Scene` stage
+/// before any script can run.
+#[test]
+fn the_error_status_is_cleared_by_hand_and_not_by_success() {
+    let sample = Sample::new();
+    assert!(!sample.media.is_null(), "the sample media is null");
+
+    unsafe { libvlc_clearerr() };
+    let after_clear = error_message();
+    assert!(
+        after_clear.is_empty(),
+        "libvlc_clearerr left {after_clear:?} behind"
+    );
+
+    // A call that succeeds leaves it alone rather than filling it in.
+    let path = CString::new(
+        sample_path()
+            .to_str()
+            .expect("the sample path is not valid UTF-8"),
+    )
+    .expect("the sample path contains a NUL byte");
+    let another = unsafe { libvlc_media_new_path(path.as_ptr()) };
+    assert!(
+        !another.is_null(),
+        "libvlc_media_new_path refused the sample"
+    );
+    let after_success = error_message();
+    assert!(
+        after_success.is_empty(),
+        "a successful call recorded {after_success:?} as an error"
+    );
+    unsafe { libvlc_media_release(another) };
+}
+
+/// libvlc's log context names the module, the source file and the line.
+///
+/// The binding puts all three into the console line, so this pins what libvlc hands
+/// over: the module name with its directory and extension already stripped, the
+/// emitter's own `__FILE__`, and a line number. The callback here is this test's own,
+/// because it is the runtime's half that is being measured -- the binding's half is
+/// `demo/tests/log_message.gd`.
+/// One log line as the runtime logged it, with everything the context carried.
+#[derive(Clone, Debug)]
+struct RecordedLog {
+    level: i32,
+    module: String,
+    file: String,
+    line: u32,
+    message: String,
+}
+
+/// Where the log callback of the test below leaves what it received.
+struct LogProbe {
+    lines: Mutex<Vec<RecordedLog>>,
+}
+
+impl LogProbe {
+    fn new() -> Self {
+        Self {
+            lines: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn snapshot(&self) -> Vec<RecordedLog> {
+        match self.lines.lock() {
+            Ok(lines) => lines.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
+#[test]
+fn the_log_context_names_the_module_and_where_it_came_from() {
+    /// Records one line, copying everything out of the context before it goes away.
+    unsafe extern "C" fn record(
+        data: *mut c_void,
+        level: c_int,
+        ctx: *const libvlc_log_t,
+        fmt: *const c_char,
+        args: *mut c_void,
+    ) {
+        unsafe {
+            let probe = &*(data as *const LogProbe);
+            let mut module: *const c_char = ptr::null();
+            let mut file: *const c_char = ptr::null();
+            let mut line: c_uint = 0;
+            libvlc_log_get_context(ctx, &mut module, &mut file, &mut line);
+            let recorded = RecordedLog {
+                level,
+                module: c_string(module),
+                file: c_string(file),
+                line,
+                message: printf(fmt, args),
+            };
+            let mut lines = match probe.lines.lock() {
+                Ok(lines) => lines,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            lines.push(recorded);
+        }
+    }
+
+    let mut probe = Box::new(LogProbe::new());
+    let opaque = probe.as_mut() as *mut LogProbe as *mut c_void;
+    let sample = Sample::new();
+    // The same transmute the binding does, and for the same reason: bindgen types
+    // the callback's `va_list` differently per target, so the function pointer
+    // cannot be passed as it stands everywhere.
+    #[allow(clippy::missing_transmute_annotations)]
+    let cb = unsafe { Some(std::mem::transmute(record as *const ())) };
+    unsafe { libvlc_log_set(sample.instance, cb, opaque) };
+
+    // A media that is not there makes the access module speak up: the line is the
+    // runtime's own report of the failure, and the reason nothing else reports.
+    let missing = path_of(MISSING_MEDIA);
+    assert!(
+        !missing.exists(),
+        "the test needs {} to be absent, and something created it",
+        missing.display()
+    );
+    let missing = CString::new(missing.to_str().expect("the path is not UTF-8"))
+        .expect("the path contains a NUL byte");
+    let media = unsafe { libvlc_media_new_path(missing.as_ptr()) };
+    assert!(!media.is_null(), "libvlc_media_new_path refused the path");
+    unsafe {
+        libvlc_media_player_set_media(sample.player, media);
+    }
+    // Not `play_until_playing`: the media is not there, so the player never reaches
+    // Playing. `play` accepts it and the failure arrives as this log line.
+    assert_eq!(
+        unsafe { libvlc_media_player_play(sample.player) },
+        0,
+        "the playback of a missing media was refused rather than reported"
+    );
+
+    let deadline = Instant::now() + ERROR_TIMEOUT;
+    while Instant::now() < deadline && probe.snapshot().len() < 2 {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let lines = probe.snapshot();
+    unsafe { libvlc_media_release(media) };
+    let levels: Vec<i32> = lines.iter().map(|line| line.level).collect();
+    println!(
+        "the runtime logged {} lines, at levels {levels:?}",
+        lines.len()
+    );
+    println!("the runtime logged: {lines:#?}");
+
+    assert!(
+        lines.iter().any(|line| !line.module.is_empty()),
+        "no line named the module that logged it: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| !line.file.is_empty() && line.line > 0),
+        "no line named the source file and line it came from: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.message.contains("this-media-does-not-exist")),
+        "no line mentioned the media that could not be opened, so these are not the \
+         lines this test is about: {lines:?}"
+    );
 }

@@ -56,6 +56,15 @@ that an option added to a duplicate shortens only the duplicate. The one answer 
 cannot reach is the in-memory media the binding's own `load_from_file` builds, which
 reports the constant `imem://`; that one is measured in `demo/tests/media_loader.gd`.
 
+The runtime's self-report is here too: that `libvlc_get_version` and
+`libvlc_get_changeset` name the build this addon pins (the changeset is a `git
+describe` string, so the pinned commit is inside it rather than at its front), that
+the error status belongs to the thread that failed and is not cleared by a successful
+call, and that the log context libvlc hands a callback names the module, the source
+file and the line. The binding's own half of the log -- the level mapping, the signal
+and the runtime setter for the level -- is `demo/tests/log_message.gd` plus a unit
+test in `src/vlc_instance.rs`.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec
