@@ -48,6 +48,14 @@ whether an `Array[VLCTrack]` crosses into Rust, whether the signals arrive in a
 script, and whether a track from a media descriptor is refused instead of crashing --
 is `demo/tests/track_selection.gd`, which is run by hand like the other demo tests.
 
+Media identity is here as well: what `libvlc_media_get_mrl` answers for a path (a
+percent-encoded `file://` URI), for a location (verbatim) and for a duplicate (the
+same as its source), what `libvlc_media_get_type` guesses and how a parse rewrites
+that guess -- a local `.m3u` is a file until it is parsed and a playlist after -- and
+that an option added to a duplicate shortens only the duplicate. The one answer this
+cannot reach is the in-memory media the binding's own `load_from_file` builds, which
+reports the constant `imem://`; that one is measured in `demo/tests/media_loader.gd`.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec

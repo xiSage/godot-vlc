@@ -915,6 +915,137 @@ fn subtitle_mrl() -> CString {
     subtitle_mrl_from(SUBTITLE_FILE, SAMPLE_SUBTITLE)
 }
 
+/// Where the playlist fixture is written, and the `file://` URI it is asked for by.
+const PLAYLIST_FILE: &str = "target/acceptance/sample.m3u";
+
+/// Writes a one-entry playlist and returns the `file://` URI that names it.
+///
+/// A playlist is text, so unlike the media fixtures it costs nothing to keep out of
+/// the repository: it is generated next to the subtitles, and its one entry is the
+/// sample. The URI is what a media has to be built from for libvlc to see a
+/// playlist at all -- a path would be turned into a `file://` URI as well, but the
+/// point of this fixture is to name the media by URI so the test can also say what
+/// [`libvlc_media_get_mrl`] reports for it.
+fn playlist_uri() -> String {
+    let entry = sample_path()
+        .to_str()
+        .expect("the sample path is not valid UTF-8")
+        .replace('\\', "/");
+    let entry = if entry.starts_with('/') {
+        format!("file://{entry}")
+    } else {
+        format!("file:///{entry}")
+    };
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PLAYLIST_FILE);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("the playlist directory could not be created");
+    }
+    std::fs::write(&path, format!("#EXTM3U\n{entry}\n"))
+        .expect("the playlist fixture could not be written");
+
+    let path = path
+        .to_str()
+        .expect("the playlist path is not valid UTF-8")
+        .replace('\\', "/");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
+/// The MRL libvlc reports for a media, copied out and freed the way a caller has to.
+///
+/// `libvlc_media_get_mrl` hands back a copy of its own string with no release
+/// function of its own, so `libvlc_free` is the only correct disposal -- which is
+/// what the binding does too, and what this mirrors.
+fn mrl_of(media: *mut libvlc_media_t) -> String {
+    let mrl = unsafe { libvlc_media_get_mrl(media) };
+    if mrl.is_null() {
+        return String::new();
+    }
+    let copied = unsafe { CStr::from_ptr(mrl) }
+        .to_str()
+        .expect("the MRL is not valid UTF-8")
+        .to_string();
+    unsafe { libvlc_free(mrl as *mut c_void) };
+    copied
+}
+
+/// The type libvlc reports for a media.
+fn type_of(media: *mut libvlc_media_t) -> libvlc_media_type_t {
+    unsafe { libvlc_media_get_type(media) }
+}
+
+/// Plays a media until libvlc reports the type the parse was supposed to give it.
+///
+/// The type is what is waited for here, not the length: a playlist media reports no
+/// length of its own -- its entries have those -- so waiting for one would wait for
+/// the timeout every time.
+fn play_until_typed(
+    instance: *mut libvlc_instance_t,
+    media: *mut libvlc_media_t,
+    wanted: libvlc_media_type_t,
+) -> libvlc_media_type_t {
+    unsafe {
+        let player = libvlc_media_player_new(instance);
+        assert!(!player.is_null(), "libvlc_media_player_new returned NULL");
+        libvlc_media_player_set_media(player, media);
+        assert_eq!(
+            libvlc_media_player_play(player),
+            0,
+            "the playback was refused"
+        );
+
+        let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+        let mut current = type_of(media);
+        while Instant::now() < deadline && current != wanted {
+            std::thread::sleep(Duration::from_millis(10));
+            current = type_of(media);
+        }
+
+        libvlc_media_player_stop_async(player);
+        libvlc_media_player_release(player);
+        current
+    }
+}
+
+/// The length libvlc reports for a media, after playing it once.
+///
+/// The media is borrowed, not owned: its own player is built here and released
+/// again, so a test can measure two medias -- or the same one twice -- without
+/// sharing a player between them.
+fn reported_length(instance: *mut libvlc_instance_t, media: *mut libvlc_media_t) -> i64 {
+    unsafe {
+        let player = libvlc_media_player_new(instance);
+        assert!(!player.is_null(), "libvlc_media_player_new returned NULL");
+        libvlc_media_player_set_media(player, media);
+        assert_eq!(
+            libvlc_media_player_play(player),
+            0,
+            "the playback was refused"
+        );
+
+        // The length arrives with the parse, which is what this is waiting for: a
+        // media whose length never appears would make the assertions below
+        // meaningless rather than failing.
+        let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+        let mut length = 0;
+        while Instant::now() < deadline {
+            length = libvlc_media_player_get_length(player);
+            if length > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        libvlc_media_player_stop_async(player);
+        libvlc_media_player_release(player);
+        length
+    }
+}
+
 impl Sample {
     /// Adds a per-media option to the media.
     ///
@@ -2154,4 +2285,131 @@ fn selecting_without_an_input_changes_nothing() {
                 == 1,
         "the input did not come up with the sample's tracks"
     );
+}
+
+/// A media reports the MRL it was built from, and the type libvlc guessed from it.
+///
+/// None of the answers is the string the caller passed in: a path becomes a
+/// `file://` URI on the way in, a location is kept verbatim, and a media built on
+/// callbacks -- which is what this binding's `load_from_file` does -- always gets
+/// the same constant, `imem://`. That last one cannot be reached from here, since
+/// it takes the binding's own callbacks; `demo/tests/media_loader.gd` measures it.
+#[test]
+fn a_media_reports_the_mrl_it_was_built_from_and_the_type_libvlc_guesses() {
+    let sample = Sample::new();
+    let mrl = mrl_of(sample.media);
+    assert!(
+        mrl.starts_with("file://") && mrl.ends_with("h264_64x64_1s.mp4"),
+        "a media built from a path reports {mrl}"
+    );
+    assert_eq!(
+        type_of(sample.media),
+        libvlc_media_type_t_libvlc_media_type_file,
+        "a local file is not typed as one"
+    );
+    println!("a media from a path: mrl {mrl}, type file");
+
+    // A location is stored as it came in: no normalisation and no rewriting.
+    let location = CString::new("http://example.invalid/movie.mp4").unwrap();
+    let remote = unsafe { libvlc_media_new_location(location.as_ptr()) };
+    assert!(!remote.is_null(), "libvlc_media_new_location returned NULL");
+    assert_eq!(
+        mrl_of(remote),
+        "http://example.invalid/movie.mp4",
+        "a media built from a location did not report that location"
+    );
+    assert_eq!(
+        type_of(remote),
+        libvlc_media_type_t_libvlc_media_type_file,
+        "http is a file to libvlc, not a stream"
+    );
+    println!("a media from a location: mrl {location:?}, type file");
+    unsafe { libvlc_media_release(remote) };
+}
+
+/// A local playlist is a file until it is parsed, and a playlist afterwards.
+///
+/// The type is not decided once and for all: libvlc guesses it from the MRL's
+/// scheme when the media is built, and the demuxer's own answer replaces it once
+/// the media has been parsed. That is the difference between "what scheme is this"
+/// and "what is in here", and a caller that needs the second answer has to get the
+/// parse going -- which for a media whose type libvlc cannot guess at all (the
+/// in-memory one behind `load_from_file`) means passing `PARSE_FORCED`.
+#[test]
+fn a_playlist_is_a_file_until_it_is_parsed_and_a_playlist_after() {
+    let uri = playlist_uri();
+    let location = CString::new(uri.clone()).expect("the playlist URI contains a NUL byte");
+    let media = unsafe { libvlc_media_new_location(location.as_ptr()) };
+    assert!(
+        !media.is_null(),
+        "libvlc_media_new_location refused the playlist"
+    );
+
+    assert_eq!(
+        type_of(media),
+        libvlc_media_type_t_libvlc_media_type_file,
+        "a .m3u is guessed from its scheme, and its scheme is file"
+    );
+
+    // Playing it is what lets the playlist demuxer answer for the media: the
+    // entries it finds become the media's subitems, and its type becomes the
+    // demuxer's.
+    let sample = Sample::new();
+    let after = play_until_typed(
+        sample.instance,
+        media,
+        libvlc_media_type_t_libvlc_media_type_playlist,
+    );
+    println!("the playlist is typed {after} once it has played");
+
+    assert_eq!(
+        after, libvlc_media_type_t_libvlc_media_type_playlist,
+        "the parse did not turn the media into what it holds"
+    );
+    assert_eq!(
+        mrl_of(media),
+        uri,
+        "the MRL changed across the parse, and it does not do that"
+    );
+
+    unsafe { libvlc_media_release(media) };
+}
+
+/// A duplicate is a media of its own: what is added to one is not on the other.
+///
+/// `libvlc_media_duplicate` copies the MRL, the metadata, the options, the slaves
+/// and the tracks, and its header promises that the copy "won't share forthcoming
+/// updates from the original". This measures that instead of trusting it: the copy
+/// is given a `:start-time` the original never saw, and the two are played in turn.
+#[test]
+fn duplicating_a_media_copies_it_and_leaves_the_original_alone() {
+    let sample = Sample::new();
+    let copy = unsafe { libvlc_media_duplicate(sample.media) };
+    assert!(!copy.is_null(), "libvlc_media_duplicate returned NULL");
+
+    assert_eq!(
+        mrl_of(copy),
+        mrl_of(sample.media),
+        "the copy does not point where the original does"
+    );
+
+    let option = CString::new(format!(":start-time={START_TIME_SECS}")).unwrap();
+    unsafe { libvlc_media_add_option(copy, option.as_ptr()) };
+
+    let shortened = reported_length(sample.instance, copy);
+    let untouched = reported_length(sample.instance, sample.media);
+    println!(
+        "duplicate: the copy reports {shortened} ms with :start-time={START_TIME_SECS}, the original {untouched} ms"
+    );
+
+    assert!(
+        shortened <= SHORTENED_LENGTH_MAX_MS,
+        "the option added to the copy did not take effect on it: {shortened} ms"
+    );
+    assert!(
+        untouched >= FULL_LENGTH_MIN_MS,
+        "the original was shortened by an option added to its copy: {untouched} ms"
+    );
+
+    unsafe { libvlc_media_release(copy) };
 }

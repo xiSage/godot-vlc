@@ -33,6 +33,35 @@ use godot::{
     prelude::*,
 };
 
+/// A media descriptor: the thing a [VLCMediaPlayer] plays, and what it was built
+/// from.
+///
+/// # Where a media comes from
+/// - [method load_from_file] reads a file through **Godot's own filesystem**, so a
+///   media inside `res://` works in an exported project where there is no path
+///   libvlc could open. The input is an in-memory one (`imem://`), which is why
+///   per-media options that belong to an access module do nothing on it; see
+///   [method add_option].
+/// - [method load_from_mrl] hands a MRL to libvlc unchanged.
+/// - A scene can reference a media file directly: the class is a [Resource], and
+///   the extension registers the loader that turns `res://movie.mp4` into one.
+///
+/// # Asking a media what it is
+/// There is no single answer, and the three that exist disagree on purpose:
+/// - [method get_mrl] is libvlc's answer. Every media built by
+///   [method load_from_file] answers the literal `"imem://"`, whatever file is
+///   behind it, so it identifies the *kind* of input and not the file.
+/// - [member Resource.resource_path] is the engine's answer, and it is set for a
+///   media that arrived through the resource loader (a scene's `ext_resource`, or
+///   `load("res://movie.mp4")`) -- it is the only one of these that names the file
+///   for that case, and it is empty for a media built by a direct call.
+/// - [method get_source_path] does not exist, on purpose: for a media a script
+///   built itself, the script passed the string in and can keep it. Nothing here
+///   remembers it, so a media that is handed to a player and read back later is
+///   anonymous unless its creator kept the string.
+///
+/// [method get_type] answers what libvlc made of the media, and
+/// [method duplicate_media] makes an independent copy of it.
 #[derive(GodotClass)]
 #[class(base=Resource, rename=VLCMedia, no_init)]
 pub struct VlcMedia {
@@ -167,11 +196,42 @@ impl VlcMedia {
     #[constant]
     const DISC_TOTAL: i32 = libvlc_meta_t_libvlc_meta_DiscTotal as i32;
 
+    /// [method get_type] answers this for a media libvlc could not make anything
+    /// of. Every media built by [method load_from_file] answers it, because the
+    /// in-memory access it is built on has no scheme libvlc recognises.
+    #[constant]
+    const MEDIA_TYPE_UNKNOWN: i32 = libvlc_media_type_t_libvlc_media_type_unknown as i32;
+    /// A file.
+    #[constant]
+    const MEDIA_TYPE_FILE: i32 = libvlc_media_type_t_libvlc_media_type_file as i32;
+    /// A directory. A **path** to a directory answers [constant MEDIA_TYPE_FILE]
+    /// instead; this is what a `dir://` MRL is.
+    #[constant]
+    const MEDIA_TYPE_DIRECTORY: i32 = libvlc_media_type_t_libvlc_media_type_directory as i32;
+    /// An optical disc.
+    #[constant]
+    const MEDIA_TYPE_DISC: i32 = libvlc_media_type_t_libvlc_media_type_disc as i32;
+    /// A stream: a protocol libvlc does not treat as a file, such as `udp://`.
+    #[constant]
+    const MEDIA_TYPE_STREAM: i32 = libvlc_media_type_t_libvlc_media_type_stream as i32;
+    /// A playlist. A local `.m3u` answers [constant MEDIA_TYPE_FILE] until it has
+    /// been parsed, and this afterwards; see [method get_type].
+    #[constant]
+    const MEDIA_TYPE_PLAYLIST: i32 = libvlc_media_type_t_libvlc_media_type_playlist as i32;
+
     /// Parsing state of a `VLCMedia` changed.
     #[signal]
     fn parsed_changed(status: i32);
 
     /// Create a new `VLCMedia` from a file path.
+    ///
+    /// The file is read through **Godot's own filesystem**, not handed to libvlc as
+    /// a path: media inside `res://` live in the PCK, where there is no path libvlc
+    /// could open. What libvlc gets is an in-memory input, so this media answers
+    /// `"imem://"` to [method get_mrl], [constant MEDIA_TYPE_UNKNOWN] to
+    /// [method get_type], and nothing to [member Resource.resource_path] unless it
+    /// arrived through the resource loader -- see the class documentation for which
+    /// of the three names this file.
     ///
     /// # Parameters
     /// - [param path] the path to the media file.
@@ -204,6 +264,9 @@ impl VlcMedia {
     /// Create a new `VLCMedia` from a media resource locator (MRL).\
     /// A media resource locator (MRL) is a string of characters used to identify a multimedia resource or part of a multimedia resource. A MRL may be used to identify inputs or outputs to VLC media player. See [VideoLAN wiki](https://wiki.videolan.org/Media_resource_locator).
     ///
+    /// The MRL is handed to libvlc unchanged, so it is also what [method get_mrl]
+    /// reads back, and [method get_type] is libvlc's guess from its scheme.
+    ///
     /// # Parameters
     /// - [param mrl] the media resource locator.
     #[func]
@@ -225,6 +288,122 @@ impl VlcMedia {
         Self::register_signals(&mut media);
 
         Some(media)
+    }
+
+    /// Wraps a media libvlc hands over, taking the reference that came with it.
+    ///
+    /// Only [method duplicate_media] uses this today. The wrapper owns one
+    /// reference, which [VlcMedia]'s `Drop` releases, and it registers the parse
+    /// signal like a media this binding built, so it behaves the same in a script.
+    fn from_ptr(media_ptr: *mut libvlc_media_t) -> Option<Gd<Self>> {
+        if media_ptr.is_null() {
+            return None;
+        }
+        let mut media = Gd::from_init_fn(|base| Self {
+            base,
+            path: None,
+            media_ptr,
+            self_gd: None,
+        });
+        let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
+        media.bind_mut().self_gd = Some(self_gd);
+
+        Self::register_signals(&mut media);
+
+        Some(media)
+    }
+
+    /// The MRL libvlc holds for this media.
+    ///
+    /// # Returns
+    /// the string libvlc reports, or `""` when it has none -- which through the
+    /// constructors here means only that libvlc could not copy it.
+    ///
+    /// # Note
+    /// - It is libvlc's own string, copied before the buffer libvlc allocated for
+    ///   it is freed, so the caller owns nothing and can read it as an ordinary
+    ///   `String`.
+    /// - **Every media built by [method load_from_file] answers `"imem://"`**, the
+    ///   same constant for every file, because that is the access it was built on.
+    ///   It is not an identifier: use [member Resource.resource_path] for a media
+    ///   that came through the resource loader, or keep the path the script passed
+    ///   in. See the class documentation.
+    /// - A media built from a **path** answers a `file://` URI, and libvlc
+    ///   percent-encodes it -- `test/media/h264_64x64_1s.mp4` becomes
+    ///   `test%2Fmedia%2Fh264_64x64_1s.mp4` in the path part -- so it does not
+    ///   compare equal to the path that was passed in. A media built from a MRL
+    ///   answers that MRL verbatim.
+    /// - It does not change: parsing or playing a media does not rewrite it. For a
+    ///   local `.m3u` it stays the path it was given, even once
+    ///   [method get_type] has started answering [constant MEDIA_TYPE_PLAYLIST].
+    #[func]
+    fn get_mrl(&self) -> GString {
+        let mrl = unsafe { libvlc_media_get_mrl(self.media_ptr) };
+        if mrl.is_null() {
+            return GString::new();
+        }
+        let copied = crate::vlc_track::c_string(mrl);
+        // libvlc hands over a copy of its own string -- a `strdup`, with no release
+        // function of its own -- so this is the one place in the binding that frees
+        // what libvlc returned.
+        unsafe { libvlc_free(mrl as *mut c_void) };
+        GString::from(copied.as_str())
+    }
+
+    /// What libvlc made of this media: a file, a directory, a disc, a stream, a
+    /// playlist, or nothing it recognises.
+    ///
+    /// # Returns
+    /// one of the `MEDIA_TYPE_*` constants.
+    ///
+    /// # Note
+    /// - It is decided **from the MRL's scheme** when the media is built
+    ///   ([method load_from_mrl] and [method load_from_file] both go through it),
+    ///   and it **can change later**: when the media is parsed, the demuxer's own
+    ///   answer replaces it. A local `.m3u` is [constant MEDIA_TYPE_FILE] before
+    ///   that and [constant MEDIA_TYPE_PLAYLIST] after. So the value describes the
+    ///   media as libvlc knows it *now*, not what it was built as.
+    /// - A **path** to a directory answers [constant MEDIA_TYPE_FILE]; only a
+    ///   `dir://` MRL is [constant MEDIA_TYPE_DIRECTORY].
+    /// - Every media from [method load_from_file] answers
+    ///   [constant MEDIA_TYPE_UNKNOWN] and keeps answering it: the in-memory access
+    ///   has no scheme to guess from. That has a second consequence: libvlc refuses
+    ///   to parse a media it cannot type, so [method parse_request] reports
+    ///   [constant PARSED_STATUS_SKIPPED] for one unless the flags include
+    ///   [constant PARSE_FLAG_FORCED].
+    /// - It is read under libvlc's own lock, but the answer can still be the
+    ///   pre-parse one if a parse is running: the value moves, and this call cannot
+    ///   wait for it.
+    #[func]
+    fn get_type(&self) -> i32 {
+        unsafe { libvlc_media_get_type(self.media_ptr) as i32 }
+    }
+
+    /// A copy of this media, independent of it.
+    ///
+    /// This is `libvlc_media_duplicate`: the copy is a media of its own, and
+    /// changing one does not change the other. It is the way to hand the same media
+    /// to two players without either of them sharing the other's state.
+    ///
+    /// # Returns
+    /// a [VLCMedia] the caller owns, or `null` if libvlc could not copy it.
+    ///
+    /// # Note
+    /// - **Copied**: the MRL, the name, the duration, the type, the metadata, the
+    ///   options added with [method add_option] or [method add_option_flag], the
+    ///   subtitle slaves, and the parsed tracks.
+    /// - **Not copied**: the parse status (the copy starts unparsed, whatever the
+    ///   original was), any user data libvlc holds, and the subitems of a playlist
+    ///   -- a copy of a playlist starts with an empty one, and getting its entries
+    ///   would mean parsing it again.
+    /// - [method get_mrl] on the copy answers what it answers on the original,
+    ///   `"imem://"` included: the copy is as anonymous as its source, and
+    ///   [member Resource.resource_path] is empty on it.
+    /// - The copy is a new media, so [method VLCMediaPlayer.set_media] can be
+    ///   pointed at it without disturbing a player using the original.
+    #[func]
+    fn duplicate_media(&self) -> Option<Gd<Self>> {
+        Self::from_ptr(unsafe { libvlc_media_duplicate(self.media_ptr) })
     }
 
     fn register_signals(media: &mut Gd<Self>) {
@@ -406,12 +585,13 @@ impl VlcMedia {
     /// - [param meta] the media descriptor
     ///
     /// # Returns
-    /// the media's meta
+    /// the media's meta, or `""` -- which is also what an unparsed media answers,
+    /// and what libvlc answers for a media that has no such meta. libvlc hands back
+    /// no pointer in that case, so the empty string is the whole of the answer.
     #[func]
     fn get_meta(&self, meta: u32) -> GString {
-        let str =
-            unsafe { CStr::from_ptr(libvlc_media_get_meta(self.media_ptr, meta as libvlc_meta_t)) };
-        GString::try_from_cstr(str, Encoding::Utf8).unwrap_or_default()
+        let value = unsafe { libvlc_media_get_meta(self.media_ptr, meta as libvlc_meta_t) };
+        GString::from(crate::vlc_track::c_string(value).as_str())
     }
 
     /// Read the meta extra of the media.\
@@ -609,7 +789,13 @@ unsafe extern "C" fn media_open_callback(
             *datap = Box::into_raw(Box::new(file)) as *mut c_void;
             return 0;
         }
-        godot_error!("godot-vlc: unable to open media file");
+        // The path is the one thing this callback knows that the log line does not
+        // otherwise carry: libvlc reports the failure against `imem://`, which names
+        // no file, so without this a broken path is unattributable.
+        match (opaque as *mut GString).as_ref() {
+            Some(path) => godot_error!("godot-vlc: unable to open media file {path}"),
+            None => godot_error!("godot-vlc: unable to open media file"),
+        }
         -1
     }
 }
