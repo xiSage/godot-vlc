@@ -24,7 +24,10 @@ use std::{
 };
 
 use crate::{
-    util::cstring_from_gstring, vlc::*, vlc_instance, vlc_subtitle::VlcSubtitle,
+    util::cstring_from_gstring,
+    vlc::*,
+    vlc_instance::{self, clear_last_error, last_error},
+    vlc_subtitle::VlcSubtitle,
     vlc_track_list::VlcTrackList,
 };
 use godot::{
@@ -238,6 +241,11 @@ impl VlcMedia {
     #[func]
     pub fn load_from_file(path: GString) -> Gd<Self> {
         let mut path = Box::new(path);
+        // The reason for a failure is not in the return value -- libvlc answers
+        // with a null pointer and keeps the explanation on the side -- so the side
+        // is cleared first and read only if this call turns out to be the one that
+        // failed. See `clear_last_error`.
+        clear_last_error();
         let media_ptr = unsafe {
             libvlc_media_new_callbacks(
                 Some(media_open_callback),
@@ -247,6 +255,11 @@ impl VlcMedia {
                 path.as_mut() as *mut _ as *mut c_void,
             )
         };
+        assert!(
+            !media_ptr.is_null(),
+            "libvlc could not create a media for {path}: {}",
+            last_error()
+        );
         let mut media = Gd::from_init_fn(|base| Self {
             base,
             path: Some(path),
@@ -272,8 +285,14 @@ impl VlcMedia {
     #[func]
     fn load_from_mrl(mrl: GString) -> Option<Gd<Self>> {
         let mrl = cstring_from_gstring(mrl);
+        clear_last_error();
         let media_ptr = unsafe { libvlc_media_new_location(mrl.as_ptr()) };
         if media_ptr.is_null() {
+            godot_error!(
+                "godot-vlc: libvlc refused the MRL {}: {}",
+                mrl.to_string_lossy(),
+                last_error()
+            );
             return None;
         }
         let mut media = Gd::from_init_fn(|base| Self {
@@ -403,7 +422,17 @@ impl VlcMedia {
     ///   pointed at it without disturbing a player using the original.
     #[func]
     fn duplicate_media(&self) -> Option<Gd<Self>> {
-        Self::from_ptr(unsafe { libvlc_media_duplicate(self.media_ptr) })
+        clear_last_error();
+        let copy = unsafe { libvlc_media_duplicate(self.media_ptr) };
+        if copy.is_null() {
+            godot_error!(
+                "godot-vlc: libvlc could not copy the media {}: {}",
+                self.get_mrl(),
+                last_error()
+            );
+            return None;
+        }
+        Self::from_ptr(copy)
     }
 
     fn register_signals(media: &mut Gd<Self>) {
@@ -744,7 +773,8 @@ impl VlcMedia {
     /// -1 in case of error, 0 otherwise
     #[func]
     fn parse_request(&mut self, parse_flag: i32, timeout: i32) -> i32 {
-        unsafe {
+        clear_last_error();
+        let status = unsafe {
             libvlc_media_parse_request(
                 vlc_instance::get(),
                 self.media_ptr,
@@ -752,7 +782,17 @@ impl VlcMedia {
                     | libvlc_media_parse_flag_t_libvlc_media_fetch_local,
                 timeout,
             )
+        };
+        if status != 0 {
+            // The parse was refused, and the caller gets a status and no event --
+            // the reason is libvlc's and nowhere else.
+            godot_error!(
+                "godot-vlc: libvlc refused to parse {}: {}",
+                self.get_mrl(),
+                last_error()
+            );
         }
+        status
     }
 
     /// Stop the parsing of the media.\

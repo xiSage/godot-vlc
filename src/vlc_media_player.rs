@@ -247,6 +247,11 @@ impl IControl for VlcMediaPlayer {
             // Everything libvlc has reported since the last frame goes out here,
             // on the main thread, in the order it arrived.
             self.emit_parked_events();
+            // libvlc's log is drained by the same frame, for the same reason and
+            // with the same limitation: `VLCInstance` is an `Object` and has no
+            // frame of its own, so a player is what carries its signal. The console
+            // line was already written where the message arrived.
+            crate::vlc_instance::drain_parked_logs();
             // The buffering value is reported from here, not from the event
             // callback, so that a burst of upstream reports costs one signal
             // per frame at most -- and only when the value actually moved.
