@@ -528,13 +528,24 @@ impl VlcMedia {
     /// You need to call [method parse_request] or play the media at least once before calling this function. Not doing this will result in an empty list.
     ///
     /// # Parameters
-    /// - [param track_type] type of the track list to request (e.g. [constant TRACK_TYPE_VIDEO], [constant TRACK_TYPE_AUDIO], [constant TRACK_TYPE_TEXT])
+    /// - [param track_type] type of the track list to request (e.g. [constant VLCTrack.TYPE_VIDEO], [constant VLCTrack.TYPE_AUDIO], [constant VLCTrack.TYPE_TEXT])
     ///
     /// # Returns
     /// a valid [VLCTrackList] or null in case of error, if there is no track for a category, the returned list will have a size of 0.
+    ///
+    /// # Note
+    /// The tracks in it cannot be selected: they come from the media descriptor,
+    /// which carries no `es_id`, and libvlc's selection calls act on that. Use
+    /// [method VLCMediaPlayer.get_tracklist] once the media is playing, and put
+    /// these tracks to work by their [method VLCTrack.get_id] instead.
     #[func]
     fn get_tracklist(&self, track_type: i32) -> Option<Gd<VlcTrackList>> {
-        unsafe { VlcTrackList::from_ptr(libvlc_media_get_tracklist(self.media_ptr, track_type)) }
+        unsafe {
+            VlcTrackList::from_ptr(
+                libvlc_media_get_tracklist(self.media_ptr, track_type),
+                false,
+            )
+        }
     }
 
     /// Parse the media asynchronously with options.\

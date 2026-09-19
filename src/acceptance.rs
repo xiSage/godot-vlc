@@ -66,11 +66,12 @@
 use std::ffi::{CStr, CString, c_char, c_uint, c_void};
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::vlc::*;
-use crate::vlc_track::{TrackInfo, read_info};
+use crate::vlc_track::{TrackInfo, c_string, read_info};
 
 /// Where the sample is, and what it contains. The decoder's report is checked
 /// against these numbers so that "a frame arrived" cannot be satisfied by some
@@ -874,7 +875,16 @@ const SAMPLE_SUBTITLE: &str =
 /// for and for the same reason.
 const SUBTITLE_FILE: &str = "target/acceptance/subtitle.srt";
 
-/// Writes the subtitle fixture and returns a `file://` MRL for it.
+/// Two more subtitles, for the tests that need several text tracks at once. They
+/// differ in their cues, so that a test can say which of them it is looking at, and
+/// they are three because libvlc's own cap is two: the third is what makes the cap
+/// observable rather than a claim about the source.
+const SECOND_SUBTITLE: &str = "1\n00:00:00,000 --> 00:00:01,000\nCCCC\n";
+const THIRD_SUBTITLE: &str = "1\n00:00:00,000 --> 00:00:01,000\nDDDD\n";
+const SECOND_SUBTITLE_FILE: &str = "target/acceptance/subtitle2.srt";
+const THIRD_SUBTITLE_FILE: &str = "target/acceptance/subtitle3.srt";
+
+/// Writes one subtitle fixture and returns a `file://` MRL for it.
 ///
 /// A slave takes a URI, so this is the form a subtitle on disk is handed over in --
 /// and the one VobSub pairs need, since that demux finds its second file by rewriting
@@ -882,12 +892,12 @@ const SUBTITLE_FILE: &str = "target/acceptance/subtitle.srt";
 /// as one would be split at its drive colon, which is why the `file:///` is built
 /// here. Nothing in the test path needs percent-encoding; a path that did (a space, a
 /// `#`, a `%`) would, and `VLCSubtitle.load_from_file` is what does that for callers.
-fn subtitle_mrl() -> CString {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SUBTITLE_FILE);
+fn subtitle_mrl_from(relative: &str, content: &str) -> CString {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("the subtitle directory could not be created");
     }
-    std::fs::write(&path, SAMPLE_SUBTITLE).expect("the subtitle fixture could not be written");
+    std::fs::write(&path, content).expect("the subtitle fixture could not be written");
 
     let path = path
         .to_str()
@@ -899,6 +909,10 @@ fn subtitle_mrl() -> CString {
         format!("file:///{path}")
     };
     CString::new(mrl).expect("the subtitle MRL contains a NUL byte")
+}
+
+fn subtitle_mrl() -> CString {
+    subtitle_mrl_from(SUBTITLE_FILE, SAMPLE_SUBTITLE)
 }
 
 impl Sample {
@@ -992,6 +1006,114 @@ impl Sample {
             let tracks = self.player_tracks(track_type, false);
             if !tracks.is_empty() || Instant::now() >= deadline {
                 return tracks;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Waits until the player reports at least `wanted` tracks of this type.
+    fn wait_for_tracks(
+        &self,
+        track_type: libvlc_track_type_t,
+        wanted: usize,
+        timeout: Duration,
+    ) -> Vec<TrackInfo> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let tracks = self.player_tracks(track_type, false);
+            if tracks.len() >= wanted || Instant::now() >= deadline {
+                return tracks;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The tracks of one type that are selected right now.
+    fn selected_tracks(&self, track_type: libvlc_track_type_t) -> Vec<TrackInfo> {
+        self.player_tracks(track_type, true)
+    }
+
+    /// Reads a track libvlc hands over as the caller's own, and releases it.
+    ///
+    /// `get_selected_track` and `get_track_from_id` return a reference that belongs
+    /// to the caller, unlike a tracklist entry, which is released with its list.
+    fn read_owned_track(&self, ptr: *mut libvlc_media_track_t) -> Option<TrackInfo> {
+        if ptr.is_null() {
+            return None;
+        }
+        let info = unsafe { read_info(ptr) };
+        unsafe { libvlc_media_track_release(ptr) };
+        Some(info)
+    }
+
+    /// The track libvlc reports as this type's selected one.
+    fn selected_track(&self, track_type: libvlc_track_type_t) -> Option<TrackInfo> {
+        let ptr = unsafe { libvlc_media_player_get_selected_track(self.player, track_type) };
+        self.read_owned_track(ptr)
+    }
+
+    /// The track with this id, if the current input has one.
+    fn track_from_id(&self, id: &CStr) -> Option<TrackInfo> {
+        let ptr = unsafe { libvlc_media_player_get_track_from_id(self.player, id.as_ptr()) };
+        self.read_owned_track(ptr)
+    }
+
+    /// Selects a whole set of tracks of one type, by their position in the current
+    /// tracklist -- the way the binding's `select_tracks` replaces a selection.
+    ///
+    /// The pointers come from a tracklist, and libvlc keeps the tracks' `es_id`s
+    /// rather than the tracks themselves, so that list is released as soon as the
+    /// call returns.
+    fn select_tracks(&self, track_type: libvlc_track_type_t, wanted: &[usize]) {
+        let list = unsafe { libvlc_media_player_get_tracklist(self.player, track_type, false) };
+        assert!(
+            !list.is_null(),
+            "the player reported no tracklist for type {track_type} to select from"
+        );
+        let mut pointers: Vec<*const libvlc_media_track_t> = Vec::with_capacity(wanted.len());
+        for index in wanted {
+            let track = unsafe { libvlc_media_tracklist_at(list, *index) };
+            assert!(
+                !track.is_null(),
+                "the tracklist has no track at index {index}"
+            );
+            pointers.push(track);
+        }
+        unsafe {
+            libvlc_media_player_select_tracks(
+                self.player,
+                track_type,
+                pointers.as_mut_ptr(),
+                pointers.len(),
+            );
+            libvlc_media_tracklist_delete(list);
+        }
+    }
+
+    /// Selects by id, the way the binding's `select_tracks_by_ids` does: one
+    /// comma-separated string, which libvlc stores on the player.
+    fn select_tracks_by_ids(&self, track_type: libvlc_track_type_t, ids: &CStr) {
+        unsafe {
+            libvlc_media_player_select_tracks_by_ids(self.player, track_type, ids.as_ptr());
+        }
+    }
+
+    /// Waits until libvlc reports exactly `wanted` selected tracks of a type.
+    ///
+    /// A selection is queued to libvlc's input thread, so it does not land with the
+    /// call that asked for it: a test has to wait for the state, exactly as a caller
+    /// has to wait for the signal.
+    fn wait_for_selection(
+        &self,
+        track_type: libvlc_track_type_t,
+        wanted: usize,
+        timeout: Duration,
+    ) -> Vec<TrackInfo> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let selected = self.selected_tracks(track_type);
+            if selected.len() == wanted || Instant::now() >= deadline {
+                return selected;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1564,5 +1686,472 @@ fn a_text_track_reports_the_encoding_it_declares() {
         "a plain UTF-8 SRT declared an encoding; libvlc fills this only when the \
          subtitle demuxer advertises one, and the measured answer for this fixture \
          is that it does not"
+    );
+}
+
+/// One track event, as a test read it out of libvlc's event object.
+#[derive(Clone, Debug)]
+struct RecordedTrackEvent {
+    event_type: libvlc_event_type_t,
+    track_type: i32,
+    /// The track the event names: `psz_id` for the three list events, and the track
+    /// that joined the selection for `ESSelected`.
+    id: String,
+    /// The track `ESSelected` reports as having left the selection; `""` for the
+    /// three list events, and for a selection event that is about a track joining.
+    unselected_id: String,
+}
+
+/// Where the track events land. Written from libvlc's input thread.
+#[derive(Default)]
+struct TrackEventProbe {
+    events: Mutex<Vec<RecordedTrackEvent>>,
+}
+
+impl TrackEventProbe {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn snapshot(&self) -> Vec<RecordedTrackEvent> {
+        match self.events.lock() {
+            Ok(events) => events.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Waits for the first recorded event that matches, and returns it.
+    ///
+    /// It panics with everything it saw when nothing matches, because the useful
+    /// part of a failure here is which events did arrive.
+    fn wait_for<F>(&self, what: &str, timeout: Duration, matches: F) -> RecordedTrackEvent
+    where
+        F: Fn(&RecordedTrackEvent) -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let events = self.snapshot();
+            if let Some(found) = events.iter().find(|event| matches(event)) {
+                return found.clone();
+            }
+            if Instant::now() >= deadline {
+                panic!("no {what} arrived within {timeout:?}; the events seen were {events:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Records one track event. Written from libvlc's input thread, holding the
+/// player's lock, so nothing here may touch the player or a Godot object.
+unsafe extern "C" fn record_track_event(event: *const libvlc_event_t, user_data: *mut c_void) {
+    unsafe {
+        let probe = &*(user_data as *const TrackEventProbe);
+        let event_type = (*event).type_;
+        let recorded =
+            if event_type == libvlc_event_e_libvlc_MediaPlayerESSelected as libvlc_event_type_t {
+                let payload = (*event).u.media_player_es_selection_changed;
+                RecordedTrackEvent {
+                    event_type,
+                    track_type: payload.i_type as i32,
+                    id: c_string(payload.psz_selected_id),
+                    unselected_id: c_string(payload.psz_unselected_id),
+                }
+            } else {
+                let payload = (*event).u.media_player_es_changed;
+                RecordedTrackEvent {
+                    event_type,
+                    track_type: payload.i_type as i32,
+                    id: c_string(payload.psz_id),
+                    unselected_id: String::new(),
+                }
+            };
+        let mut events = match probe.events.lock() {
+            Ok(events) => events,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        events.push(recorded);
+    }
+}
+
+/// The four track events arrive, and say which track and which direction.
+///
+/// This is the half of the track signals that can be pinned without an engine: the
+/// binding's callbacks read exactly these payloads, so a runtime that stopped
+/// raising the events -- or that filled the selection event's two ids the other way
+/// round -- would leave `track_added` and its four siblings silent or wrong.
+#[test]
+fn the_track_events_reach_a_callback_with_their_payloads() {
+    // The probe is declared first so that it outlives the player: locals drop in
+    // reverse order, and releasing the player is what stops the callbacks.
+    let mut probe = Box::new(TrackEventProbe::new());
+    let opaque = probe.as_mut() as *mut TrackEventProbe as *mut c_void;
+    let sample = Sample::new();
+
+    let event_manager = unsafe { libvlc_media_player_event_manager(sample.player) };
+    for event_type in [
+        libvlc_event_e_libvlc_MediaPlayerESAdded,
+        libvlc_event_e_libvlc_MediaPlayerESDeleted,
+        libvlc_event_e_libvlc_MediaPlayerESUpdated,
+        libvlc_event_e_libvlc_MediaPlayerESSelected,
+    ] {
+        let attached = unsafe {
+            libvlc_event_attach(
+                event_manager,
+                event_type as libvlc_event_type_t,
+                Some(record_track_event),
+                opaque,
+            )
+        };
+        assert_eq!(
+            attached, 0,
+            "the track event {event_type} could not be attached"
+        );
+    }
+
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    // The sample's video track is created with the input, and libvlc selects it on
+    // its own -- which is what makes the selection event below arrive without
+    // anything asking for it.
+    let added = probe.wait_for(
+        "track_added for the video track",
+        Duration::from_secs(5),
+        |event| {
+            event.event_type == libvlc_event_e_libvlc_MediaPlayerESAdded as libvlc_event_type_t
+                && event.track_type == libvlc_track_type_t_libvlc_track_video as i32
+        },
+    );
+    assert!(
+        !added.id.is_empty(),
+        "the added track came with no id, which is the one thing a handler needs: {added:?}"
+    );
+    let selected = probe.wait_for(
+        "track_selected for the video track",
+        Duration::from_secs(5),
+        |event| {
+            event.event_type == libvlc_event_e_libvlc_MediaPlayerESSelected as libvlc_event_type_t
+                && event.id == added.id
+        },
+    );
+    assert!(
+        selected.unselected_id.is_empty(),
+        "the first selection reported an unselected track as well: {selected:?}"
+    );
+    println!("the track events so far: {:?}", probe.snapshot());
+
+    // A subtitle attached while playing is another track, and selecting it by id is
+    // a selection event naming that id.
+    let subtitle = subtitle_mrl();
+    assert_eq!(
+        sample.add_slave_to_player(&subtitle, false),
+        0,
+        "the player refused a subtitle while playing"
+    );
+    let text = probe.wait_for(
+        "track_added for the subtitle",
+        Duration::from_secs(5),
+        |event| {
+            event.event_type == libvlc_event_e_libvlc_MediaPlayerESAdded as libvlc_event_type_t
+                && event.track_type == libvlc_track_type_t_libvlc_track_text as i32
+        },
+    );
+    let id = CString::new(text.id.clone()).expect("the id contains a NUL byte");
+    sample.select_tracks_by_ids(libvlc_track_type_t_libvlc_track_text, &id);
+    probe.wait_for(
+        "track_selected for the subtitle",
+        Duration::from_secs(5),
+        |event| {
+            event.event_type == libvlc_event_e_libvlc_MediaPlayerESSelected as libvlc_event_type_t
+                && event.id == text.id
+        },
+    );
+
+    // Unselecting it is the other direction of the same event, and the only thing
+    // that says which direction it is: the type is the same either way.
+    unsafe {
+        libvlc_media_player_unselect_track_type(
+            sample.player,
+            libvlc_track_type_t_libvlc_track_text,
+        )
+    };
+    let unselected = probe.wait_for(
+        "track_unselected for the subtitle",
+        Duration::from_secs(5),
+        |event| {
+            event.event_type == libvlc_event_e_libvlc_MediaPlayerESSelected as libvlc_event_type_t
+                && event.unselected_id == text.id
+        },
+    );
+    assert!(
+        unselected.id.is_empty(),
+        "an unselect reported a selected track as well: {unselected:?}"
+    );
+
+    // Nothing was deleted or updated in this test, and libvlc raises those events
+    // only when they happen.
+    let deleted = probe.snapshot().iter().any(|event| {
+        event.event_type == libvlc_event_e_libvlc_MediaPlayerESDeleted as libvlc_event_type_t
+    });
+    assert!(!deleted, "a track was reported as deleted, and none was");
+}
+
+/// A type's selection is the set that was asked for, capped where libvlc caps it.
+///
+/// Text tracks are the interesting case because libvlc allows two of them: it is the
+/// only type where a selection of more than one is both allowed and reachable
+/// through the engine's own UI. Three subtitles are attached so that the cap can be
+/// observed -- asking for all three is answered with two, silently -- and the tests
+/// then walk the selection down to one and to none, which is what
+/// `select_tracks` and an empty array respectively mean.
+#[test]
+fn selecting_text_tracks_replaces_the_selection_and_the_cap_is_two() {
+    let sample = Sample::new();
+    let first = subtitle_mrl();
+    let second = subtitle_mrl_from(SECOND_SUBTITLE_FILE, SECOND_SUBTITLE);
+    let third = subtitle_mrl_from(THIRD_SUBTITLE_FILE, THIRD_SUBTITLE);
+    for (what, subtitle) in [("first", &first), ("second", &second), ("third", &third)] {
+        assert_eq!(
+            sample.add_slave_to_media(subtitle, 4),
+            0,
+            "libvlc refused the {what} subtitle"
+        );
+    }
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    let tracks = sample.wait_for_tracks(
+        libvlc_track_type_t_libvlc_track_text,
+        3,
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        tracks.len(),
+        3,
+        "three subtitles were attached and {} became tracks",
+        tracks.len()
+    );
+    let ids: Vec<String> = tracks.iter().map(|track| track.id.clone()).collect();
+    println!("the three attached subtitles are {ids:?}");
+
+    // Asking for all three: libvlc's cap is two, and the extra one is dropped
+    // without a word -- the call returns nothing and no event names it.
+    sample.select_tracks(libvlc_track_type_t_libvlc_track_text, &[0, 1, 2]);
+    let selected = sample.wait_for_selection(
+        libvlc_track_type_t_libvlc_track_text,
+        2,
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        selected.len(),
+        2,
+        "three text tracks were asked for; libvlc's cap is two and it selected {}",
+        selected.len()
+    );
+    let selected_ids: Vec<&String> = selected.iter().map(|track| &track.id).collect();
+    for id in &selected_ids {
+        assert!(
+            ids.contains(id),
+            "the selection reported {id}, which is not one of the attached subtitles"
+        );
+    }
+
+    // One of them alone: the set is replaced, not added to.
+    sample.select_tracks(libvlc_track_type_t_libvlc_track_text, &[2]);
+    let selected = sample.wait_for_selection(
+        libvlc_track_type_t_libvlc_track_text,
+        1,
+        Duration::from_secs(5),
+    );
+    assert_eq!(selected.len(), 1, "selecting one track left a set behind");
+    assert_eq!(
+        selected[0].id, ids[2],
+        "the selection is not the track that was asked for"
+    );
+
+    // `get_selected_track` answers the same thing for a single selection.
+    let one = sample
+        .selected_track(libvlc_track_type_t_libvlc_track_text)
+        .expect("a track is selected and get_selected_track answered with nothing");
+    assert_eq!(one.id, ids[2], "get_selected_track named another track");
+
+    // An empty array clears the type's selection; so does unselect_track_type,
+    // which is the same thing by another name.
+    sample.select_tracks(libvlc_track_type_t_libvlc_track_text, &[]);
+    let selected = sample.wait_for_selection(
+        libvlc_track_type_t_libvlc_track_text,
+        0,
+        Duration::from_secs(5),
+    );
+    assert!(
+        selected.is_empty(),
+        "an empty selection left {} track(s) selected",
+        selected.len()
+    );
+    assert!(
+        sample
+            .selected_track(libvlc_track_type_t_libvlc_track_text)
+            .is_none(),
+        "get_selected_track still found a selected text track"
+    );
+}
+
+/// An id selects its track, is remembered across a restart, and matches nothing
+/// once it does not.
+///
+/// This is what `VLCTrack.get_id`'s promise rests on, and the reason the header can
+/// call an id stable: libvlc keeps the ids a caller selects by on the player, for
+/// the media it is playing, and applies them again when the input is created. An id
+/// that matches nothing is not an error to libvlc -- it clears the type's selection
+/// -- so a saved preference that rots quietly unselects rather than failing.
+#[test]
+fn an_id_selects_a_track_and_the_choice_survives_a_restart() {
+    let sample = Sample::new();
+    let subtitle = subtitle_mrl();
+    assert_eq!(
+        sample.add_slave_to_media(&subtitle, 4),
+        0,
+        "libvlc refused the subtitle"
+    );
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    let tracks = sample.wait_for_tracks(
+        libvlc_track_type_t_libvlc_track_text,
+        1,
+        Duration::from_secs(5),
+    );
+    assert_eq!(tracks.len(), 1, "the subtitle did not become a text track");
+    let id = CString::new(tracks[0].id.clone()).expect("the id contains a NUL byte");
+
+    sample.select_tracks_by_ids(libvlc_track_type_t_libvlc_track_text, &id);
+    let selected = sample.wait_for_selection(
+        libvlc_track_type_t_libvlc_track_text,
+        1,
+        Duration::from_secs(5),
+    );
+    assert_eq!(selected.len(), 1, "the id selected nothing");
+    assert_eq!(
+        selected[0].id, tracks[0].id,
+        "the id selected another track"
+    );
+
+    // The id is what finds the track again, which is the other half of the same
+    // promise.
+    let found = sample
+        .track_from_id(&id)
+        .expect("get_track_from_id did not find the track the id names");
+    assert_eq!(
+        found.id, tracks[0].id,
+        "get_track_from_id answered another id"
+    );
+
+    // An id that matches nothing clears the selection: libvlc's rule, and the
+    // reason a stale preference fails quietly.
+    sample.select_tracks_by_ids(libvlc_track_type_t_libvlc_track_text, c"no/such/track");
+    let selected = sample.wait_for_selection(
+        libvlc_track_type_t_libvlc_track_text,
+        0,
+        Duration::from_secs(5),
+    );
+    assert!(
+        selected.is_empty(),
+        "an id that matches nothing left {} selected, and libvlc's rule is that it clears the type",
+        selected.len()
+    );
+
+    // Select by id again, then stop and start the same media: the choice is stored
+    // on the player, so the new input comes up with it already applied.
+    sample.select_tracks_by_ids(libvlc_track_type_t_libvlc_track_text, &id);
+    sample.wait_for_selection(
+        libvlc_track_type_t_libvlc_track_text,
+        1,
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        unsafe { libvlc_media_player_stop_async(sample.player) },
+        0,
+        "the stop was refused"
+    );
+    assert!(
+        sample.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, PLAYBACK_TIMEOUT),
+        "playback never stopped within {PLAYBACK_TIMEOUT:?}"
+    );
+    play_until_playing(&sample);
+    let selected = sample.wait_for_selection(
+        libvlc_track_type_t_libvlc_track_text,
+        1,
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        selected.len(),
+        1,
+        "the id stored on the player was not applied to the new input"
+    );
+    assert_eq!(
+        selected[0].id, tracks[0].id,
+        "the new input selected another track than the stored id names"
+    );
+}
+
+/// Without an input, the selection calls do nothing and the getters answer nothing.
+///
+/// The whole track API above the media descriptor is about the input, and there is
+/// none until a media is assigned -- not when `play` is called. libvlc's selection
+/// calls return `void`, so this silence is the only thing a caller can observe; the
+/// assertions here are that it is silence rather than a crash or a stale answer.
+#[test]
+fn selecting_without_an_input_changes_nothing() {
+    let sample = Sample::new();
+
+    // `select_tracks` with no input: libvlc's own documentation allows a null array
+    // when the count is zero, and this is the empty selection it means.
+    unsafe {
+        libvlc_media_player_select_tracks(
+            sample.player,
+            libvlc_track_type_t_libvlc_track_text,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    sample.select_tracks_by_ids(libvlc_track_type_t_libvlc_track_text, c"spu/0");
+    unsafe {
+        libvlc_media_player_unselect_track_type(
+            sample.player,
+            libvlc_track_type_t_libvlc_track_text,
+        )
+    };
+
+    assert!(
+        sample
+            .selected_track(libvlc_track_type_t_libvlc_track_video)
+            .is_none(),
+        "a player with no input reported a selected video track"
+    );
+    assert!(
+        sample.track_from_id(c"video/0").is_none(),
+        "a player with no input found a track by id"
+    );
+    assert!(
+        sample
+            .selected_tracks(libvlc_track_type_t_libvlc_track_text)
+            .is_empty(),
+        "a player with no input reported selected text tracks"
+    );
+
+    // And the calls above were not remembered as a selection: the input this player
+    // creates has its own.
+    sample.attach_media();
+    play_until_playing(&sample);
+    assert!(
+        !sample
+            .player_tracks(libvlc_track_type_t_libvlc_track_text, false)
+            .is_empty()
+            || sample
+                .player_tracks(libvlc_track_type_t_libvlc_track_video, false)
+                .len()
+                == 1,
+        "the input did not come up with the sample's tracks"
     );
 }

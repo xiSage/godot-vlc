@@ -24,6 +24,10 @@ use godot::prelude::*;
 #[class(rename=VLCTrackList, no_init)]
 pub struct VlcTrackList {
     ptr: *mut libvlc_media_tracklist_t,
+    /// Which half of libvlc's track API this list came from: a player's tracklist
+    /// or a media descriptor's. It travels with every track taken out of it,
+    /// because only a player's track can be selected; see [VlcTrack::from_player].
+    from_player: bool,
 }
 
 impl Drop for VlcTrackList {
@@ -36,11 +40,11 @@ impl Drop for VlcTrackList {
 
 #[godot_api]
 impl VlcTrackList {
-    pub fn from_ptr(ptr: *mut libvlc_media_tracklist_t) -> Option<Gd<Self>> {
+    pub fn from_ptr(ptr: *mut libvlc_media_tracklist_t, from_player: bool) -> Option<Gd<Self>> {
         if ptr.is_null() {
             None
         } else {
-            Some(Gd::from_object(VlcTrackList { ptr }))
+            Some(Gd::from_object(VlcTrackList { ptr, from_player }))
         }
     }
 
@@ -55,7 +59,7 @@ impl VlcTrackList {
         }
         let ptr = unsafe { libvlc_media_tracklist_at(self.ptr, index as usize) };
         let ptr = unsafe { libvlc_media_track_hold(ptr) };
-        Some(VlcTrack::from_ptr(ptr))
+        Some(VlcTrack::from_ptr(ptr, self.from_player))
     }
 
     /// Get the number of tracks in a tracklist.
@@ -68,12 +72,19 @@ impl VlcTrackList {
     }
 
     /// Get all tracks in the tracklist.
+    ///
+    /// # Returns
+    /// an array of [VLCTrack], empty when the list is. Every element is a valid
+    /// track -- this list has no holes -- so the array needs no null check and can
+    /// be handed straight to [method VLCMediaPlayer.select_tracks].
     #[func]
-    fn get_tracks(&self) -> Array<Option<Gd<VlcTrack>>> {
+    fn get_tracks(&self) -> Array<Gd<VlcTrack>> {
         let count = self.tracklist_count();
         let mut tracks = Array::new();
         for i in 0..count {
-            tracks.push(self.tracklist_at(i).as_ref());
+            if let Some(track) = self.tracklist_at(i) {
+                tracks.push(&track);
+            }
         }
         tracks
     }

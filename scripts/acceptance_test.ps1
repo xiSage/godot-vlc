@@ -38,6 +38,16 @@ which of the two depends on the platform, so the test accepts both and rejects
 anything else -- while the demo's media reports 854x480, `1280:1281` and stereo audio
 everywhere, and that is asserted outright.
 
+Track selection is here too, and it is the half of it that needs the runtime rather
+than an engine: that a selection replaces the type's whole set, that libvlc's cap of
+two text tracks drops the third one in silence, that an id selects its track and is
+applied again by the next input, that an id matching nothing clears the selection,
+that the four track events carry the payloads the binding's five signals are built
+from, and that none of it does anything without an input. The engine-side half --
+whether an `Array[VLCTrack]` crosses into Rust, whether the signals arrive in a
+script, and whether a track from a media descriptor is refused instead of crashing --
+is `demo/tests/track_selection.gd`, which is run by hand like the other demo tests.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec
