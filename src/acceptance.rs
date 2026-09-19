@@ -538,12 +538,22 @@ impl Sample {
 
     /// The same, for a media that is not the sample.
     fn from_path(path: PathBuf) -> Self {
+        Self::from_path_with(path, &[])
+    }
+
+    /// The same, with options added to the instance.
+    ///
+    /// One test needs an instance option rather than a media player call: the
+    /// `audio-desync` option seeds the same value the audio delay API writes, in a
+    /// different unit, and that is the only way to see both halves of it.
+    fn from_path_with(path: PathBuf, extra: &[*const c_char]) -> Self {
         let path = CString::new(path.to_str().expect("the sample path is not valid UTF-8"))
             .expect("the sample path contains a NUL byte");
 
         // No audio and no window: neither is what this is about, and a build
         // machine has no sound device.
-        let options = headless_options();
+        let mut options: Vec<*const c_char> = headless_options().to_vec();
+        options.extend_from_slice(extra);
         let instance = unsafe { libvlc_new(options.len() as i32, options.as_ptr()) };
         assert!(
             !instance.is_null(),
@@ -582,6 +592,18 @@ impl Sample {
 
     fn time(&self) -> i64 {
         unsafe { libvlc_media_player_get_time(self.player) }
+    }
+
+    fn set_audio_delay(&self, delay_us: i64) -> i32 {
+        unsafe { libvlc_audio_set_delay(self.player, delay_us) }
+    }
+
+    fn audio_delay(&self) -> i64 {
+        unsafe { libvlc_audio_get_delay(self.player) }
+    }
+
+    fn jump_time(&self, delta_ms: i64) -> i32 {
+        unsafe { libvlc_media_player_jump_time(self.player, delta_ms) }
     }
 
     /// What libvlc reports about the loop, as
@@ -1509,6 +1531,186 @@ fn the_subtitle_delay_dies_with_the_input_and_the_text_scale_does_not() {
         (sample.spu_text_scale() - 2.0).abs() < 0.001,
         "the text scale went away with the input, although it belongs to the player"
     );
+}
+
+/// The audio delay belongs to the input, exactly as the subtitle one does.
+///
+/// It is also the one `libvlc_audio_*` setting that needs no audio output: the
+/// value is kept on the input and handed to the decoders, so this harness -- whose
+/// instance is built with `--no-audio` -- can still set it and read it back. What it
+/// cannot show is an audible effect, and nothing here claims one.
+#[test]
+fn the_audio_delay_dies_with_the_input_and_needs_no_audio_output() {
+    let sample = Sample::new();
+
+    assert_eq!(
+        sample.set_audio_delay(250_000),
+        0,
+        "the delay was refused for a player with no input"
+    );
+    assert_eq!(
+        sample.audio_delay(),
+        0,
+        "a delay set before there was an input was kept somewhere"
+    );
+
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    assert_eq!(
+        sample.set_audio_delay(-250_000),
+        0,
+        "the delay was refused while playing"
+    );
+    assert_eq!(
+        sample.audio_delay(),
+        -250_000,
+        "the delay did not read back while playing, so a player with no audio output \
+         treats it differently from one with"
+    );
+
+    assert_eq!(
+        unsafe { libvlc_media_player_stop_async(sample.player) },
+        0,
+        "the stop was refused"
+    );
+    assert!(
+        sample.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, PLAYBACK_TIMEOUT),
+        "playback never stopped within {PLAYBACK_TIMEOUT:?}"
+    );
+    assert_eq!(
+        sample.audio_delay(),
+        0,
+        "the delay outlived the input it was set on"
+    );
+}
+
+/// The instance option `audio-desync` seeds that same value, in milliseconds.
+///
+/// This is the unit trap in one assertion: the option is documented as milliseconds,
+/// this API is microseconds, and both write the same field of the input, so
+/// `--audio-desync=250` has to come back as `250000`.
+#[test]
+fn the_audio_desync_option_seeds_the_delay_in_milliseconds() {
+    let sample = Sample::from_path_with(sample_path(), &[c"--audio-desync=250".as_ptr()]);
+
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    assert_eq!(
+        sample.audio_delay(),
+        250_000,
+        "the option did not seed the input, or it and this API disagree about the unit"
+    );
+
+    // And a value set through the API replaces it rather than adding to it.
+    assert_eq!(sample.set_audio_delay(100_000), 0, "the delay was refused");
+    assert_eq!(
+        sample.audio_delay(),
+        100_000,
+        "setting a delay added to what the option seeded instead of replacing it"
+    );
+}
+
+/// `jump_time` moves by a delta from wherever playback is, and reports nothing.
+///
+/// Three of its four edges are pinned here: a jump that lands past the start is
+/// clamped to the input's own first tick and is not an error, a jump with no input
+/// does nothing at all, and the return value is `0` on every path even though the
+/// header promises `-1 on error`. The fourth, a jump past the end, is the demuxer's
+/// decision and nothing reports what it decided -- what is pinned is the measurement.
+#[test]
+fn jumping_moves_by_a_delta_and_stops_at_the_start() {
+    // No input at all: accepted, dropped, and reported as success.
+    let idle = Sample::new();
+    assert_eq!(
+        idle.jump_time(10_000),
+        0,
+        "a jump with no input was refused; the header says only -1 is an error"
+    );
+    assert_eq!(
+        idle.time(),
+        0,
+        "a jump with no input moved something after all"
+    );
+
+    let sample = Sample::from_path(path_of(SECOND_SAMPLE));
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    // Forward, from wherever playback happens to be. The second sample is minutes
+    // long, so three seconds forward is not near an edge.
+    let before = sample.time();
+    assert_eq!(sample.jump_time(3_000), 0, "the forward jump was refused");
+    assert!(
+        wait_for_time(&sample, before + 3_000, PLAYBACK_TIMEOUT),
+        "the clock never reached {} ms after jumping forward from {before} ms; it is at {} ms",
+        before + 3_000,
+        sample.time()
+    );
+
+    // Backwards, past the start: clamped, not refused.
+    assert_eq!(
+        sample.jump_time(-600_000),
+        0,
+        "the backward jump was refused"
+    );
+    assert!(
+        wait_for_time_at_most(&sample, 1_000, PLAYBACK_TIMEOUT),
+        "a jump past the start did not land at the start; the clock is at {} ms",
+        sample.time()
+    );
+    println!(
+        "jumping: 600 s back from {} landed at {} ms",
+        before + 3_000,
+        sample.time()
+    );
+
+    // Past the end: libvlc does not clamp this. It hands the value to the demuxer,
+    // which goes to the end of the stream, and playback then runs out of input --
+    // measured on this runtime, the same answer four runs out of four: the player
+    // ends up Stopped with its clock back at 0. The return value says none of that.
+    let length = unsafe { libvlc_media_player_get_length(sample.player) };
+    assert_eq!(
+        sample.jump_time(length + 60_000),
+        0,
+        "a jump past the end was refused, although libvlc returns 0 on every path"
+    );
+    assert!(
+        sample.wait_for_state(libvlc_state_t_libvlc_Stopped as i32, PLAYBACK_TIMEOUT),
+        "a jump past the end did not end playback; it is in state {} with its clock at {} ms",
+        sample.state(),
+        sample.time()
+    );
+    assert_eq!(
+        sample.time(),
+        0,
+        "the jump past the end ended playback but left the clock somewhere else"
+    );
+}
+
+/// Waits until the player's clock reads at least `ms`.
+fn wait_for_time(sample: &Sample, ms: i64, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if sample.time() >= ms {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// Waits until the player's clock reads at most `ms`.
+fn wait_for_time_at_most(sample: &Sample, ms: i64, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if sample.time() <= ms {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
 }
 
 /// A track's geometry is the file's numbers, or all six fields are zero.
