@@ -207,7 +207,22 @@ func _track_label(track: VLCTrack) -> String:
 
 func _on_playing() -> void:
 	%Media.text = _media_identity()
+	%Playlist.text = _playlist_line()
 	_refresh_tracks()
+
+
+# What is inside the media, if it holds anything: a playlist's entries, a disc's titles,
+# a directory's files. They show up while it plays -- that is what parses it -- and the
+# list is read-only, because it belongs to the media.
+func _playlist_line() -> String:
+	if media == null:
+		return \"playlist:\"
+	var subitems := media.get_subitems()
+	if subitems == null:
+		return \"playlist: (none)\"
+	return \"playlist: %d item(s)%s\" % [
+		subitems.count(), \" (read-only)\" if subitems.is_read_only() else \"\"
+	]
 
 
 # What is playing: the engine's name for it, libvlc's type, and libvlc's MRL.
@@ -511,6 +526,12 @@ text = "state:"
 unique_name_in_owner = true
 layout_mode = 2
 text = "media:"
+autowrap_mode = 3
+
+[node name="Playlist" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1421064742]
+unique_name_in_owner = true
+layout_mode = 2
+text = "playlist:"
 autowrap_mode = 3
 
 [node name="VLCVersion" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1421064732]
