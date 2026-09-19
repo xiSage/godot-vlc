@@ -2952,6 +2952,425 @@ fn a_playlist_is_a_file_until_it_is_parsed_and_a_playlist_after() {
     unsafe { libvlc_media_release(media) };
 }
 
+/// A media's subitems are its own list: read-only, live, and the same one every time.
+///
+/// This is what §3.7 deferred to here. The list is not a snapshot: the parsing thread
+/// appends to it, which is why reading it means holding its lock -- and that lock is
+/// not recursive, so a caller that is inside one of its event callbacks must not take
+/// it again.
+#[test]
+fn a_parsed_playlist_holds_its_entries_as_read_only_subitems() {
+    let uri = playlist_uri();
+    let location = CString::new(uri.clone()).expect("the playlist URI contains a NUL byte");
+    let media = unsafe { libvlc_media_new_location(location.as_ptr()) };
+    assert!(
+        !media.is_null(),
+        "libvlc_media_new_location refused the playlist"
+    );
+
+    let sample = Sample::new();
+    let typed = play_until_typed(
+        sample.instance,
+        media,
+        libvlc_media_type_t_libvlc_media_type_playlist,
+    );
+    assert_eq!(
+        typed, libvlc_media_type_t_libvlc_media_type_playlist,
+        "the playlist was not parsed, so it holds nothing to look at"
+    );
+
+    let subitems = unsafe { libvlc_media_subitems(media) };
+    assert!(
+        !subitems.is_null(),
+        "libvlc_media_subitems answered NULL for a media this test built; its header allows \
+         that, and its implementation cannot do it"
+    );
+    unsafe { libvlc_media_list_lock(subitems) };
+    let count = unsafe { libvlc_media_list_count(subitems) };
+    let first = unsafe { libvlc_media_list_item_at_index(subitems, 0) };
+    let read_only = unsafe { libvlc_media_list_is_readonly(subitems) };
+    unsafe { libvlc_media_list_unlock(subitems) };
+
+    assert_eq!(count, 1, "the fixture names exactly one entry");
+    assert!(
+        read_only,
+        "a media's subitems answered that they are writable; libvlc marks them read-only"
+    );
+    let first_mrl = mrl_of(first);
+    println!("the playlist holds {count} subitem(s), the first being {first_mrl}");
+    assert!(
+        first_mrl.contains("h264_64x64_1s"),
+        "the entry is {first_mrl}, not the sample the fixture names"
+    );
+
+    // Writing to it is refused, and that is the only answer a caller gets: libvlc
+    // writes a line to its log and returns -1.
+    let extra = unsafe {
+        let path = CString::new(
+            sample_path()
+                .to_str()
+                .expect("the sample path is not valid UTF-8"),
+        )
+        .expect("the sample path contains a NUL byte");
+        libvlc_media_new_path(path.as_ptr())
+    };
+    assert_eq!(
+        unsafe { libvlc_media_list_add_media(subitems, extra) },
+        -1,
+        "a read-only list accepted a media"
+    );
+    unsafe { libvlc_media_release(extra) };
+
+    // And every call answers the same list: it is the media's own, retained for the
+    // caller rather than copied.
+    let again = unsafe { libvlc_media_subitems(media) };
+    assert_eq!(
+        again, subitems,
+        "libvlc_media_subitems answered a different list the second time"
+    );
+    unsafe {
+        libvlc_media_list_release(again);
+        libvlc_media_list_release(subitems);
+        libvlc_media_release(first);
+        libvlc_media_release(media);
+    }
+}
+
+/// A list a script builds takes media, gives them back, and lets go of them.
+#[test]
+fn a_media_list_takes_and_removes_media() {
+    let list = unsafe { libvlc_media_list_new() };
+    assert!(!list.is_null(), "libvlc_media_list_new returned NULL");
+    assert!(
+        !unsafe { libvlc_media_list_is_readonly(list) },
+        "a list created by hand answered that it is read-only"
+    );
+
+    let first = Sample::new();
+    let second = Sample::from_path(path_of(SECOND_SAMPLE));
+
+    unsafe {
+        assert_eq!(
+            libvlc_media_list_add_media(list, first.media),
+            0,
+            "the first media was refused"
+        );
+        assert_eq!(
+            libvlc_media_list_add_media(list, second.media),
+            0,
+            "the second media was refused"
+        );
+    }
+    {
+        // Reading is what needs the lock, and this is where a caller has to hold it.
+        unsafe { libvlc_media_list_lock(list) };
+        assert_eq!(
+            unsafe { libvlc_media_list_count(list) },
+            2,
+            "the list lost a media"
+        );
+        assert_eq!(
+            unsafe { libvlc_media_list_index_of_item(list, second.media) },
+            1,
+            "the second media is not where it was added"
+        );
+        assert_eq!(
+            unsafe { libvlc_media_list_index_of_item(list, first.media) },
+            0,
+            "the first media is not where it was added"
+        );
+        unsafe { libvlc_media_list_unlock(list) };
+    }
+
+    // An item taken out is a reference of the caller's, and it is the same media.
+    let item = unsafe { libvlc_media_list_item_at_index(list, 1) };
+    assert!(!item.is_null(), "the second index answered no media");
+    assert_eq!(
+        mrl_of(item),
+        mrl_of(second.media),
+        "the wrong media came back"
+    );
+    unsafe { libvlc_media_release(item) };
+
+    assert!(
+        unsafe { libvlc_media_list_item_at_index(list, 2) }.is_null(),
+        "an index past the end answered a media"
+    );
+
+    // Inserting puts a media where it is asked to, and removing takes it away.
+    unsafe {
+        assert_eq!(
+            libvlc_media_list_insert_media(list, second.media, 0),
+            0,
+            "the insert was refused"
+        );
+    }
+    {
+        unsafe { libvlc_media_list_lock(list) };
+        assert_eq!(
+            unsafe { libvlc_media_list_count(list) },
+            3,
+            "the insert did not take"
+        );
+        assert_eq!(
+            unsafe { libvlc_media_list_index_of_item(list, second.media) },
+            0,
+            "the inserted media is not at the front"
+        );
+        unsafe { libvlc_media_list_unlock(list) };
+    }
+    unsafe {
+        assert_eq!(
+            libvlc_media_list_remove_index(list, 0),
+            0,
+            "the removal was refused"
+        );
+        assert_eq!(
+            libvlc_media_list_remove_index(list, 99),
+            -1,
+            "removing an index past the end was accepted"
+        );
+    }
+    {
+        unsafe { libvlc_media_list_lock(list) };
+        assert_eq!(
+            unsafe { libvlc_media_list_count(list) },
+            2,
+            "the removal did not take"
+        );
+        unsafe { libvlc_media_list_unlock(list) };
+    }
+
+    unsafe { libvlc_media_list_release(list) };
+}
+
+/// What a list event reported, for the probe below.
+#[derive(Debug, PartialEq)]
+enum RecordedListEvent {
+    WillAdd(*mut libvlc_media_t, i32),
+    Added(*mut libvlc_media_t, i32),
+    WillDelete(*mut libvlc_media_t, i32),
+    Deleted(*mut libvlc_media_t, i32),
+    EndReached,
+}
+
+/// Collects what a list's events reported.
+///
+/// Nothing else may happen in these callbacks: libvlc sends them from inside the
+/// modification that caused them, with the list's own lock held, and that lock is not
+/// recursive.
+#[derive(Default)]
+struct ListEventProbe {
+    events: Mutex<Vec<RecordedListEvent>>,
+}
+
+impl ListEventProbe {
+    fn take(&self) -> Vec<RecordedListEvent> {
+        std::mem::take(&mut *self.events.lock().expect("the probe lock was poisoned"))
+    }
+
+    /// Whether the parse's end has been reported yet.
+    fn saw_end(&self) -> bool {
+        self.events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .contains(&RecordedListEvent::EndReached)
+    }
+}
+
+unsafe extern "C" fn probe_will_add(event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListEventProbe);
+        let payload = (*event).u.media_list_will_add_item;
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListEvent::WillAdd(payload.item, payload.index));
+    }
+}
+
+unsafe extern "C" fn probe_added(event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListEventProbe);
+        let payload = (*event).u.media_list_item_added;
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListEvent::Added(payload.item, payload.index));
+    }
+}
+
+unsafe extern "C" fn probe_will_delete(event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListEventProbe);
+        let payload = (*event).u.media_list_will_delete_item;
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListEvent::WillDelete(payload.item, payload.index));
+    }
+}
+
+unsafe extern "C" fn probe_deleted(event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListEventProbe);
+        let payload = (*event).u.media_list_item_deleted;
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListEvent::Deleted(payload.item, payload.index));
+    }
+}
+
+unsafe extern "C" fn probe_end_reached(_event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListEventProbe);
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListEvent::EndReached);
+    }
+}
+
+/// Attaches the probe to a list's five events.
+fn watch_list_events(list: *mut libvlc_media_list_t, probe: &mut ListEventProbe) {
+    unsafe {
+        let manager = libvlc_media_list_event_manager(list);
+        let data = probe as *mut ListEventProbe as *mut c_void;
+        for (event_type, callback) in [
+            (
+                libvlc_event_e_libvlc_MediaListWillAddItem,
+                probe_will_add as unsafe extern "C" fn(_, _),
+            ),
+            (libvlc_event_e_libvlc_MediaListItemAdded, probe_added),
+            (
+                libvlc_event_e_libvlc_MediaListWillDeleteItem,
+                probe_will_delete,
+            ),
+            (libvlc_event_e_libvlc_MediaListItemDeleted, probe_deleted),
+            (libvlc_event_e_libvlc_MediaListEndReached, probe_end_reached),
+        ] {
+            libvlc_event_attach(
+                manager,
+                event_type as libvlc_event_type_t,
+                Some(callback),
+                data,
+            );
+        }
+    }
+}
+
+/// The list events carry the media and the index, and a parse ends with its own event.
+///
+/// The first half is a list this test writes to: libvlc reports each change twice, once
+/// before it happens and once after, which is why the binding exposes four item
+/// signals rather than two. The second half is a media's subitems list during a parse
+/// -- the live case -- and it ends with `MediaListEndReached`, whose payload libvlc
+/// never writes and which the binding therefore reports with no arguments at all.
+#[test]
+fn the_list_events_report_what_moved_and_where() {
+    let list = unsafe { libvlc_media_list_new() };
+    let sample = Sample::new();
+    let mut probe = ListEventProbe::default();
+    watch_list_events(list, &mut probe);
+
+    unsafe {
+        assert_eq!(
+            libvlc_media_list_add_media(list, sample.media),
+            0,
+            "the media was refused"
+        );
+    }
+    let added = probe.take();
+    println!("adding a media reported {added:?}");
+    assert_eq!(
+        added,
+        vec![
+            RecordedListEvent::WillAdd(sample.media, 0),
+            RecordedListEvent::Added(sample.media, 0),
+        ],
+        "adding a media did not report the pair of events with the media and its index"
+    );
+
+    unsafe {
+        assert_eq!(
+            libvlc_media_list_remove_index(list, 0),
+            0,
+            "the removal was refused"
+        );
+    }
+    let removed = probe.take();
+    println!("removing a media reported {removed:?}");
+    assert_eq!(
+        removed,
+        vec![
+            RecordedListEvent::WillDelete(sample.media, 0),
+            RecordedListEvent::Deleted(sample.media, 0),
+        ],
+        "removing a media did not report the pair of events with the media and its index"
+    );
+    unsafe { libvlc_media_list_release(list) };
+
+    // The live case: a playlist's subitems while a parse fills them.
+    //
+    // A **parse** is what reports the end, not playback. `libvlc_MediaListEndReached`
+    // is sent from the one place libvlc reports a media's parsed status changing
+    // (`send_parsed_changed`, `lib/media.c:296-300`), and playing a media goes through
+    // the input instead: the entries still arrive -- measured above, as `WillAdd` and
+    // `Added` -- but the end never does. That is why this asks for the parse directly.
+    let uri = playlist_uri();
+    let location = CString::new(uri).expect("the playlist URI contains a NUL byte");
+    let playlist = unsafe { libvlc_media_new_location(location.as_ptr()) };
+    let subitems = unsafe { libvlc_media_subitems(playlist) };
+    let mut parse_probe = ListEventProbe::default();
+    watch_list_events(subitems, &mut parse_probe);
+
+    assert_eq!(
+        unsafe {
+            libvlc_media_parse_request(
+                sample.instance,
+                playlist,
+                libvlc_media_parse_flag_t_libvlc_media_parse_local
+                    | libvlc_media_parse_flag_t_libvlc_media_parse_forced,
+                0,
+            )
+        },
+        0,
+        "the parse was refused"
+    );
+    let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+    while Instant::now() < deadline && !parse_probe.saw_end() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let filled = parse_probe.take();
+    println!("parsing the playlist reported {filled:?}");
+    assert!(
+        filled.contains(&RecordedListEvent::EndReached),
+        "the end of the parse was never reported: {filled:?}"
+    );
+    let first_added = filled
+        .iter()
+        .position(|event| matches!(event, RecordedListEvent::Added(_, _)));
+    let end = filled
+        .iter()
+        .position(|event| matches!(event, RecordedListEvent::EndReached));
+    assert!(
+        first_added.is_some() && first_added < end,
+        "the entries and the end of the parse are out of order: {filled:?}"
+    );
+
+    unsafe {
+        libvlc_media_list_release(subitems);
+        libvlc_media_release(playlist);
+    }
+}
+
 /// A duplicate is a media of its own: what is added to one is not on the other.
 ///
 /// `libvlc_media_duplicate` copies the MRL, the metadata, the options, the slaves
