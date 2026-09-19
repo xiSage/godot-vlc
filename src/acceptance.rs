@@ -45,6 +45,15 @@
 //! cannot open, and the error state is not one a caller can observe -- so a
 //! runtime that stopped raising it would take the extension's `error` signal
 //! down with it, and quietly.
+//!
+//! The rest is one test per thing the extension promises on top of libvlc: the A
+//! to B loop (a loop set in milliseconds, one set as positions, and that it does
+//! not outlive the input it was set on), per-media options (read when the input is
+//! created, and not read after that), the subtitle entry points (`slaves_add`
+//! before playback, `add_slave` only with an input, the delay belonging to the
+//! input while the text scale belongs to the player), and the track struct: which
+//! member of its union is read, what each of the two samples reports, and what a
+//! subtitle track declares.
 
 #![cfg(test)]
 // The bindgen-generated enum types differ per target -- `libvlc_state_t` and
@@ -61,6 +70,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::vlc::*;
+use crate::vlc_track::{TrackInfo, read_info};
 
 /// Where the sample is, and what it contains. The decoder's report is checked
 /// against these numbers so that "a frame arrived" cannot be satisfied by some
@@ -68,6 +78,24 @@ use crate::vlc::*;
 const SAMPLE: &str = "test/media/h264_64x64_1s.mp4";
 const SAMPLE_WIDTH: u32 = 64;
 const SAMPLE_HEIGHT: u32 = 64;
+
+/// The second sample, for the track fields the first one cannot show.
+///
+/// It is the demo's media, and nothing else in the repository writes down what is
+/// in it; these numbers come from `ffprobe` over the checked-in file. It is here
+/// because a track's pixel aspect ratio and its audio member need a media that
+/// has a non-square one and an audio track at all.
+const SECOND_SAMPLE: &str = "demo/test.mp4";
+/// 854 by 480, reported from the *visible* size.
+const SECOND_SAMPLE_WIDTH: u32 = 854;
+const SECOND_SAMPLE_HEIGHT: u32 = 480;
+/// Very nearly square and not exactly square, which is the point: a binding that
+/// read a default of 1:1, or that read the wrong union member, still has to fail.
+const SECOND_SAMPLE_SAR_NUM: u32 = 1280;
+const SECOND_SAMPLE_SAR_DEN: u32 = 1281;
+/// AAC stereo at 48 kHz.
+const SECOND_SAMPLE_CHANNELS: u32 = 2;
+const SECOND_SAMPLE_RATE: u32 = 48_000;
 
 /// How long the decoder is given. The sample is one second long; anything
 /// approaching this bound means it is not going to happen.
@@ -163,8 +191,58 @@ unsafe extern "C" fn cleanup_callback(_opaque: *mut c_void) {
     // Nothing to release: the probe is owned by the test, not by the callbacks.
 }
 
+fn path_of(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
 fn sample_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SAMPLE)
+    path_of(SAMPLE)
+}
+
+/// Reads every track in a tracklist, then releases the list.
+///
+/// The reads happen while the list is alive and copy what they find, so no track
+/// has to be held past it. A null list is what libvlc returns when there is no
+/// track of that category, and it reads as empty rather than as an error: no
+/// track and a refused query are the same thing to a caller that asked for a
+/// category.
+fn collect_tracks(list: *mut libvlc_media_tracklist_t) -> Vec<TrackInfo> {
+    if list.is_null() {
+        return Vec::new();
+    }
+    let count = unsafe { libvlc_media_tracklist_count(list) };
+    let mut tracks = Vec::with_capacity(count);
+    for index in 0..count {
+        let track = unsafe { libvlc_media_tracklist_at(list, index) };
+        tracks.push(unsafe { read_info(track) });
+    }
+    unsafe { libvlc_media_tracklist_delete(list) };
+    tracks
+}
+
+/// Polls a tracklist until its video track reports a size, or `timeout` passes.
+///
+/// A track is created by an input from the format the demuxer declared, and
+/// libvlc has no picture size at that point: the size comes later, with the
+/// decoder's format report, and it comes as a *new* track -- libvlc publishes a
+/// new tracklist rather than changing the track it already handed out, so the
+/// first snapshot keeps its zeroes. Anything that wants the size has to ask
+/// again, and this is what asking again looks like.
+fn wait_for_known_size<F>(mut read: F, timeout: Duration) -> Vec<TrackInfo>
+where
+    F: FnMut() -> Vec<TrackInfo>,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        let tracks = read();
+        let known = tracks
+            .iter()
+            .any(|track| track.video.as_ref().is_some_and(|video| video.width != 0));
+        if known || Instant::now() >= deadline {
+            return tracks;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// The libvlc arguments for a test whose video goes to its own callbacks.
@@ -449,7 +527,11 @@ struct Sample {
 
 impl Sample {
     fn new() -> Self {
-        let path = sample_path();
+        Self::from_path(sample_path())
+    }
+
+    /// The same, for a media that is not the sample.
+    fn from_path(path: PathBuf) -> Self {
         let path = CString::new(path.to_str().expect("the sample path is not valid UTF-8"))
             .expect("the sample path contains a NUL byte");
 
@@ -878,6 +960,39 @@ impl Sample {
         false
     }
 
+    /// Every track of one type the media descriptor reports, read the way the
+    /// binding reads them.
+    fn media_tracks(&self, track_type: libvlc_track_type_t) -> Vec<TrackInfo> {
+        unsafe { collect_tracks(libvlc_media_get_tracklist(self.media, track_type)) }
+    }
+
+    /// The same, from the player. `selected` filters to the selected tracks only.
+    fn player_tracks(&self, track_type: libvlc_track_type_t, selected: bool) -> Vec<TrackInfo> {
+        unsafe {
+            collect_tracks(libvlc_media_player_get_tracklist(
+                self.player,
+                track_type,
+                selected,
+            ))
+        }
+    }
+
+    /// Waits until the player reports at least one track of this type.
+    ///
+    /// A track is created by an input, so it is not there the moment `play`
+    /// returns; the first poll that answers is the one a caller would see after
+    /// its first event.
+    fn wait_for_track(&self, track_type: libvlc_track_type_t, timeout: Duration) -> Vec<TrackInfo> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let tracks = self.player_tracks(track_type, false);
+            if !tracks.is_empty() || Instant::now() >= deadline {
+                return tracks;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn set_spu_delay(&self, delay_us: i64) -> i32 {
         unsafe { libvlc_video_set_spu_delay(self.player, delay_us) }
     }
@@ -1135,5 +1250,288 @@ fn the_subtitle_delay_dies_with_the_input_and_the_text_scale_does_not() {
     assert!(
         (sample.spu_text_scale() - 2.0).abs() < 0.001,
         "the text scale went away with the input, although it belongs to the player"
+    );
+}
+
+/// A video track carries the numbers libvlc filled in for the sample, and the
+/// size is not among them.
+///
+/// Nothing read the video member of the union before, so what this pins is that
+/// the member is there, that the binding reads the member its type names, and
+/// that the sample's declared layout is the default one. It also pins the number
+/// the documentation has to warn about: `width`, `height`, the frame rate and
+/// the pixel aspect ratio are all `0` for this file -- not at the moment its
+/// track appears, but for its whole playback, on the player's tracklist and on
+/// the media descriptor's alike. They are the *visible* size, which a demuxer has
+/// to have declared, and not the size of any picture that gets decoded.
+///
+/// `demo/test.mp4` reports `854x480` through the same two paths, so this is a
+/// property of the file rather than of the field, and a caller cannot tell the
+/// two cases apart from the track alone. The size of the pages this extension
+/// hands over comes from the video callbacks; a track is metadata.
+#[test]
+fn a_video_track_reports_the_sample_it_was_built_from() {
+    let sample = Sample::new();
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    let tracks = sample.wait_for_track(
+        libvlc_track_type_t_libvlc_track_video,
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        tracks.len(),
+        1,
+        "the sample has one video track and the player did not report it"
+    );
+    let track = &tracks[0];
+    assert_eq!(
+        track.i_type, libvlc_track_type_t_libvlc_track_video as i32,
+        "the video tracklist reported a track that is not a video track"
+    );
+    let video = track
+        .video
+        .as_ref()
+        .expect("a video track came back without the video member of the union");
+    assert!(
+        track.audio.is_none() && track.subtitle.is_none(),
+        "a video track came back with a member its type does not name"
+    );
+    assert_eq!(
+        (
+            video.width,
+            video.height,
+            video.sar_num,
+            video.sar_den,
+            video.frame_rate_num,
+            video.frame_rate_den,
+        ),
+        (0, 0, 0, 0, 0, 0),
+        "the sample reported geometry; if the runtime now fills these in, the \
+         warning the documentation carries about `0` is about a different one"
+    );
+    assert_eq!(
+        (video.orientation, video.projection, video.multiview),
+        (
+            libvlc_video_orient_t_libvlc_video_orient_top_left as i32,
+            libvlc_video_projection_t_libvlc_video_projection_rectangular as i32,
+            libvlc_video_multiview_t_libvlc_video_multiview_2d as i32,
+        ),
+        "the sample declares no rotation, no projection and no stereoscopy"
+    );
+
+    // Printed rather than asserted: what a demuxer puts in a frame rate and
+    // whether an H.264 level reaches the track are the runtime's business, and
+    // the numbers are worth having in the log either way.
+    println!(
+        "the sample's video track: {}x{}, sar {}/{}, frame rate {}/{}, orientation {}, \
+         projection {}, multiview {}, pose {}/{}/{}/{}, profile {}, level {}, fourcc {:#x}",
+        video.width,
+        video.height,
+        video.sar_num,
+        video.sar_den,
+        video.frame_rate_num,
+        video.frame_rate_den,
+        video.orientation,
+        video.projection,
+        video.multiview,
+        video.pose_yaw,
+        video.pose_pitch,
+        video.pose_roll,
+        video.pose_field_of_view,
+        track.profile,
+        track.level,
+        track.original_fourcc,
+    );
+}
+
+/// The type decides which member of the union is read, and nothing else does.
+///
+/// This is the half of the track API that has to be right for the rest to be
+/// safe: libvlc does not write the members a track's type does not name -- a
+/// tracklist asked for [constant VLCTrack.TYPE_UNKNOWN] on the media descriptor
+/// can carry a union libvlc never wrote at all -- so a reader that tested the
+/// pointer instead of the type would hand back heap memory. Every type is asked
+/// here, including the ones with no member, and each answer is checked against
+/// the type.
+///
+/// It uses the second sample, which is also where the two things the small
+/// sample cannot show come from: a pixel aspect ratio that is not 1:1, and an
+/// audio track.
+#[test]
+fn the_type_decides_which_member_of_the_union_is_read() {
+    let sample = Sample::from_path(path_of(SECOND_SAMPLE));
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    let mut seen = 0;
+    for track_type in [
+        libvlc_track_type_t_libvlc_track_unknown,
+        libvlc_track_type_t_libvlc_track_audio,
+        libvlc_track_type_t_libvlc_track_video,
+        libvlc_track_type_t_libvlc_track_text,
+    ] {
+        for track in sample.player_tracks(track_type, false) {
+            seen += 1;
+            let is_video = track.i_type == libvlc_track_type_t_libvlc_track_video as i32;
+            let is_audio = track.i_type == libvlc_track_type_t_libvlc_track_audio as i32;
+            let is_text = track.i_type == libvlc_track_type_t_libvlc_track_text as i32;
+            assert_eq!(
+                track.video.is_some(),
+                is_video,
+                "a track of type {} disagrees with its own video member",
+                track.i_type
+            );
+            assert_eq!(
+                track.audio.is_some(),
+                is_audio,
+                "a track of type {} disagrees with its own audio member",
+                track.i_type
+            );
+            assert_eq!(
+                track.subtitle.is_some(),
+                is_text,
+                "a track of type {} disagrees with its own subtitle member",
+                track.i_type
+            );
+        }
+    }
+    assert!(
+        seen >= 2,
+        "the second sample has a video track and an audio track; {seen} tracks were reported"
+    );
+
+    // The player's own tracklist, which is the one a game reads while a media is
+    // playing. Its size arrives with the decoder's format report and not with the
+    // track: libvlc publishes a *new* track when that happens rather than
+    // changing the one it already handed out, which is why this asks again
+    // instead of holding the first answer.
+    let player_video = wait_for_known_size(
+        || sample.player_tracks(libvlc_track_type_t_libvlc_track_video, false),
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        player_video.len(),
+        1,
+        "the second sample has one video track on the player's tracklist"
+    );
+    let player_video = player_video[0]
+        .video
+        .as_ref()
+        .expect("the player's video track lost its video member");
+    assert_eq!(
+        (player_video.width, player_video.height),
+        (SECOND_SAMPLE_WIDTH, SECOND_SAMPLE_HEIGHT),
+        "the player's tracklist does not report the size the file has"
+    );
+
+    let video = wait_for_known_size(
+        || sample.media_tracks(libvlc_track_type_t_libvlc_track_video),
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        video.len(),
+        1,
+        "the media descriptor reported {} video tracks after it had been played",
+        video.len()
+    );
+    let video = video[0]
+        .video
+        .as_ref()
+        .expect("the media descriptor's video track lost its video member");
+    assert_eq!(
+        (video.width, video.height),
+        (SECOND_SAMPLE_WIDTH, SECOND_SAMPLE_HEIGHT),
+        "the media path reported a different visible size than the player path"
+    );
+    assert_eq!(
+        (video.sar_num, video.sar_den),
+        (SECOND_SAMPLE_SAR_NUM, SECOND_SAMPLE_SAR_DEN),
+        "the sample's pixel aspect ratio is 1280:1281; this reports something else"
+    );
+
+    let audio = sample.wait_for_track(
+        libvlc_track_type_t_libvlc_track_audio,
+        Duration::from_secs(5),
+    );
+    assert_eq!(audio.len(), 1, "the second sample has one audio track");
+    let audio = audio[0]
+        .audio
+        .as_ref()
+        .expect("an audio track came back without the audio member of the union");
+    assert_eq!(
+        (audio.channels, audio.rate),
+        (SECOND_SAMPLE_CHANNELS, SECOND_SAMPLE_RATE),
+        "the audio track does not describe the AAC stereo stream in the file"
+    );
+    println!(
+        "the second sample: {}x{}, sar {}/{}, {} channels at {} Hz",
+        SECOND_SAMPLE_WIDTH,
+        SECOND_SAMPLE_HEIGHT,
+        SECOND_SAMPLE_SAR_NUM,
+        SECOND_SAMPLE_SAR_DEN,
+        audio.channels,
+        audio.rate
+    );
+
+    // The two fields the header reserves for a track that came from a player.
+    for track in sample.media_tracks(libvlc_track_type_t_libvlc_track_video) {
+        assert_eq!(
+            track.name, "",
+            "a track from a media descriptor reported a name, which libvlc documents as player-only"
+        );
+        assert!(
+            !track.selected,
+            "a track from a media descriptor reported itself selected"
+        );
+    }
+}
+
+/// A text track reports the encoding it declares, which is the only clue a caller
+/// has when the subtitle comes out as mojibake.
+///
+/// libvlc fills `psz_encoding` only when the subtitle's own demuxer advertised
+/// one and hands back NULL otherwise, so which of the two happens for a plain
+/// UTF-8 SRT is a measurement: the assertion below is that measurement, and the
+/// `""` the binding reports for NULL is what a caller sees for the other case.
+#[test]
+fn a_text_track_reports_the_encoding_it_declares() {
+    let sample = Sample::new();
+    let subtitle = subtitle_mrl();
+    assert_eq!(
+        sample.add_slave_to_media(&subtitle, 4),
+        0,
+        "libvlc refused a subtitle for the media"
+    );
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    let tracks = sample.wait_for_track(
+        libvlc_track_type_t_libvlc_track_text,
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        tracks.len(),
+        1,
+        "the attached subtitle did not become a text track"
+    );
+    let track = &tracks[0];
+    let subtitle = track
+        .subtitle
+        .as_ref()
+        .expect("a text track came back without the subtitle member of the union");
+    assert!(
+        track.video.is_none() && track.audio.is_none(),
+        "a text track came back with a member its type does not name"
+    );
+    println!(
+        "the attached subtitle declares the encoding {:?}",
+        subtitle.encoding
+    );
+    assert_eq!(
+        subtitle.encoding, "",
+        "a plain UTF-8 SRT declared an encoding; libvlc fills this only when the \
+         subtitle demuxer advertises one, and the measured answer for this fixture \
+         is that it does not"
     );
 }
