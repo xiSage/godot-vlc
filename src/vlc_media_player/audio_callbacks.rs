@@ -30,6 +30,28 @@ use ringbuf::{HeapProd, traits::Producer};
 
 use super::internal_audio_stream::InternalAudioStream;
 
+/// The node a callback was handed, if it is still there.
+///
+/// The audio player is a child of the `VLCMediaPlayer`, and Godot destroys a node's
+/// children **before** it destroys the extension instance behind the node -- so between
+/// those two moments libvlc's audio thread can arrive here holding a `Gd` whose object has
+/// been freed. `is_instance_valid` is the one call that answers for such a handle instead
+/// of asserting; anything else aborts the process (measured: `AudioStreamPlayer::upcast_ref`,
+/// "access to instance ... after it has been freed", in two runs out of three when the
+/// demo exits while it is playing).
+///
+/// Returns the pair the callbacks are given: the ring buffer producer and the node.
+unsafe fn audio_context<'a>(
+    data: *mut c_void,
+) -> Option<(&'a mut HeapProd<AudioFrame>, &'a mut Gd<AudioStreamPlayer>)> {
+    let (producer, player) =
+        unsafe { (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>)).as_mut()? };
+    if !player.is_instance_valid() {
+        return None;
+    }
+    Some((producer, player))
+}
+
 pub(super) unsafe extern "C" fn audio_play_callback(
     data: *mut c_void,
     samples: *const c_void,
@@ -37,9 +59,11 @@ pub(super) unsafe extern "C" fn audio_play_callback(
     _pts: i64,
 ) {
     unsafe {
-        let (rb_prod, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
+        // Nothing is pushed for a node that is gone: the ring buffer has no reader left,
+        // and filling it would only report itself full.
+        let Some((rb_prod, player)) = audio_context(data) else {
+            return;
+        };
 
         let samples_slice = slice_from_raw_parts(samples as *const f32, count as usize * 2)
             .as_ref()
@@ -63,38 +87,38 @@ pub(super) unsafe extern "C" fn audio_play_callback(
 
 pub(super) unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) {
     unsafe {
-        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
+        let Some((_, player)) = audio_context(data) else {
+            return;
+        };
         player.set_stream_paused(true);
     }
 }
 
 pub(super) unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) {
     unsafe {
-        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
+        let Some((_, player)) = audio_context(data) else {
+            return;
+        };
         player.set_stream_paused(false);
     }
 }
 
 pub(super) unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
     unsafe {
-        let (_, player) = (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>))
-            .as_mut()
-            .unwrap();
-        if player.is_instance_valid() {
-            player.call_thread_safe("stop", &[]);
-            if let Some(stream) = player.get_stream()
-                && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>()
-            {
-                internal_stream
-                    .bind_mut()
-                    .playback
-                    .bind_mut()
-                    .clear_buffer();
-            }
+        // `audio_context` is the same check this one used to make for itself, and it now
+        // covers the whole callback rather than only the call that happened to need it.
+        let Some((_, player)) = audio_context(data) else {
+            return;
+        };
+        player.call_thread_safe("stop", &[]);
+        if let Some(stream) = player.get_stream()
+            && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>()
+        {
+            internal_stream
+                .bind_mut()
+                .playback
+                .bind_mut()
+                .clear_buffer();
         }
     }
 }
