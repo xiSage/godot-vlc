@@ -96,6 +96,20 @@ to come from `parse_request` rather than from playing the media, because libvlc 
 only where it reports a parsed status changing. The wrapper a script builds, and the
 signals arriving with a `VLCMedia` in hand, are `demo/tests/media_list.gd`.
 
+The list player is here too, and it is where the list becomes playback. A list holds media,
+a player plays one, and libvlc's list player is what plays them one after another -- so the
+part worth testing is that it does: the acceptance waits for the item that ends to be
+followed by the next one being announced. It first measures the trap that makes the list
+player's own stop the one to use, namely that stopping the player underneath moves the list
+on, because libvlc's list player learns "the item ended" from the player stopping and cannot
+tell the two apart. Loop mode is measured wrapping back to the first item, and repeat mode
+is deliberately not run: its one code path sets the same media on the player again, which
+trips an assertion inside libvlc (`src/player/input.c:326`), so the binding refuses the
+value rather than passing an abort to the caller. What only the engine can cover -- that the
+picture still comes out of the player node the list drives, and that the list player is a
+*child* of that node, which is what makes Godot release it first -- is
+`demo/tests/media_list_player.gd`.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec

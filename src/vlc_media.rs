@@ -440,34 +440,27 @@ impl VlcMedia {
 
     fn register_signals(media: &mut Gd<Self>) {
         unsafe {
-            fn get_media(ptr: *mut c_void) -> Gd<VlcMedia> {
-                unsafe { (ptr as *mut WeakRef).as_mut().unwrap().get_ref().to() }
-            }
-
             let event_manager = libvlc_media_event_manager(media.bind().media_ptr);
-
-            unsafe extern "C" fn parsed_changed_callback(
-                _event: *const libvlc_event_t,
-                user_data: *mut c_void,
-            ) {
-                unsafe {
-                    let mut media = get_media(user_data);
-                    let status = libvlc_media_get_parsed_status(media.bind().media_ptr);
-                    media.call_deferred(
-                        "emit_signal",
-                        &[
-                            StringName::from("parsed_changed").to_variant(),
-                            status.to_variant(),
-                        ],
-                    );
-                }
-            }
             libvlc_event_attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
                 Some(parsed_changed_callback),
-                media.bind_mut().self_gd.as_mut().unwrap().as_mut() as *mut _ as *mut c_void,
+                Self::event_data(media),
             );
+        }
+    }
+
+    /// What libvlc is handed as a media event's user data: the object pointer of the weak
+    /// reference.
+    ///
+    /// The same pointer has to come back for the detach in `Drop`, which is why it is
+    /// computed in one place -- and it has to be the *object* pointer, not the address of
+    /// the `Gd` handle that wraps it: the callback casts it to `*mut WeakRef` and calls
+    /// into it, so a handle's address is not a pointer to the object at all.
+    fn event_data(media: &mut Gd<Self>) -> *mut c_void {
+        match media.bind_mut().self_gd.as_deref_mut() {
+            Some(weak) => (&mut **weak) as *mut WeakRef as *mut c_void,
+            None => std::ptr::null_mut(),
         }
     }
 
@@ -842,9 +835,56 @@ impl Drop for VlcMedia {
     fn drop(&mut self) {
         unsafe {
             if !self.media_ptr.is_null() {
+                // The event first, and with the same callback and user data it was
+                // attached with: libvlc finds the handler by that pair, and this wrapper
+                // may be one of several for the same media (a list hands ports of it
+                // around), so detaching is what keeps a freed object out of a later
+                // callback. The same gap was recorded for the player in the analysis;
+                // lists are what made it reachable, because a list keeps media alive past
+                // the wrapper a script built.
+                if let Some(weak) = self.self_gd.as_deref_mut() {
+                    let data = (&mut **weak) as *mut WeakRef as *mut c_void;
+                    libvlc_event_detach(
+                        libvlc_media_event_manager(self.media_ptr),
+                        libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
+                        Some(parsed_changed_callback),
+                        data,
+                    );
+                }
                 libvlc_media_release(self.media_ptr);
             }
         }
+    }
+}
+
+/// Reports a media's parsed status to the main thread, where the signal is emitted.
+///
+/// Called from libvlc's own threads, so it does no more than hand the number over: the
+/// status is read here because the media is the one thing that is certainly alive, and
+/// the object may not be. `WeakRef::get_ref` answers nothing for a freed object, and that
+/// is a state this callback can genuinely be in -- measured, before the detach in `Drop`
+/// existed, as an abort inside godot-rust -- so it returns instead of unwrapping.
+unsafe extern "C" fn parsed_changed_callback(
+    _event: *const libvlc_event_t,
+    user_data: *mut c_void,
+) {
+    unsafe {
+        let Some(weak) = (user_data as *mut WeakRef).as_ref() else {
+            return;
+        };
+        let object = weak.get_ref();
+        if object.is_nil() {
+            return;
+        }
+        let mut media = object.to::<Gd<VlcMedia>>();
+        let status = libvlc_media_get_parsed_status(media.bind().media_ptr);
+        media.call_deferred(
+            "emit_signal",
+            &[
+                StringName::from("parsed_changed").to_variant(),
+                status.to_variant(),
+            ],
+        );
     }
 }
 
