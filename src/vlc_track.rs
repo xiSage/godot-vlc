@@ -29,7 +29,7 @@ use godot::prelude::*;
 /// fills `psz_language`, `psz_description` and the subtitle member's
 /// `psz_encoding` only when it has them, and on a tracklist that came from
 /// [VLCMedia] `psz_name` is always NULL.
-fn c_string(field: *const c_char) -> String {
+pub(crate) fn c_string(field: *const c_char) -> String {
     if field.is_null() {
         return String::new();
     }
@@ -171,6 +171,16 @@ pub(crate) unsafe fn read_info(ptr: *mut libvlc_media_track_t) -> TrackInfo {
 #[class(rename=VLCTrack, no_init)]
 pub struct VlcTrack {
     pub ptr: *mut libvlc_media_track_t,
+    /// Whether this track came from a player's tracklist rather than a media
+    /// descriptor's.
+    ///
+    /// It is the difference between the two halves of libvlc's track API. Only a
+    /// player's track carries the `es_id` that selection acts on: libvlc's own
+    /// `libvlc_media_player_select_track` asserts it, that assertion is compiled
+    /// out of a release build, and a descriptor's track dereferences a null
+    /// pointer there instead of being refused. This flag is what lets the
+    /// selection calls refuse.
+    pub from_player: bool,
 }
 
 #[allow(clippy::unnecessary_cast)]
@@ -315,14 +325,31 @@ impl VlcTrack {
         GString::from(c_string(unsafe { self.ptr.as_ref().unwrap().psz_name }).as_str())
     }
 
-    /// true if the track is selected, only valid when the track is fetch from a [VLCMediaPlayer]
+    /// Whether this track is selected right now, as of when the tracklist it came
+    /// from was built.
+    ///
+    /// # Note
+    /// - It is only ever `true` for a track from a player: a tracklist taken from
+    ///   a [VLCMedia] reports `false` for every track it holds, whatever is
+    ///   playing.
+    /// - The answer belongs to the snapshot, so it goes stale as soon as the
+    ///   selection changes. [method VLCMediaPlayer.get_selected_track] asks the
+    ///   player instead, and [signal VLCMediaPlayer.track_selected] /
+    ///   [signal VLCMediaPlayer.track_unselected] say when to ask again.
     #[func]
     fn is_selected(&self) -> bool {
         unsafe { self.ptr.as_ref().unwrap().selected }
     }
 
-    pub fn from_ptr(ptr: *mut libvlc_media_track_t) -> Gd<Self> {
-        Gd::from_object(Self { ptr })
+    /// Wraps a track libvlc handed over.
+    ///
+    /// `from_player` says which half of the API it came from; see
+    /// [field from_player]. The wrapper owns one reference either way -- for a
+    /// tracklist that means the caller held it with `libvlc_media_track_hold`,
+    /// for the player's own getters the reference is already the caller's --
+    /// and [VlcTrack]'s `Drop` releases exactly one.
+    pub fn from_ptr(ptr: *mut libvlc_media_track_t, from_player: bool) -> Gd<Self> {
+        Gd::from_object(Self { ptr, from_player })
     }
 
     /// Get codec description.

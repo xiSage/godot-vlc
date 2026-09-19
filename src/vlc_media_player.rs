@@ -513,6 +513,95 @@ impl VlcMediaPlayer {
     fn pausable_changed(pausable: bool);
     #[signal]
     fn video_frame();
+    /// Emitted when a track joins the input: at the moment a media opens and its
+    /// tracks are created, and again when something adds one -- a subtitle
+    /// attached while playing, a stream that reveals another track.
+    ///
+    /// # Parameters
+    /// - [param track_type] the type of the track that arrived:
+    ///   [constant VLCTrack.TYPE_AUDIO], [constant VLCTrack.TYPE_VIDEO] or
+    ///   [constant VLCTrack.TYPE_TEXT].
+    /// - [param id] the track's [method VLCTrack.get_id], which is what
+    ///   [method get_track_from_id] and [method select_tracks_by_ids] take.
+    ///
+    /// # Note
+    /// - It says a track exists, not that it is playable yet: the language, the
+    ///   name and the codec of that id are readable through
+    ///   [method get_track_from_id] as soon as the track list has been rebuilt.
+    /// - A media opening produces one of these per track, in arrival order, and
+    ///   [signal track_selected] follows for the ones libvlc selected on its own.
+    /// - It carries the id rather than the track: a [VLCTrack] taken from
+    ///   [method get_tracklist] is a snapshot, and the point of this signal is
+    ///   that the one it was made from is out of date.
+    /// - This signal carries arguments. A handler written for a signal that
+    ///   carried none -- one that takes no parameters -- is no longer called by
+    ///   Godot, which reports the argument mismatch each time it is emitted.
+    #[signal]
+    fn track_added(track_type: i32, id: GString);
+    /// Emitted when a track leaves the input: a subtitle that failed to load, an
+    /// input being torn down at the end of a media.
+    ///
+    /// # Parameters
+    /// - [param track_type] the type of the track that left.
+    /// - [param id] the id it had.
+    ///
+    /// # Note
+    /// - The id is all that is left of it: [method get_track_from_id] will not
+    ///   find it any more, by the time this arrives.
+    /// - Tearing an input down -- the end of a media, [method stop_async] -- can
+    ///   remove every track at once, and each one is reported.
+    /// - This signal carries arguments; see the note in [signal track_added].
+    #[signal]
+    fn track_removed(track_type: i32, id: GString);
+    /// Emitted when something about an existing track changed: a decoder
+    /// reporting a different format for it, a track gaining a language or a name.
+    ///
+    /// # Parameters
+    /// - [param track_type] the type of the track that changed.
+    /// - [param id] the id it kept.
+    ///
+    /// # Note
+    /// - The signal says *that* it changed, not what changed: ask
+    ///   [method get_track_from_id] for the id, and compare what it reports with
+    ///   what was there before. [method VLCTrack.get_info] answers the whole
+    ///   struct in one call.
+    /// - libvlc reports this for a track that is being played as well as for one
+    ///   that is not.
+    /// - This signal carries arguments; see the note in [signal track_added].
+    #[signal]
+    fn track_updated(track_type: i32, id: GString);
+    /// Emitted when a track of this input becomes selected.
+    ///
+    /// # Parameters
+    /// - [param track_type] the type of the track that was selected.
+    /// - [param id] the id of the track that was selected.
+    ///
+    /// # Note
+    /// - One call that changes several tracks -- [method select_tracks] with a new
+    ///   set, a media opening and libvlc picking its defaults -- produces one
+    ///   signal per track, in the order libvlc applied them, mixed with
+    ///   [signal track_unselected] for the ones that left.
+    /// - Selecting a track that is already selected reports nothing: libvlc only
+    ///   raises the event when the state moves.
+    /// - This signal carries arguments; see the note in [signal track_added].
+    #[signal]
+    fn track_selected(track_type: i32, id: GString);
+    /// Emitted when a track of this input stops being selected.
+    ///
+    /// # Parameters
+    /// - [param track_type] the type of the track that was unselected.
+    /// - [param id] the id it had.
+    ///
+    /// # Note
+    /// - libvlc raises it for each track that leaves, so replacing a selection of
+    ///   three with one of one reports three of these and then that one
+    ///   [signal track_selected].
+    /// - The track is still there, and [method get_track_from_id] still finds it:
+    ///   this is not [signal track_removed]. libvlc has no call that unloads a
+    ///   track.
+    /// - This signal carries arguments; see the note in [signal track_added].
+    #[signal]
+    fn track_unselected(track_type: i32, id: GString);
 
     // ── media / texture / GPU ──
 
@@ -908,6 +997,19 @@ impl VlcMediaPlayer {
     /// You need to call [method VLCMedia.parse_request] or play the media at least once before calling this function. Not doing this will result in an empty list.\
     /// This track list is a snapshot of the current tracks when this function is called. If a track is updated after this call, the user will need to call this function again to get the updated track.
     ///
+    /// # Note
+    /// - It is built anew on every call and reads the player's live state, so
+    ///   `selected` here is not a cached answer -- but a selection made a moment
+    ///   ago may not have landed yet, because libvlc queues it to its input
+    ///   thread. [signal track_selected] and [signal track_unselected] are what
+    ///   say when to ask again.
+    /// - These are the tracks libvlc can select: they came from the player, which
+    ///   is the half of the track API that carries the `es_id` selection acts on.
+    ///   A tracklist taken from a [VLCMedia] cannot be selected from.
+    /// - How many can be selected at once is libvlc's decision, not one of these
+    ///   parameters': at most one audio track, at most two text tracks, and any
+    ///   number of video tracks.
+    ///
     /// # Parameters
     /// - [param track_type] type of the track list to request ([constant VLCTrack.TYPE_AUDIO], [constant VLCTrack.TYPE_VIDEO],...)
     /// - [param selected] filter only selected tracks if true (return all tracks, even selected ones if false)
@@ -918,7 +1020,74 @@ impl VlcMediaPlayer {
     fn get_tracklist(&self, track_type: i32, selected: bool) -> Option<Gd<VlcTrackList>> {
         let ptr =
             unsafe { libvlc_media_player_get_tracklist(self.player_ptr, track_type, selected) };
-        VlcTrackList::from_ptr(ptr)
+        VlcTrackList::from_ptr(ptr, true)
+    }
+
+    /// The track of one type that is selected right now, if there is one.
+    ///
+    /// # Parameters
+    /// - [param track_type] [constant VLCTrack.TYPE_AUDIO], [constant VLCTrack.TYPE_VIDEO],...
+    ///
+    /// # Returns
+    /// a [VLCTrack] the caller owns, or `null`.
+    ///
+    /// # Note
+    /// - `null` means one of two things this call cannot tell apart: nothing of
+    ///   that type is selected, or the player has no input yet (before a media
+    ///   opens, and after it stops). [method get_state] separates them.
+    /// - **A type can have several tracks selected at once** -- up to two text
+    ///   tracks, and any number of video ones -- and then this answers with one of
+    ///   them. libvlc's own header says so and points at
+    ///   [method get_tracklist] with `selected` set: that is the call that lists
+    ///   all of them.
+    /// - Unlike a track from a tracklist snapshot, this one is read at the moment
+    ///   you ask, and it carries no selection flag of its own to go stale.
+    #[func]
+    fn get_selected_track(&self, track_type: i32) -> Option<Gd<VlcTrack>> {
+        let ptr = unsafe { libvlc_media_player_get_selected_track(self.player_ptr, track_type) };
+        if ptr.is_null() {
+            None
+        } else {
+            // The reference is already the caller's -- libvlc documents these two
+            // getters as returning one that has to be released -- so unlike a
+            // tracklist entry this one is not held again here. `VlcTrack`'s Drop
+            // releases exactly the one reference it was handed.
+            Some(VlcTrack::from_ptr(ptr, true))
+        }
+    }
+
+    /// The track that carries this string identifier, if there is one right now.
+    ///
+    /// # Parameters
+    /// - [param id] a track's [method VLCTrack.get_id].
+    ///
+    /// # Returns
+    /// a [VLCTrack] the caller owns, or `null` when no track of the current input
+    /// has that id.
+    ///
+    /// # Note
+    /// - The id has to come from **this player's** tracklist. A tracklist taken
+    ///   from a [VLCMedia] numbers its tracks differently and this call never
+    ///   matches one of them.
+    /// - This is the other half of what [method VLCTrack.get_id] promises: save an
+    ///   id, hand it back here later. [method VLCTrack.get_info] reports
+    ///   `id_stable`, which is what that promise rests on -- `true` means the id
+    ///   came from the demuxer's own track number rather than from a counter
+    ///   libvlc invented for this playback, so it is worth saving. It is not a
+    ///   guarantee that the same file names the same track the same way next time:
+    ///   that is the demuxer's business, and nothing here checks it.
+    /// - Only the current input is searched, and only its video, audio and text
+    ///   tracks: an id saved before a media change, or one for a category this
+    ///   input has none of, answers `null`.
+    #[func]
+    fn get_track_from_id(&self, id: GString) -> Option<Gd<VlcTrack>> {
+        let id = cstring_from_gstring(id);
+        let ptr = unsafe { libvlc_media_player_get_track_from_id(self.player_ptr, id.as_ptr()) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(VlcTrack::from_ptr(ptr, true))
+        }
     }
 
     /// is_playing
@@ -1017,17 +1186,126 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_reset_abloop(self.player_ptr) }
     }
 
-    /// Select a track.\
-    /// This will unselected the current track.
+    /// Select one track, replacing the whole selection of its type.
     ///
-    /// # Warning
-    /// Only use a libvlc_media_track_t retrieved with libvlc_media_player_get_tracklist
+    /// This is `libvlc_media_player_select_track`, whose own documentation says to
+    /// use [method select_tracks] for more than one.
     ///
     /// # Parameters
-    /// - [param track] track to select, can't be NULL
+    /// - [param track] a track from [method get_tracklist], [method get_selected_track]
+    ///   or [method get_track_from_id]. A track from [method VLCMedia.get_tracklist]
+    ///   is refused; see below.
+    ///
+    /// # Note
+    /// - It is queued to libvlc's input thread, so it returns before anything has
+    ///   changed: read the selection back through [method get_selected_track] or
+    ///   [method get_tracklist] once [signal track_selected] arrives, not on the
+    ///   next line.
+    /// - It needs a playing input, and does nothing at all without one -- before a
+    ///   media is assigned, after a stop. Nothing reports that, in libvlc or here.
+    ///   [method select_tracks_by_ids] is the one that can be called first.
+    /// - A track from a media descriptor is **refused with an error in the log**.
+    ///   libvlc's header asks for a track from the player's tracklist; what it does
+    ///   with one from the media's is not a refusal -- the assertion that would
+    ///   catch it is compiled out of the shipped build, and the call dereferences
+    ///   the `es_id` that track does not have.
+    /// - Selecting a track that is already selected changes nothing and emits
+    ///   nothing.
     #[func]
     fn select_track(&mut self, track: Gd<VlcTrack>) {
+        if !track.bind().from_player {
+            godot_error!(
+                "godot-vlc: select_track was given a track from a media descriptor, which libvlc cannot select; use a track from VLCMediaPlayer.get_tracklist, or select by its id"
+            );
+            return;
+        }
         unsafe { libvlc_media_player_select_track(self.player_ptr, track.bind().ptr) }
+    }
+
+    /// Select a set of tracks of one type, replacing whatever was selected before.
+    ///
+    /// This is `libvlc_media_player_select_tracks`, and it sets the selection
+    /// rather than adding to it: every track of that type that is not in the array
+    /// is unselected. An empty array therefore clears the type's selection, which
+    /// is what [method unselect_track_type] does.
+    ///
+    /// # Parameters
+    /// - [param track_type] the type the tracks belong to: [constant VLCTrack.TYPE_AUDIO],
+    ///   [constant VLCTrack.TYPE_VIDEO] or [constant VLCTrack.TYPE_TEXT].
+    /// - [param tracks] the tracks to select, from this player's tracklist.
+    ///
+    /// # Note
+    /// - **libvlc caps this per type, silently**: one audio track, two text
+    ///   tracks, any number of video ones. Asking for two audio tracks selects one
+    ///   of them and reports nothing anywhere, here or in libvlc. Read the
+    ///   selection back if it matters.
+    /// - It is queued to libvlc's input thread and needs a playing input, like
+    ///   [method select_track]: without one it does nothing at all, silently.
+    ///   [method select_tracks_by_ids] is the one that can be called before
+    ///   playback.
+    /// - A track from a media descriptor is refused with an error in the log, as
+    ///   in [method select_track], and the whole call is refused with it -- a set
+    ///   is not selected halfway.
+    /// - One call produces one signal per track whose state actually changed, in
+    ///   arrival order: up to one [signal track_unselected] per track that left the
+    ///   selection and one [signal track_selected] per track that joined it. A
+    ///   handler that redraws on each of them will redraw several times.
+    #[func]
+    fn select_tracks(&mut self, track_type: i32, tracks: Array<Gd<VlcTrack>>) {
+        let mut pointers: Vec<*const libvlc_media_track_t> = Vec::with_capacity(tracks.len());
+        for index in 0..tracks.len() {
+            let Some(track) = tracks.get(index) else {
+                continue;
+            };
+            if !track.bind().from_player {
+                godot_error!(
+                    "godot-vlc: select_tracks was given a track from a media descriptor, which libvlc cannot select; nothing was selected"
+                );
+                return;
+            }
+            pointers.push(track.bind().ptr);
+        }
+        unsafe {
+            libvlc_media_player_select_tracks(
+                self.player_ptr,
+                track_type,
+                pointers.as_mut_ptr(),
+                pointers.len(),
+            )
+        }
+    }
+
+    /// Select tracks of one type by their string identifiers.
+    ///
+    /// This is `libvlc_media_player_select_tracks_by_ids`, and it sets the
+    /// selection rather than adding to it, as [method select_tracks] does.
+    ///
+    /// # Parameters
+    /// - [param track_type] the type the ids belong to.
+    /// - [param ids] one or more [method VLCTrack.get_id] values, separated by
+    ///   commas -- `"video/1,video/2"`. An empty string, or one that matches
+    ///   nothing, clears the type's selection; that is libvlc's rule, not this
+    ///   binding's.
+    ///
+    /// # Note
+    /// - **This is the one selection call that works before playback.** libvlc
+    ///   keeps the ids on the player and applies them when the input for the
+    ///   current media is created, which is what makes "remember the viewer's
+    ///   subtitle choice and restore it next time" possible. It has no effect on
+    ///   the media after the next one.
+    /// - The per-type caps of [method select_tracks] apply here too, and so does
+    ///   the silence: two audio ids select one audio track.
+    /// - An id is only worth saving when [method VLCTrack.get_info] reported
+    ///   `id_stable` as `true`; see [method get_track_from_id] for what that does
+    ///   and does not promise.
+    /// - Unlike [method select_tracks] this one takes nothing that could come from
+    ///   a media descriptor, so there is nothing to refuse here.
+    #[func]
+    fn select_tracks_by_ids(&mut self, track_type: i32, ids: GString) {
+        let ids = cstring_from_gstring(ids);
+        unsafe {
+            libvlc_media_player_select_tracks_by_ids(self.player_ptr, track_type, ids.as_ptr())
+        }
     }
 
     /// Play the current media from `a_ms` to `b_ms` over and over.
@@ -1230,7 +1508,7 @@ impl VlcMediaPlayer {
     /// It needs an input. Before a [member media] has been assigned -- which is what creates the input, not [method play] -- there is nothing to attach a subtitle to, and libvlc returns `VLC_EGENERIC` (`INT_MIN`) without doing anything. Use [method VLCMedia.add_subtitle] before the media is assigned; that is the other half of this, and it is the only one that works there.
     ///
     /// # Nothing removes a subtitle again
-    /// LibVLC has no call that unloads one: an empty track selection only unselects, and the track stays. Attaching another subtitle is the way to change what is shown, and ending the input -- [method stop_async], or a different [member media] -- is the only way to be rid of it. [method unselect_track_type] with [constant VLCTrack.TYPE_TEXT] hides one without unloading it.
+    /// LibVLC has no call that unloads one: an empty track selection only unselects, and the track stays. Attaching another subtitle is the way to change what is shown, and ending the input -- [method stop_async], or a different [member media] -- is the only way to be rid of it. [method unselect_track_type] with [constant VLCTrack.TYPE_TEXT] hides one without unloading it, and so does [method select_tracks] with an empty array or [method select_tracks_by_ids] with an empty string -- all three are the same unselect.
     ///
     /// # Parameters
     /// - [param subtitle] the subtitle to attach.

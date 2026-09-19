@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use godot::prelude::*;
 
 use crate::vlc::*;
+use crate::vlc_track::c_string;
 
 use super::VlcMediaPlayer;
 use super::software_video;
@@ -38,7 +39,12 @@ use super::software_video;
 const PARKED_EVENT_CAPACITY: usize = 64;
 
 /// One player event, on its way from libvlc's thread to the main one.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// The track events carry an id, and that id is copied out of libvlc's event
+/// rather than pointed at: it belongs to the track, which can be gone before the
+/// main thread ever sees the record. That is why this is not `Copy` -- every other
+/// variant is a plain value and could be.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ParkedEvent {
     Opening,
     Playing,
@@ -53,6 +59,11 @@ pub(crate) enum ParkedEvent {
     Length(i64),
     Seekable(bool),
     Pausable(bool),
+    TrackAdded(i32, String),
+    TrackRemoved(i32, String),
+    TrackUpdated(i32, String),
+    TrackSelected(i32, String),
+    TrackUnselected(i32, String),
 }
 
 /// Where the player's event callbacks leave what they received.
@@ -138,6 +149,54 @@ unsafe fn read_seekable(event: *const libvlc_event_t) -> bool {
 
 unsafe fn read_pausable(event: *const libvlc_event_t) -> bool {
     unsafe { (*event).u.media_player_pausable_changed.new_pausable != 0 }
+}
+
+/// Reads the track type and id out of a `libvlc_MediaPlayerESAdded`,
+/// `ESDeleted` or `ESUpdated` event.
+///
+/// All three carry the same payload. `psz_id` is libvlc's own string, owned by the
+/// track it names, so it is copied here: the callback runs on libvlc's thread and
+/// may not keep anything past it, and the track can be gone before the main thread
+/// reads the record. `i_id` is deprecated in libvlc's own header and is not read.
+///
+/// # Safety
+/// `event` must be one of those three event types.
+#[allow(clippy::unnecessary_cast)]
+unsafe fn read_es_changed(event: *const libvlc_event_t) -> (i32, String) {
+    let payload = unsafe { (*event).u.media_player_es_changed };
+    (payload.i_type as i32, c_string(payload.psz_id))
+}
+
+/// Reads a `libvlc_MediaPlayerESSelected` event, which is one of two things: a
+/// track that joined the selection, or one that left it.
+///
+/// libvlc fills exactly one of the two ids, and that is what says which of the two
+/// this is -- not `i_type`, which is the same for both directions. `i_type` is
+/// only read once an id has said the event is one of the two, because libvlc
+/// writes it inside those branches alone: an event with neither id set would
+/// otherwise hand back uninitialised stack memory of libvlc's frame. That case is
+/// reported as `None`, and nothing is emitted for it.
+///
+/// # Safety
+/// `event` must be a `libvlc_MediaPlayerESSelected` event.
+#[allow(clippy::unnecessary_cast)]
+unsafe fn read_es_selection(event: *const libvlc_event_t) -> Option<ParkedEvent> {
+    let payload = unsafe { (*event).u.media_player_es_selection_changed };
+    if !payload.psz_selected_id.is_null() {
+        let track_type = payload.i_type as i32;
+        Some(ParkedEvent::TrackSelected(
+            track_type,
+            c_string(payload.psz_selected_id),
+        ))
+    } else if !payload.psz_unselected_id.is_null() {
+        let track_type = payload.i_type as i32;
+        Some(ParkedEvent::TrackUnselected(
+            track_type,
+            c_string(payload.psz_unselected_id),
+        ))
+    } else {
+        None
+    }
 }
 
 /// Records an event from inside a libvlc callback.
@@ -395,6 +454,72 @@ impl VlcMediaPlayer {
                 Some(pausable_callback),
                 park_ptr,
             );
+
+            // The four track events. libvlc raises them on the input thread while
+            // it holds the player's lock, and it raises one per track that moved
+            // rather than one per call: replacing a selection of three with one of
+            // one arrives as three unselects and then a select. Arrival order is
+            // therefore part of what they mean, and the queue keeps it.
+            unsafe extern "C" fn es_added_callback(
+                event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                let (track_type, id) = unsafe { read_es_changed(event) };
+                unsafe { park(user_data, ParkedEvent::TrackAdded(track_type, id)) };
+            }
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerESAdded as libvlc_event_type_t,
+                Some(es_added_callback),
+                park_ptr,
+            );
+
+            unsafe extern "C" fn es_deleted_callback(
+                event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                let (track_type, id) = unsafe { read_es_changed(event) };
+                unsafe { park(user_data, ParkedEvent::TrackRemoved(track_type, id)) };
+            }
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerESDeleted as libvlc_event_type_t,
+                Some(es_deleted_callback),
+                park_ptr,
+            );
+
+            unsafe extern "C" fn es_updated_callback(
+                event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                let (track_type, id) = unsafe { read_es_changed(event) };
+                unsafe { park(user_data, ParkedEvent::TrackUpdated(track_type, id)) };
+            }
+            // Its value is not next to the other three -- `ESAdded` is 276 and
+            // `ESUpdated` is 285, with the cork, mute and volume events in
+            // between -- so this is attached on its own name rather than by
+            // counting from `ESAdded`.
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerESUpdated as libvlc_event_type_t,
+                Some(es_updated_callback),
+                park_ptr,
+            );
+
+            unsafe extern "C" fn es_selected_callback(
+                event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                if let Some(event) = unsafe { read_es_selection(event) } {
+                    unsafe { park(user_data, event) };
+                }
+            }
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerESSelected as libvlc_event_type_t,
+                Some(es_selected_callback),
+                park_ptr,
+            );
         }
     }
 
@@ -429,6 +554,31 @@ impl VlcMediaPlayer {
                 ParkedEvent::Pausable(pausable) => {
                     self.signals().pausable_changed().emit(pausable);
                 }
+                ParkedEvent::TrackAdded(track_type, id) => {
+                    self.signals()
+                        .track_added()
+                        .emit(track_type, &GString::from(id.as_str()));
+                }
+                ParkedEvent::TrackRemoved(track_type, id) => {
+                    self.signals()
+                        .track_removed()
+                        .emit(track_type, &GString::from(id.as_str()));
+                }
+                ParkedEvent::TrackUpdated(track_type, id) => {
+                    self.signals()
+                        .track_updated()
+                        .emit(track_type, &GString::from(id.as_str()));
+                }
+                ParkedEvent::TrackSelected(track_type, id) => {
+                    self.signals()
+                        .track_selected()
+                        .emit(track_type, &GString::from(id.as_str()));
+                }
+                ParkedEvent::TrackUnselected(track_type, id) => {
+                    self.signals()
+                        .track_unselected()
+                        .emit(track_type, &GString::from(id.as_str()));
+                }
             }
         }
     }
@@ -436,6 +586,12 @@ impl VlcMediaPlayer {
 
 #[cfg(test)]
 mod tests {
+    // The bindgen enum types differ per target -- `libvlc_track_type_t` is `c_int` on
+    // Windows and `u32` on Linux and Android -- so the casts to `i32` below are
+    // required by some targets and redundant on the others, exactly as in
+    // `vlc_media_player.rs` and `acceptance.rs`.
+    #![allow(clippy::unnecessary_cast)]
+
     use super::*;
 
     /// Wraps a payload in the event libvlc would have sent.
@@ -517,6 +673,45 @@ mod tests {
         }
     }
 
+    /// The payload `ESAdded`, `ESDeleted` and `ESUpdated` share.
+    fn es_changed_event(
+        event_type: libvlc_event_e,
+        track_type: libvlc_track_type_t,
+        id: *const std::ffi::c_char,
+    ) -> libvlc_event_t {
+        libvlc_event_t {
+            type_: event_type as libvlc_event_type_t,
+            p_obj: std::ptr::null_mut(),
+            u: libvlc_event_t__bindgen_ty_1 {
+                media_player_es_changed: libvlc_event_t__bindgen_ty_1__bindgen_ty_27 {
+                    i_type: track_type,
+                    i_id: 0,
+                    psz_id: id,
+                },
+            },
+        }
+    }
+
+    /// The payload `ESSelected` uses, which is a different member: it names the
+    /// track that left the selection and the one that joined it.
+    fn es_selection_event(
+        track_type: libvlc_track_type_t,
+        unselected_id: *const std::ffi::c_char,
+        selected_id: *const std::ffi::c_char,
+    ) -> libvlc_event_t {
+        libvlc_event_t {
+            type_: libvlc_event_e_libvlc_MediaPlayerESSelected as libvlc_event_type_t,
+            p_obj: std::ptr::null_mut(),
+            u: libvlc_event_t__bindgen_ty_1 {
+                media_player_es_selection_changed: libvlc_event_t__bindgen_ty_1__bindgen_ty_28 {
+                    i_type: track_type,
+                    psz_unselected_id: unselected_id,
+                    psz_selected_id: selected_id,
+                },
+            },
+        }
+    }
+
     /// The ends of the range are the ones a handler branches on: `0.0` is what
     /// libvlc sends when the input opens or a seek resets the buffer, and
     /// `100.0` is the exact value it sends once the buffer is full.
@@ -545,6 +740,60 @@ mod tests {
         assert!(!unsafe { read_seekable(&seekable_event(false)) });
         assert!(unsafe { read_pausable(&pausable_event(true)) });
         assert!(!unsafe { read_pausable(&pausable_event(false)) });
+    }
+
+    /// The track events: three of them share one payload, and the fourth is a
+    /// different member whose direction is decided by which id is set.
+    #[test]
+    fn reads_the_track_events() {
+        let added = es_changed_event(
+            libvlc_event_e_libvlc_MediaPlayerESAdded,
+            libvlc_track_type_t_libvlc_track_video,
+            c"video/1".as_ptr(),
+        );
+        assert_eq!(
+            unsafe { read_es_changed(&added) },
+            (
+                libvlc_track_type_t_libvlc_track_video as i32,
+                String::from("video/1")
+            )
+        );
+
+        let selected = es_selection_event(
+            libvlc_track_type_t_libvlc_track_text,
+            std::ptr::null(),
+            c"spu/0".as_ptr(),
+        );
+        assert_eq!(
+            unsafe { read_es_selection(&selected) },
+            Some(ParkedEvent::TrackSelected(
+                libvlc_track_type_t_libvlc_track_text as i32,
+                String::from("spu/0")
+            ))
+        );
+
+        let unselected = es_selection_event(
+            libvlc_track_type_t_libvlc_track_text,
+            c"spu/0".as_ptr(),
+            std::ptr::null(),
+        );
+        assert_eq!(
+            unsafe { read_es_selection(&unselected) },
+            Some(ParkedEvent::TrackUnselected(
+                libvlc_track_type_t_libvlc_track_text as i32,
+                String::from("spu/0")
+            ))
+        );
+
+        // Neither id set is not one of the two things libvlc sends -- and the type
+        // beside them is only written when one of them is, so this is reported as
+        // nothing rather than as a signal carrying an empty id.
+        let neither = es_selection_event(
+            libvlc_track_type_t_libvlc_track_text,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+        assert_eq!(unsafe { read_es_selection(&neither) }, None);
     }
 
     /// Only the oldest event may be handed out, and in the order it arrived: the
