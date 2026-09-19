@@ -3371,6 +3371,313 @@ fn the_list_events_report_what_moved_and_where() {
     }
 }
 
+/// What a list player's events reported, for the probes below.
+#[derive(Debug, PartialEq)]
+enum RecordedListPlayerEvent {
+    Played,
+    NextItemSet(*mut libvlc_media_t),
+    Stopped,
+}
+
+/// Collects what a list player's events reported.
+#[derive(Default)]
+struct ListPlayerProbe {
+    events: Mutex<Vec<RecordedListPlayerEvent>>,
+}
+
+impl ListPlayerProbe {
+    fn take(&self) -> Vec<RecordedListPlayerEvent> {
+        std::mem::take(&mut *self.events.lock().expect("the probe lock was poisoned"))
+    }
+
+    fn next_items(&self) -> Vec<*mut libvlc_media_t> {
+        self.events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .iter()
+            .filter_map(|event| match event {
+                RecordedListPlayerEvent::NextItemSet(media) => Some(*media),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn saw_stopped(&self) -> bool {
+        self.events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .contains(&RecordedListPlayerEvent::Stopped)
+    }
+}
+
+unsafe extern "C" fn probe_list_player_played(_event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListPlayerProbe);
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListPlayerEvent::Played);
+    }
+}
+
+unsafe extern "C" fn probe_next_item_set(event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListPlayerProbe);
+        let media = (*event).u.media_list_player_next_item_set.item;
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListPlayerEvent::NextItemSet(media));
+    }
+}
+
+unsafe extern "C" fn probe_list_player_stopped(_event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ListPlayerProbe);
+        probe
+            .events
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(RecordedListPlayerEvent::Stopped);
+    }
+}
+
+/// Attaches the probe to a list player's three events.
+fn watch_list_player(list_player: *mut libvlc_media_list_player_t, probe: &mut ListPlayerProbe) {
+    unsafe {
+        let manager = libvlc_media_list_player_event_manager(list_player);
+        let data = probe as *mut ListPlayerProbe as *mut c_void;
+        for (event_type, callback) in [
+            (
+                libvlc_event_e_libvlc_MediaListPlayerPlayed,
+                probe_list_player_played as unsafe extern "C" fn(_, _),
+            ),
+            (
+                libvlc_event_e_libvlc_MediaListPlayerNextItemSet,
+                probe_next_item_set,
+            ),
+            (
+                libvlc_event_e_libvlc_MediaListPlayerStopped,
+                probe_list_player_stopped,
+            ),
+        ] {
+            libvlc_event_attach(
+                manager,
+                event_type as libvlc_event_type_t,
+                Some(callback),
+                data,
+            );
+        }
+    }
+}
+
+/// Waits until the probe has been told about `wanted` items, or `timeout` passes.
+fn wait_for_next_items(probe: &ListPlayerProbe, wanted: usize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if probe.next_items().len() >= wanted {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// A list plays through the player it is given, and moves on by itself.
+///
+/// The list holds two different media, so the two items can be told apart by their
+/// announcements: libvlc emits `MediaListPlayerNextItemSet` for the item it is about to
+/// play, and the announcement changing from the first media to the second means the
+/// first ended and the list moved on -- which is what a list player is for, and what
+/// nothing else in libvlc does for a caller.
+#[test]
+fn a_list_player_plays_through_its_player_and_moves_on() {
+    let sample = Sample::new();
+    let second = Sample::from_path(path_of(SECOND_SAMPLE));
+    let list = unsafe { libvlc_media_list_new() };
+    unsafe {
+        assert_eq!(
+            libvlc_media_list_add_media(list, sample.media),
+            0,
+            "the first item was refused"
+        );
+        assert_eq!(
+            libvlc_media_list_add_media(list, second.media),
+            0,
+            "the second item was refused"
+        );
+    }
+
+    let list_player = unsafe { libvlc_media_list_player_new(sample.instance) };
+    assert!(
+        !list_player.is_null(),
+        "libvlc_media_list_player_new returned NULL"
+    );
+    let mut probe = ListPlayerProbe::default();
+    watch_list_player(list_player, &mut probe);
+
+    unsafe {
+        libvlc_media_list_player_set_media_player(list_player, sample.player);
+        libvlc_media_list_player_set_media_list(list_player, list);
+        libvlc_media_list_player_play(list_player);
+    }
+    assert!(
+        wait_for_next_items(&probe, 1, PLAYBACK_TIMEOUT),
+        "playing the list announced no item"
+    );
+    let announced = probe.next_items();
+    assert_eq!(
+        announced[0], sample.media,
+        "the first announced item is not the media the list holds"
+    );
+    println!("the list announced its first item; waiting for the second");
+
+    // The item is one second long, so the list has to move on by itself.
+    let advanced = wait_for_next_items(&probe, 2, PLAYBACK_TIMEOUT);
+    let announced = probe.next_items();
+    assert!(
+        advanced,
+        "the list did not move to its second item within {PLAYBACK_TIMEOUT:?}: {announced:?}"
+    );
+    assert_eq!(
+        announced[1], second.media,
+        "the second announced item is not the second media the list holds"
+    );
+
+    // Its own stop is reported, and that report is the only source of it: stopping the
+    // player underneath would be taken for the item ending.
+    unsafe { libvlc_media_list_player_stop_async(list_player) };
+    let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+    while Instant::now() < deadline && !probe.saw_stopped() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let events = probe.take();
+    println!("the list player reported {events:?}");
+    assert!(
+        events.contains(&RecordedListPlayerEvent::Stopped),
+        "the list player's own stop was never reported: {events:?}"
+    );
+
+    unsafe {
+        libvlc_media_list_player_release(list_player);
+        libvlc_media_list_release(list);
+    }
+}
+
+/// Stopping the underlying player directly moves the list on, and repeat mode does not
+/// move at all.
+///
+/// Both are traps a caller has to be told about, and both are measured here rather than
+/// reasoned about. The first is why the binding documents that a list player's own
+/// `stop_async` is the one to use: libvlc's list player listens for the player stopping
+/// to learn that an item ended, and cannot tell the two apart. The second is libvlc's
+/// repeat mode, which replays the current item and leaves `next` with nowhere to go.
+#[test]
+fn stopping_the_player_directly_moves_the_list_on() {
+    let sample = Sample::new();
+    let second = Sample::from_path(path_of(SECOND_SAMPLE));
+    let list = unsafe { libvlc_media_list_new() };
+    unsafe {
+        libvlc_media_list_add_media(list, sample.media);
+        libvlc_media_list_add_media(list, second.media);
+    }
+    let list_player = unsafe { libvlc_media_list_player_new(sample.instance) };
+    let mut probe = ListPlayerProbe::default();
+    watch_list_player(list_player, &mut probe);
+    unsafe {
+        libvlc_media_list_player_set_media_player(list_player, sample.player);
+        libvlc_media_list_player_set_media_list(list_player, list);
+        libvlc_media_list_player_play(list_player);
+    }
+    assert!(
+        wait_for_next_items(&probe, 1, PLAYBACK_TIMEOUT),
+        "playing the list announced no item"
+    );
+
+    // The player, not the list player: the list takes this for "the item ended".
+    unsafe { libvlc_media_player_stop_async(sample.player) };
+    let advanced = wait_for_next_items(&probe, 2, PLAYBACK_TIMEOUT);
+    let announced = probe.next_items();
+    println!(
+        "stopping the player under the list announced {} item(s)",
+        announced.len()
+    );
+    assert!(
+        advanced,
+        "stopping the player directly did not move the list on: {announced:?}"
+    );
+    assert_eq!(
+        announced[1], second.media,
+        "the list moved somewhere other than its second item"
+    );
+
+    unsafe {
+        libvlc_media_list_player_release(list_player);
+        libvlc_media_list_release(list);
+    }
+}
+
+/// Under repeat, `next` replays the current item instead of moving to the next one.
+///
+/// libvlc's repeat branch does not look for a next item at all: it plays the path it is
+/// already on (`set_relative_playlist_position_and_play`, `lib/media_list_player.c:777-790`).
+/// In loop mode the list starts again at the first item when it runs out.
+///
+/// The list holds the one-second sample twice, so a wrap is the third announcement: the
+/// first two are the items, and the third can only be the list starting over. Repeat
+/// mode is the other way libvlc spells this, and it is deliberately **not** tested here
+/// because it aborts the runtime -- measured, and documented on
+/// `PLAYBACK_MODE_REPEAT` in the binding, which refuses the value.
+#[test]
+fn loop_mode_wraps_to_the_first_item() {
+    let sample = Sample::new();
+    let list = unsafe { libvlc_media_list_new() };
+    unsafe {
+        libvlc_media_list_add_media(list, sample.media);
+        libvlc_media_list_add_media(list, sample.media);
+    }
+    let list_player = unsafe { libvlc_media_list_player_new(sample.instance) };
+    let mut probe = ListPlayerProbe::default();
+    watch_list_player(list_player, &mut probe);
+    unsafe {
+        libvlc_media_list_player_set_media_player(list_player, sample.player);
+        libvlc_media_list_player_set_media_list(list_player, list);
+        libvlc_media_list_player_set_playback_mode(
+            list_player,
+            libvlc_playback_mode_t_libvlc_playback_mode_loop,
+        );
+        libvlc_media_list_player_play(list_player);
+    }
+
+    // Two one-second items, then the wrap: three announcements, unless the list stops
+    // after the second one, which is what the default mode does.
+    let wrapped = wait_for_next_items(&probe, 3, PLAYBACK_TIMEOUT);
+    let announced = probe.next_items();
+    println!(
+        "in loop mode the list announced {} item(s)",
+        announced.len()
+    );
+    assert!(
+        wrapped,
+        "the list announced {} item(s) and then stopped, so it did not loop",
+        announced.len()
+    );
+    for item in &announced {
+        assert_eq!(
+            *item, sample.media,
+            "the loop announced a media that is not in the list"
+        );
+    }
+
+    unsafe {
+        libvlc_media_list_player_stop_async(list_player);
+        libvlc_media_list_player_release(list_player);
+        libvlc_media_list_release(list);
+    }
+}
+
 /// A duplicate is a media of its own: what is added to one is not on the other.
 ///
 /// `libvlc_media_duplicate` copies the MRL, the metadata, the options, the slaves

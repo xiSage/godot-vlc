@@ -211,6 +211,29 @@ func _on_playing() -> void:
 	_refresh_tracks()
 
 
+# The list player hangs off this node -- it plays through the VLCMediaPlayer it is a child
+# of -- and the two buttons below drive a queue built from whatever is loaded now: the
+# same media twice, which is enough to watch it move on.
+func _on_list_play_pressed() -> void:
+	if media == null:
+		%List.text = \"list: nothing loaded\"
+		return
+	var queue := VLCMediaList.new()
+	queue.add_media(media)
+	queue.add_media(media)
+	$ListPlayer.set_media_list(queue)
+	$ListPlayer.play()
+
+
+func _on_list_next_pressed() -> void:
+	if $ListPlayer.next() != 0:
+		%List.text = \"list: no next item\"
+
+
+func _on_list_item_set(item: VLCMedia) -> void:
+	%List.text = \"list item: %s\" % item.get_mrl()
+
+
 # What is inside the media, if it holds anything: a playlist's entries, a disc's titles,
 # a directory's files. They show up while it plays -- that is what parses it -- and the
 # list is read-only, because it belongs to the media.
@@ -388,6 +411,14 @@ text = "Pause"
 layout_mode = 2
 text = "Resume"
 
+[node name="ListPlay" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=1443128241]
+layout_mode = 2
+text = "Play List"
+
+[node name="ListNext" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=1443128242]
+layout_mode = 2
+text = "List Next"
+
 [node name="Stop" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=862739439]
 layout_mode = 2
 text = "Stop"
@@ -534,6 +565,12 @@ layout_mode = 2
 text = "playlist:"
 autowrap_mode = 3
 
+[node name="List" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1421064743]
+unique_name_in_owner = true
+layout_mode = 2
+text = "list:"
+autowrap_mode = 3
+
 [node name="VLCVersion" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1421064732]
 unique_name_in_owner = true
 layout_mode = 2
@@ -600,6 +637,8 @@ file_mode = 0
 access = 2
 use_native_dialog = true
 
+[node name="ListPlayer" type="VLCMediaListPlayer" parent="." unique_id=1361761298]
+
 [connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="buffering" from="." to="." method="_on_buffering"]
 [connection signal="error" from="." to="." method="_on_error"]
@@ -630,3 +669,6 @@ use_native_dialog = true
 [connection signal="track_selected" from="." to="." method="_on_track_changed"]
 [connection signal="track_unselected" from="." to="." method="_on_track_changed"]
 [connection signal="toggled" from="ScrollContainer/VBoxContainer/TimeWatch/Watch" to="." method="_on_time_watch_toggled"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/ListPlay" to="." method="_on_list_play_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/ListNext" to="." method="_on_list_next_pressed"]
+[connection signal="next_item_set" from="ListPlayer" to="." method="_on_list_item_set"]
