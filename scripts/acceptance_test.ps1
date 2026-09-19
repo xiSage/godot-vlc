@@ -74,6 +74,18 @@ in microseconds, so an instance built with `--audio-desync=250` has to read back
 `250000`. The relative jump is measured at three of its four edges, including the one
 that has no answer in the source -- past the end, where playback simply ends.
 
+The playback-time watcher is here as well, and so is the measurement that made it
+testable: this harness runs with `--vout=dummy` and no audio, and the watcher fires
+anyway -- about twenty points a second for a ten-frame-a-second media, because the
+input clock reports as well as the output. What the four tests pin is the runtime's
+half of it: one watcher per player with a second registration refused, a larger
+`min_period_us` meaning fewer reports, the two calls libvlc makes for one seek (the
+point asked for, then none at all), and the arithmetic of `time_point_interpolate` --
+including the path where it reports failure and hands back a parameter it filled from
+its own uninitialised stack. The binding's half -- the four signals, the interpolation
+method, and the two guards that exist because libvlc would abort or crash rather than
+answer -- is `demo/tests/time_point.gd`.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec

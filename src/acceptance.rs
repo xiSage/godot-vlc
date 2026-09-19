@@ -1713,6 +1713,380 @@ fn wait_for_time_at_most(sample: &Sample, ms: i64, timeout: Duration) -> bool {
     false
 }
 
+/// Collects what a time watcher reported.
+///
+/// Nothing else may happen in the callbacks that fill this: they run on libvlc's
+/// threads -- the output thread that displayed the frame or wrote the samples, or the
+/// input thread -- and libvlc holds the player's timer lock while it calls them.
+#[derive(Default)]
+struct WatchProbe {
+    points: Mutex<Vec<libvlc_media_player_time_point_t>>,
+    paused: Mutex<Vec<i64>>,
+    seeks: Mutex<Vec<Option<libvlc_media_player_time_point_t>>>,
+}
+
+impl WatchProbe {
+    fn new() -> Box<Self> {
+        Box::new(Self::default())
+    }
+
+    /// The address to hand libvlc as the callbacks' data.
+    fn data(&mut self) -> *mut c_void {
+        self as *mut Self as *mut c_void
+    }
+
+    fn points(&self) -> Vec<libvlc_media_player_time_point_t> {
+        self.points
+            .lock()
+            .expect("the probe lock was poisoned")
+            .clone()
+    }
+
+    fn point_count(&self) -> usize {
+        self.points
+            .lock()
+            .expect("the probe lock was poisoned")
+            .len()
+    }
+
+    fn seeks(&self) -> Vec<Option<libvlc_media_player_time_point_t>> {
+        self.seeks
+            .lock()
+            .expect("the probe lock was poisoned")
+            .clone()
+    }
+}
+
+unsafe extern "C" fn watch_point(
+    value: *const libvlc_media_player_time_point_t,
+    data: *mut c_void,
+) {
+    unsafe {
+        let probe = &*(data as *const WatchProbe);
+        if let Some(point) = value.as_ref() {
+            probe
+                .points
+                .lock()
+                .expect("the probe lock was poisoned")
+                .push(*point);
+        }
+    }
+}
+
+unsafe extern "C" fn watch_paused(system_date_us: i64, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const WatchProbe);
+        probe
+            .paused
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(system_date_us);
+    }
+}
+
+unsafe extern "C" fn watch_seek(value: *const libvlc_media_player_time_point_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const WatchProbe);
+        probe
+            .seeks
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(value.as_ref().copied());
+    }
+}
+
+/// Registers the watcher on a player, with the probe as its data.
+fn watch(sample: &Sample, probe: &mut WatchProbe, min_period_us: i64) -> i32 {
+    unsafe {
+        libvlc_media_player_watch_time(
+            sample.player,
+            min_period_us,
+            Some(watch_point),
+            Some(watch_paused),
+            Some(watch_seek),
+            probe.data(),
+        )
+    }
+}
+
+/// Waits until the probe has collected `wanted` points, or `timeout` passes.
+fn wait_for_points(probe: &WatchProbe, wanted: usize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if probe.point_count() >= wanted {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// The time watcher reports a point for every displayed frame or written block, one
+/// watcher per player, and it stops when it is taken off.
+///
+/// This is also the measurement behind the binding's `time_point` signal: the harness
+/// builds every instance with `--no-audio --vout=dummy`, and the watcher fires anyway
+/// -- about twenty times a second for this ten-frame-a-second media, because the input
+/// clock reports as well as the output. Nothing here claims a rate beyond "it fires,
+/// and often enough that a frame's worth of it is worth coalescing".
+#[test]
+fn the_time_watcher_reports_points_and_only_one_can_be_registered() {
+    let sample = Sample::from_path(path_of(SECOND_SAMPLE));
+    sample.attach_media();
+    let mut probe = WatchProbe::new();
+
+    assert_eq!(
+        watch(&sample, &mut probe, 0),
+        0,
+        "the watcher was refused on a player with no watcher and nothing playing"
+    );
+    assert_eq!(
+        watch(&sample, &mut probe, 0),
+        -1,
+        "a second watcher was accepted; libvlc's header says the second call fails"
+    );
+
+    play_until_playing(&sample);
+    assert!(
+        wait_for_points(&probe, 8, PLAYBACK_TIMEOUT),
+        "the watcher reported {} points in {PLAYBACK_TIMEOUT:?}, which is not a running clock",
+        probe.point_count()
+    );
+    let points = probe.points();
+    println!(
+        "the watcher reported {} points; the first is {:?} and the last {:?}",
+        points.len(),
+        points.first(),
+        points.last()
+    );
+
+    // Every point is a point: a media time, a position within the media, a rate, a
+    // length from the container, and a system date -- which is either a real date on
+    // libvlc's clock or the "the clock was paused" sentinel.
+    let now = unsafe { libvlc_clock() };
+    for point in &points {
+        assert!(
+            point.ts_us >= -1,
+            "a point reported a media time of {} us, outside libvlc's `>= 0 or -1`",
+            point.ts_us
+        );
+        assert!(
+            (0.0..=1.0).contains(&point.position),
+            "a point reported position {}, outside 0.0-1.0",
+            point.position
+        );
+        assert!(point.rate > 0.0, "a point reported rate {}", point.rate);
+        assert!(
+            point.system_date_us == i64::MAX || point.system_date_us <= now,
+            "a point reports a system date {} ahead of the clock's {now} without being the paused sentinel",
+            point.system_date_us
+        );
+    }
+    assert!(
+        points.iter().any(|point| point.system_date_us != i64::MAX),
+        "every point claimed the clock was paused, which cannot be true of a running playback"
+    );
+
+    let before = probe.point_count();
+    unsafe { libvlc_media_player_unwatch_time(sample.player) };
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        probe.point_count(),
+        before,
+        "the watcher reported more points after being taken off"
+    );
+}
+
+/// A larger report period means fewer reports: `min_period_us` really is a floor.
+///
+/// `0` asks libvlc for everything its sources produce; a large value asks it to hold
+/// most of them back. Both are counted on one playback, so the media, the output and
+/// the machine are the same for the two.
+#[test]
+fn a_larger_min_period_reports_less_often() {
+    let sample = Sample::from_path(path_of(SECOND_SAMPLE));
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    let mut every = WatchProbe::new();
+    assert_eq!(watch(&sample, &mut every, 0), 0, "the watcher was refused");
+    std::thread::sleep(Duration::from_millis(1200));
+    let all = every.point_count();
+    unsafe { libvlc_media_player_unwatch_time(sample.player) };
+
+    let mut sparse = WatchProbe::new();
+    assert_eq!(
+        watch(&sample, &mut sparse, 500_000),
+        0,
+        "the watcher was refused the second time, after being taken off once"
+    );
+    std::thread::sleep(Duration::from_millis(1200));
+    let few = sparse.point_count();
+    unsafe { libvlc_media_player_unwatch_time(sample.player) };
+
+    println!("with min_period 0: {all} points in 1.2 s; with 500 ms: {few}");
+    assert!(
+        all >= 4,
+        "a period of 0 produced {all} points in 1.2 s, which is not a running clock"
+    );
+    assert!(
+        few < all,
+        "asking for a 500 ms period produced {few} points against {all} for no period at all"
+    );
+}
+
+/// One seek is reported twice: the point it was asked for, then the end of it.
+///
+/// libvlc calls its seek callback twice for one seek, and the second call carries no
+/// point at all -- which is what the binding splits into `time_point_seek` and
+/// `time_point_seek_finished`.
+#[test]
+fn a_seek_is_reported_twice_by_the_watcher() {
+    let sample = Sample::from_path(path_of(SECOND_SAMPLE));
+    sample.attach_media();
+    play_until_playing(&sample);
+    let mut probe = WatchProbe::new();
+    assert_eq!(watch(&sample, &mut probe, 0), 0, "the watcher was refused");
+    assert!(
+        wait_for_points(&probe, 1, PLAYBACK_TIMEOUT),
+        "no point arrived before the seek"
+    );
+
+    assert_eq!(
+        unsafe { libvlc_media_player_set_time(sample.player, 30_000, false) },
+        0,
+        "the seek was refused"
+    );
+    let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+    while Instant::now() < deadline && probe.seeks().len() < 2 {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let seeks = probe.seeks();
+    println!(
+        "the watcher reported {} seek events: {seeks:?}",
+        seeks.len()
+    );
+    assert_eq!(
+        seeks.len(),
+        2,
+        "one seek produced {} seek events rather than the request and the end of it",
+        seeks.len()
+    );
+    assert!(
+        seeks[0].is_some(),
+        "the first seek event carried no point, so the seek's own target was never reported"
+    );
+    assert!(
+        seeks[1].is_none(),
+        "the second seek event carried a point; libvlc sends NULL when the seek is over"
+    );
+    let target = seeks[0].expect("checked above");
+    assert!(
+        (target.ts_us - 30_000_000).abs() < 1_000_000,
+        "the seek was asked for 30 s and reported as {} us",
+        target.ts_us
+    );
+    unsafe { libvlc_media_player_unwatch_time(sample.player) };
+}
+
+/// Interpolation advances a point by the time since it was made, and refuses when that
+/// lands before the media's start.
+///
+/// The points here are built by hand rather than captured, because what is under test
+/// is arithmetic: a captured point would make the expected value depend on how long the
+/// test took. The three cases are the ones the binding's `interpolate_time_point` rests
+/// on -- a point from the past, a paused-clock point (`INT64_MAX`, which libvlc answers
+/// with the point unchanged), and a point dated **ahead** of the clock it is read
+/// against, which is how the media time comes out negative. libvlc's own header says a
+/// point's date "can be in the future or in the past", and this is what that costs:
+/// `VLC_EGENERIC` -- which is what libvlc answers where its header promises `-1` -- and
+/// **an out-parameter holding its own uninitialised stack**. That last part is why the
+/// binding passes its own sentinels in and reports them, rather than reading whatever
+/// the call left behind.
+#[test]
+fn interpolating_a_point_uses_the_system_clock_and_refuses_a_negative_result() {
+    let point = libvlc_media_player_time_point_t {
+        position: 0.5,
+        rate: 1.0,
+        ts_us: 5_000_000,
+        length_us: 10_000_000,
+        system_date_us: 1_000_000,
+    };
+
+    // One second of system time later, at rate 1.0: the media time has moved a second.
+    let mut ts_us: i64 = -2;
+    let mut position: f64 = -2.0;
+    let status = unsafe {
+        libvlc_media_player_time_point_interpolate(&point, 2_000_000, &mut ts_us, &mut position)
+    };
+    assert_eq!(status, 0, "the interpolation of a fresh point was refused");
+    assert_eq!(
+        ts_us, 6_000_000,
+        "one second of clock did not move the media time by one second"
+    );
+    assert!(
+        (position - 0.6).abs() < 0.0001,
+        "the interpolated position is {position}, not the point's 0.5 plus a tenth"
+    );
+
+    // The same point at twice the rate moves twice as far.
+    let fast = libvlc_media_player_time_point_t { rate: 2.0, ..point };
+    let status = unsafe {
+        libvlc_media_player_time_point_interpolate(&fast, 2_000_000, &mut ts_us, &mut position)
+    };
+    assert_eq!(status, 0, "the interpolation at a doubled rate was refused");
+    assert_eq!(ts_us, 7_000_000, "twice the rate did not move twice as far");
+
+    // A paused clock has nothing to interpolate: the point comes back unchanged.
+    let paused = libvlc_media_player_time_point_t {
+        system_date_us: i64::MAX,
+        ..point
+    };
+    let status = unsafe {
+        libvlc_media_player_time_point_interpolate(&paused, 2_000_000, &mut ts_us, &mut position)
+    };
+    assert_eq!(status, 0, "a paused-clock point was refused");
+    assert_eq!(
+        (ts_us, position),
+        (5_000_000, 0.5),
+        "a paused-clock point was interpolated instead of returned as it was"
+    );
+
+    // A point dated ahead of the clock it is read against: its media time would come
+    // out negative, so libvlc refuses. What its two out-parameters hold then is the
+    // reason the binding discards both on a non-zero status: its core returns before
+    // writing either, but the libvlc wrapper writes `out_ts_us` anyway, from a local the
+    // core never filled. The caller therefore gets *stack memory* back -- measured:
+    // 292914458344 in one run and another number in the next -- while `position` is left
+    // as it was. Nothing here can assert what that number is; what is asserted is that it
+    // is not the caller's value, because that is what makes it untrustworthy.
+    let ahead = libvlc_media_player_time_point_t {
+        ts_us: 100,
+        system_date_us: 10_000_000,
+        ..point
+    };
+    ts_us = -7;
+    position = -7.0;
+    let status =
+        unsafe { libvlc_media_player_time_point_interpolate(&ahead, 1, &mut ts_us, &mut position) };
+    assert_eq!(
+        status,
+        i32::MIN,
+        "interpolating a point dated 10 s ahead, which lands at a negative media time, was accepted"
+    );
+    assert_ne!(
+        ts_us, -7,
+        "libvlc's wrapper is supposed to write out_ts_us on every path, including the one \
+         where its core wrote nothing, and this one did not"
+    );
+    assert_eq!(
+        position, -7.0,
+        "libvlc wrote the position on the path where it reports failure, although its core \
+         returns before it touches that parameter"
+    );
+    println!("a refused interpolation answers {status} and leaves ts_us at {ts_us}");
+}
+
 /// A track's geometry is the file's numbers, or all six fields are zero.
 ///
 /// Nothing read the video member of the union before, so what this pins is that the

@@ -442,6 +442,28 @@ impl VLCInstance {
         self.log.level.load(Ordering::Relaxed)
     }
 
+    /// The clock behind every time value libvlc reports, in microseconds.
+    ///
+    /// # Returns
+    /// the current time on libvlc's own clock: monotonic, in microseconds, with an
+    /// arbitrary but system-wide origin (`CLOCK_MONOTONIC` where the platform has
+    /// one). It never goes backwards.
+    ///
+    /// # Note
+    /// - This is the clock the `system_date_us` of
+    ///   [signal VLCMediaPlayer.time_point] is on, and the one
+    ///   [method VLCMediaPlayer.interpolate_time_point] reads internally. A caller
+    ///   that keeps an interpolated time and compares it with a later one needs this
+    ///   to read the later one, and it is the only correct source: Godot's own
+    ///   microsecond clock (`Time.get_ticks_usec`) starts at another origin, so a
+    ///   value from one of them lands anywhere at all on this one.
+    /// - Static, like [method get_version]: libvlc's clock exists before and
+    ///   independently of any instance.
+    #[func]
+    fn get_clock_us() -> i64 {
+        unsafe { vlc::libvlc_clock() }
+    }
+
     pub fn get_vlc_instance(&self) -> *mut vlc::libvlc_instance_t {
         self.instance.expect(
             "libvlc_new failed, so this extension has no LibVLC instance; the reason is in the error it logged",

@@ -22,6 +22,7 @@ mod events;
 mod internal_audio_stream;
 pub mod internal_audio_stream_playback;
 mod software_video;
+mod time_watch;
 
 #[cfg(all(feature = "gpu", windows))]
 mod gpu_d3d11;
@@ -150,6 +151,11 @@ struct VlcMediaPlayer {
     /// The value last emitted on [signal buffering]. Main thread only: the
     /// signal is emitted from `on_notification`, never from the callback.
     buffering_reported: f32,
+    /// The playback-time watcher (`time_watch.rs`): the latest point libvlc has
+    /// reported, and the queue of watcher events for the main thread. Boxed because
+    /// libvlc is handed this address once and it has to stay put for as long as the
+    /// watcher is registered.
+    time_watch: Box<time_watch::WatchSink>,
     texture: Gd<ImageTexture>,
     texture_rect: Gd<TextureRect>,
     /// The most recent frame the software output produced, kept so that
@@ -208,6 +214,7 @@ impl IControl for VlcMediaPlayer {
             event_park: Box::new(events::EventPark::new()),
             buffering_percent: Box::new(AtomicU32::new(NO_BUFFERING_REPORT.to_bits())),
             buffering_reported: NO_BUFFERING_REPORT,
+            time_watch: Box::new(time_watch::WatchSink::new()),
             texture,
             texture_rect: texture_rect.clone(),
             frame: None,
@@ -252,6 +259,10 @@ impl IControl for VlcMediaPlayer {
             // frame of its own, so a player is what carries its signal. The console
             // line was already written where the message arrived.
             crate::vlc_instance::drain_parked_logs();
+            // The time watcher's events go out from the same frame: a script that
+            // asked to be told when the clock moved is told here, on the main thread,
+            // with the point libvlc handed over on one of its own.
+            self.emit_watched_time();
             // The buffering value is reported from here, not from the event
             // callback, so that a burst of upstream reports costs one signal
             // per frame at most -- and only when the value actually moved.
@@ -297,6 +308,11 @@ impl IControl for VlcMediaPlayer {
 
 impl Drop for VlcMediaPlayer {
     fn drop(&mut self) {
+        // A registered time watcher has to go before the player it is registered on:
+        // libvlc keeps the timer inside the player, and its own teardown does not
+        // remove it. The sink knows whether there is one -- asking libvlc to unwatch
+        // when there is nothing to unwatch is a crash rather than an error.
+        self.time_watch.unregister(self.player_ptr);
         // Disconnect the per-frame callable BEFORE releasing the player —
         // an in-flight frame_pre_draw must not run against a half-torn
         // ImporterTask.
@@ -477,14 +493,91 @@ impl VlcMediaPlayer {
     ///   period, the rate it settles at depends on the input and the container,
     ///   and it stops entirely while the input is buffering. [method get_time] is
     ///   the one to read for a smooth display.
-    /// - It is also not a clock for gameplay: synchronising anything with the
-    ///   picture needs a value that advances with the output, and libvlc's timer
-    ///   for that is not exposed by this binding.
+    /// - It is also not a clock for gameplay. That is [signal time_point], which
+    ///   arrives with every displayed frame or written block of audio and carries
+    ///   the system date it was made at, and [method interpolate_time_point], which
+    ///   reads the latest of those against the current system clock.
     /// - Playback ending does not produce a final value -- the last one can be
     ///   around 250 ms short of the end -- so finish a progress bar from
     ///   [method get_length] rather than by waiting for this to reach it.
     #[signal]
     fn time_changed(time: i64);
+    /// Emitted with a time point libvlc reported: the clock a game can align itself
+    /// with. Not emitted until [method watch_time] is called.
+    ///
+    /// # Parameters
+    /// - [param ts_us] the media time of this point, in **microseconds**, or `-1`
+    ///   while libvlc has none (`>= 0` or `-1` is libvlc's own contract).
+    /// - [param position] the position, `0.0`-`1.0`.
+    /// - [param rate] the playback rate of the player at that moment.
+    /// - [param length_us] the media length in microseconds, or `0` while unknown.
+    /// - [param system_date_us] the system date of this point, in microseconds, on
+    ///   [method VLCInstance.get_clock_us]'s clock. It can be in the past or in the
+    ///   future, and `9223372036854775807` (`INT64_MAX`) means the clock was paused
+    ///   when this point was made -- the first point of a playback is often one of
+    ///   those.
+    ///
+    /// # Note
+    /// - **Do not subtract these two values to get "now".** libvlc's own header says
+    ///   of [param ts_us] and [param system_date_us] that they "should not be used
+    ///   directly", and this is why: [method interpolate_time_point] is what reads
+    ///   them against a current system date, and it handles the paused-clock case and
+    ///   the clamping to the media's length. The two are exposed because a caller
+    ///   that schedules its own work needs them, not because the difference is the
+    ///   answer.
+    /// - Its pace is the output's, not the caller's: libvlc reports one each time a
+    ///   video frame is displayed or a block of audio is written, so the interval is
+    ///   somewhere between 5 ms and 10 seconds depending on the source (measured on
+    ///   this runtime: about twenty a second for a ten-frame-a-second media with the
+    ///   dummy video output and no audio). A caller that draws more often than that
+    ///   interpolates; one that draws less often can ignore the points in between.
+    /// - At most one is emitted per frame, and a point that arrives while another is
+    ///   still waiting replaces it: an older point has nothing left to say once a
+    ///   newer one exists. [method interpolate_time_point] always reads the newest,
+    ///   whether or not its signal has gone out yet.
+    /// - While a seek is in progress libvlc reports no points at all, and it says so
+    ///   in its header; [signal time_point_seek] and [signal time_point_seek_finished]
+    ///   bracket that.
+    /// - The units differ from the rest of this class: milliseconds everywhere else,
+    ///   microseconds here.
+    #[signal]
+    fn time_point(ts_us: i64, position: f64, rate: f64, length_us: i64, system_date_us: i64);
+    /// Emitted when the player is paused, or is stopping. Only while
+    /// [method watch_time] is registered.
+    ///
+    /// # Parameters
+    /// - [param system_date_us] the system date of the event, in microseconds, on
+    ///   [method VLCInstance.get_clock_us]'s clock -- **or `0` when the player is
+    ///   stopping rather than pausing.** libvlc sends this one callback for both and
+    ///   its date is only meaningful for a pause; [method get_state] is what tells
+    ///   the two apart.
+    ///
+    /// # Note
+    /// The point from before this is now stale: interpolating it would keep advancing
+    /// a clock that has stopped. libvlc's own advice is to stop interpolating until
+    /// the next update.
+    #[signal]
+    fn time_point_paused(system_date_us: i64);
+    /// Emitted when a seek is asked for, with the point it was asked for. Only while
+    /// [method watch_time] is registered.
+    ///
+    /// # Parameters
+    /// The same five as [signal time_point].
+    ///
+    /// # Note
+    /// [signal time_point_seek_finished] follows when the seek is over; between the
+    /// two there are no [signal time_point] updates, because libvlc cannot report a
+    /// point while the position is moving.
+    #[signal]
+    fn time_point_seek(ts_us: i64, position: f64, rate: f64, length_us: i64, system_date_us: i64);
+    /// Emitted when the seek [signal time_point_seek] announced is over. Only while
+    /// [method watch_time] is registered.
+    ///
+    /// # Note
+    /// Points can be reported again from here on. libvlc's own signal for this is the
+    /// seek callback with no point, which is why this one carries nothing.
+    #[signal]
+    fn time_point_seek_finished();
     /// Emitted with the length of the media in milliseconds, once libvlc knows it.
     ///
     /// # Note
@@ -1492,6 +1585,158 @@ impl VlcMediaPlayer {
         unsafe { libvlc_media_player_jump_time(self.player_ptr, delta_ms) }
     }
 
+    /// Starts watching the playback clock: the clock a game can align itself with.
+    ///
+    /// When this is on, libvlc tells this binding every time a video frame is
+    /// displayed or a block of audio is written -- the interval depends on the source
+    /// and is somewhere between 5 ms and 10 seconds -- and each report becomes
+    /// [signal time_point]. [method interpolate_time_point] reads the newest report
+    /// against the current system clock, which is what makes a position smooth at
+    /// whatever rate the caller draws at.
+    ///
+    /// # Parameters
+    /// - [param min_period_us] the smallest interval between reports, in
+    ///   microseconds: `0` asks for all of them, and a larger value is the way to
+    ///   stop a fast source from report-flooding. A negative value is refused here
+    ///   (see below).
+    ///
+    /// # Returns
+    /// `0` on success, `-1` if the period was negative or if a watcher is already
+    /// registered. libvlc's header promises `-1` also for an allocation failure;
+    /// unlike most of this binding's, this one really can answer `-1`.
+    ///
+    /// # Only one watcher, and this one is per player
+    /// libvlc allows a single watcher at a time and its own second call fails, with a
+    /// message in its log. This binding answers the same way without asking, and
+    /// [method is_watching_time] says which state the player is in. There is no
+    /// per-handler registration: [signal time_point] goes to every connected handler,
+    /// and watching is one flag on the player.
+    ///
+    /// # A negative period would abort the process
+    /// libvlc checks the period with an assertion and nothing else, and this runtime
+    /// is built with assertions on: a negative value would take the process down
+    /// rather than be clamped or ignored. This is the same situation as
+    /// [method set_spu_text_scale]'s range, and it is handled the same way -- refused
+    /// here, with the current state left alone.
+    ///
+    /// # Note
+    /// - Watching is not per media: it can be turned on before playback and it stays
+    ///   on across [method stop_async] and a changed [member media]. What it reports
+    ///   while nothing plays is nothing, because libvlc has no output to report from.
+    /// - [method unwatch_time] is what turns it off, and the player turns it off
+    ///   itself when it is freed.
+    #[func]
+    fn watch_time(&mut self, min_period_us: i64) -> i32 {
+        if min_period_us < 0 {
+            godot_error!(
+                "godot-vlc: watch_time({min_period_us}) is negative; libvlc asserts that it is not and this runtime has assertions on, so the call was not made"
+            );
+            return -1;
+        }
+        if self.time_watch.watching() {
+            godot_error!(
+                "godot-vlc: watch_time was called while already watching; libvlc allows one watcher at a time and the one already registered is still on"
+            );
+            return -1;
+        }
+        let status = self.time_watch.register(self.player_ptr, min_period_us);
+        if status != 0 {
+            godot_error!(
+                "godot-vlc: libvlc refused to watch the playback clock: {}",
+                crate::vlc_instance::last_error()
+            );
+        }
+        status
+    }
+
+    /// Stops watching the playback clock. Nothing is emitted after this.
+    ///
+    /// # Note
+    /// - Asking for this when no watcher is registered writes an error and does
+    ///   nothing. libvlc's own `unwatch` assumes a watcher exists -- its check is an
+    ///   assertion that a release build drops, after which it walks a null pointer --
+    ///   so this binding tracks the state itself and never makes that call blind.
+    /// - It is safe to call from a signal handler and from `_exit_tree`; the watcher
+    ///   is also removed automatically when the player is freed.
+    #[func]
+    fn unwatch_time(&mut self) {
+        if !self.time_watch.unregister(self.player_ptr) {
+            godot_error!(
+                "godot-vlc: unwatch_time was called with no watcher registered; nothing was called, because libvlc would crash on that"
+            );
+        }
+    }
+
+    /// Whether a watcher is registered: what [method watch_time] last did.
+    ///
+    /// # Returns
+    /// `true` between a [method watch_time] that answered `0` and the
+    /// [method unwatch_time] that follows it.
+    #[func]
+    fn is_watching_time(&self) -> bool {
+        self.time_watch.watching()
+    }
+
+    /// The newest time point, read against the current system clock.
+    ///
+    /// This is the smooth playhead: it takes the last point libvlc reported and
+    /// advances it by however long ago that was, at the rate playback is running at,
+    /// so it can be read every frame no matter how often the reports arrive.
+    ///
+    /// # Returns
+    /// a dictionary with these keys:
+    /// - `ts_us`: int, the interpolated media time in **microseconds**, or `-1` when
+    ///   there is nothing to interpolate from
+    /// - `position`: float, `0.0`-`1.0`, or `-1.0` for the same reason
+    ///
+    /// # Note
+    /// - `-1` has two meanings and they are the same answer, as with
+    ///   [method get_audio_delay_us]: nothing has been reported yet because
+    ///   [method watch_time] was never called or no output has run, and libvlc
+    ///   answering that the interpolated time would be negative -- which is what
+    ///   happens while the input is buffering. Neither is an error to report, and
+    ///   both leave both keys at `-1`.
+    /// - When libvlc answers that way, the time it hands back is **its own
+    ///   uninitialised stack**: its core returns before writing either out-parameter,
+    ///   and then its wrapper writes the time from a local the core never filled
+    ///   (measured: two different six-figure numbers in two runs). Nothing of that
+    ///   reaches a caller here -- the two `-1`s are this binding's sentinel, not a
+    ///   reading. The call itself answers `VLC_EGENERIC` on that path rather than the
+    ///   `-1` its header promises, which is the same substitution [method play] and
+    ///   [method stop_async] make.
+    /// - The clock is libvlc's own ([method VLCInstance.get_clock_us]), read here
+    ///   rather than taken from the caller. Godot's own clocks are on a different
+    ///   origin, so a system date from one of them would interpolate to a wrong time
+    ///   without saying so.
+    /// - A point whose clock was paused (see [signal time_point]) has nothing to
+    ///   interpolate: the value is returned as it was reported.
+    #[func]
+    fn interpolate_time_point(&self) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let Some(point) = self.time_watch.latest() else {
+            dict.set("ts_us", -1i64);
+            dict.set("position", -1.0f64);
+            return dict;
+        };
+        let mut ts_us: i64 = -1;
+        let mut position: f64 = -1.0;
+        let status = unsafe {
+            libvlc_media_player_time_point_interpolate(
+                &point,
+                libvlc_clock(),
+                &mut ts_us,
+                &mut position,
+            )
+        };
+        if status != 0 {
+            ts_us = -1;
+            position = -1.0;
+        }
+        dict.set("ts_us", ts_us);
+        dict.set("position", position);
+        dict
+    }
+
     /// Set movie title.
     ///
     /// # Parameters
@@ -1751,6 +1996,39 @@ impl VlcMediaPlayer {
 
 #[allow(clippy::unnecessary_cast)]
 impl VlcMediaPlayer {
+    /// Emits the watcher's signals for everything recorded since the last frame.
+    ///
+    /// Called from `on_notification`, on the main thread.
+    fn emit_watched_time(&mut self) {
+        while let Some(watch) = self.time_watch.pop() {
+            match watch {
+                time_watch::ParkedWatch::Point(point) => {
+                    self.signals().time_point().emit(
+                        point.ts_us,
+                        point.position,
+                        point.rate,
+                        point.length_us,
+                        point.system_date_us,
+                    );
+                }
+                time_watch::ParkedWatch::Paused(system_date_us) => {
+                    self.signals().time_point_paused().emit(system_date_us);
+                }
+                time_watch::ParkedWatch::Seek(point) => {
+                    self.signals().time_point_seek().emit(
+                        point.ts_us,
+                        point.position,
+                        point.rate,
+                        point.length_us,
+                        point.system_date_us,
+                    );
+                }
+                time_watch::ParkedWatch::SeekFinished => {
+                    self.signals().time_point_seek_finished().emit();
+                }
+            }
+        }
+    }
     fn update_media(&self) {
         if let Some(media_ptr) = self.get_media_ptr() {
             unsafe {

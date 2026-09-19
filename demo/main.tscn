@@ -43,6 +43,11 @@ func _process(_delta: float) -> void:
 	var pos = get_position()
 	%Position.text = \"position: %.6f\" % pos
 	%GPUOutput.text = \"gpu output: \" + str(is_gpu_output_active())
+	if %TimeWatch/Watch.button_pressed:
+		# The interpolated clock, read every frame: libvlc reports points at the output's
+		# own pace, and interpolate_time_point() advances the newest of them to now.
+		var watched: Dictionary = interpolate_time_point()
+		%TimeWatch/Clock.text = \"clock: %.3f s\" % (watched[\"ts_us\"] / 1000000.0)
 	_update_loop_label()
 	if not dragging:
 		%HSlider.value = pos
@@ -104,6 +109,16 @@ func _on_audio_delay_value_changed(value: float) -> void:
 	# value. The delay belongs to the input: before one exists the call is accepted and
 	# dropped, so this only has an effect once something is playing.
 	set_audio_delay_us(int(value * 1000.0))
+
+
+func _on_time_watch_toggled(pressed: bool) -> void:
+	# libvlc allows one watcher per player and fails a second registration; the binding
+	# answers -1 for that without asking it, so this only has to handle its own button.
+	if pressed:
+		if watch_time(0) != 0:
+			%TimeWatch/Watch.set_pressed_no_signal(false)
+	else:
+		unwatch_time()
 
 
 func _update_loop_label() -> void:
@@ -509,6 +524,20 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "gpu output:"
 
+[node name="TimeWatch" type="HBoxContainer" parent="ScrollContainer/VBoxContainer" unique_id=1421064739]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Watch" type="CheckButton" parent="ScrollContainer/VBoxContainer/TimeWatch" unique_id=1421064740]
+layout_mode = 2
+tooltip_text = "libvlc_media_player_watch_time: one watcher per player, and the points arrive with every displayed frame or written block of audio."
+text = "watch clock"
+
+[node name="Clock" type="Label" parent="ScrollContainer/VBoxContainer/TimeWatch" unique_id=1421064741]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "clock:"
+
 [node name="UIScale" type="Label" parent="ScrollContainer/VBoxContainer"]
 unique_name_in_owner = true
 layout_mode = 2
@@ -579,3 +608,4 @@ use_native_dialog = true
 [connection signal="track_updated" from="." to="." method="_on_track_changed"]
 [connection signal="track_selected" from="." to="." method="_on_track_changed"]
 [connection signal="track_unselected" from="." to="." method="_on_track_changed"]
+[connection signal="toggled" from="ScrollContainer/VBoxContainer/TimeWatch/Watch" to="." method="_on_time_watch_toggled"]
