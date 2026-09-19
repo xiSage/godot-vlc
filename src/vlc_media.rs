@@ -27,6 +27,7 @@ use crate::{
     util::cstring_from_gstring,
     vlc::*,
     vlc_instance::{self, clear_last_error, last_error},
+    vlc_media_list::VlcMediaList,
     vlc_subtitle::VlcSubtitle,
     vlc_track_list::VlcTrackList,
 };
@@ -311,10 +312,12 @@ impl VlcMedia {
 
     /// Wraps a media libvlc hands over, taking the reference that came with it.
     ///
-    /// Only [method duplicate_media] uses this today. The wrapper owns one
-    /// reference, which [VlcMedia]'s `Drop` releases, and it registers the parse
-    /// signal like a media this binding built, so it behaves the same in a script.
-    fn from_ptr(media_ptr: *mut libvlc_media_t) -> Option<Gd<Self>> {
+    /// [method duplicate_media] uses this for a copy, and a media list uses it for
+    /// every element it hands out -- `libvlc_media_list_item_at_index` retains what it
+    /// returns, and that reference is what the wrapper owns and `Drop` releases. The
+    /// parse signal is registered like a media this binding built, so a media that
+    /// arrived this way behaves the same in a script.
+    pub(crate) fn from_ptr(media_ptr: *mut libvlc_media_t) -> Option<Gd<Self>> {
         if media_ptr.is_null() {
             return None;
         }
@@ -466,6 +469,36 @@ impl VlcMedia {
                 media.bind_mut().self_gd.as_mut().unwrap().as_mut() as *mut _ as *mut c_void,
             );
         }
+    }
+
+    /// The media's own subitems: the entries a playlist, a disc or a directory holds.
+    ///
+    /// # Returns
+    /// the list of what is inside this media. It is **read-only** (see
+    /// [method VLCMediaList.is_read_only]) and **live**: libvlc's parsing thread
+    /// appends to it as it finds entries, so its contents change under the caller.
+    /// [signal VLCMediaList.end_reached] is how a script waits for that to finish.
+    ///
+    /// # Note
+    /// - Nothing is in it until the media has been parsed, and **playing is not
+    ///   parsing**: the entries of a playlist do arrive while it plays, but
+    ///   [signal VLCMediaList.end_reached] only comes from
+    ///   [method parse_request] (measured: libvlc sends it where it reports a media's
+    ///   parsed status changing). A `.m3u` is [constant MEDIA_TYPE_FILE] until a parse
+    ///   turns it into [constant MEDIA_TYPE_PLAYLIST], and for a media whose type
+    ///   libvlc cannot guess (one built by [method load_from_file]) the flags have to
+    ///   include [constant PARSE_FORCED].
+    /// - The wrapper owns a reference of its own, so the list stays valid even if the
+    ///   media is freed first.
+    /// - libvlc's header for this call says it can answer `NULL`, and for a media this
+    ///   binding built it cannot: the list is created with the media, and libvlc hands
+    ///   back the same one every time. `null` here would mean the media was not one of
+    ///   this binding's.
+    #[func]
+    fn get_subitems(&self) -> Option<Gd<VlcMediaList>> {
+        // libvlc retains the list for the caller, and `from_ptr` takes that over.
+        let subitems = unsafe { libvlc_media_subitems(self.media_ptr) };
+        VlcMediaList::from_ptr(subitems)
     }
 
     /// Add an option to the media.\
