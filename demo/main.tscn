@@ -165,31 +165,70 @@ func _track_label(track: VLCTrack) -> String:
 
 
 func _on_playing() -> void:
-	video_tracks = get_tracklist(VLCTrack.TYPE_VIDEO, false).get_tracks()
-	audio_tracks = get_tracklist(VLCTrack.TYPE_AUDIO, false).get_tracks()
-	text_tracks = get_tracklist(VLCTrack.TYPE_TEXT, false).get_tracks()
-	
+	_refresh_tracks()
+
+
+# The three lists, rebuilt from the player: when a media opens, and again for every
+# track event, because the tracks of a running input change -- a subtitle attached
+# while playing is a new track, and libvlc also updates the video track once the
+# decoder has reported the stream's format.
+#
+# Nothing in here answers its own controls: setting an OptionButton's selection or
+# an ItemList's does not emit their signals, only a click does.
+func _refresh_tracks() -> void:
+	var video_list := get_tracklist(VLCTrack.TYPE_VIDEO, false)
+	var audio_list := get_tracklist(VLCTrack.TYPE_AUDIO, false)
+	var text_list := get_tracklist(VLCTrack.TYPE_TEXT, false)
+	video_tracks.clear()
+	audio_tracks.clear()
+	text_tracks.clear()
+	if video_list != null:
+		video_tracks.assign(video_list.get_tracks())
+	if audio_list != null:
+		audio_tracks.assign(audio_list.get_tracks())
+	if text_list != null:
+		text_tracks.assign(text_list.get_tracks())
+
 	var video_button: OptionButton = %VideoTrack/OptionButton
-	var audio_button: OptionButton= %AudioTrack/OptionButton
-	var text_button: OptionButton= %TextTrack/OptionButton
+	var audio_button: OptionButton = %AudioTrack/OptionButton
+	var text_items: ItemList = %TextTrack/ItemList
 	video_button.clear()
 	audio_button.clear()
-	text_button.clear()
+	text_items.clear()
 	video_button.add_item(\"disable\")
 	audio_button.add_item(\"disable\")
-	text_button.add_item(\"disable\")
 	for track in video_tracks:
 		video_button.add_item(_track_label(track))
-		if track.is_selected():
-			video_button.selected = video_button.item_count - 1
 	for track in audio_tracks:
 		audio_button.add_item(_track_label(track))
-		if track.is_selected():
-			audio_button.selected = video_button.item_count - 1
 	for track in text_tracks:
-		text_button.add_item(_track_label(track))
-		if track.is_selected():
-			text_button.selected = video_button.item_count - 1
+		text_items.add_item(_track_label(track))
+
+	# The player is asked what is selected, rather than the tracks above: a track's
+	# own is_selected() is as old as the list it came from, and libvlc queues a
+	# selection, so the two can disagree for a frame.
+	var video_selected := get_selected_track(VLCTrack.TYPE_VIDEO)
+	if video_selected != null:
+		for i in video_tracks.size():
+			if video_tracks[i].get_id() == video_selected.get_id():
+				video_button.selected = i + 1
+	var audio_selected := get_selected_track(VLCTrack.TYPE_AUDIO)
+	if audio_selected != null:
+		for i in audio_tracks.size():
+			if audio_tracks[i].get_id() == audio_selected.get_id():
+				audio_button.selected = i + 1
+	var text_selected := get_tracklist(VLCTrack.TYPE_TEXT, true)
+	if text_selected != null:
+		for selected in text_selected.get_tracks():
+			for i in text_tracks.size():
+				if text_tracks[i].get_id() == selected.get_id():
+					text_items.select(i, false)
+
+
+# Every track event redraws the lists: the track that changed is the one whose label
+# or selection has just gone stale.
+func _on_track_changed(_track_type: int, _id: String) -> void:
+	_refresh_tracks()
 
 
 func _on_video_option_button_item_selected(index: int) -> void:
@@ -206,11 +245,17 @@ func _on_audio_option_button_item_selected(index: int) -> void:
 		select_track(audio_tracks[index - 1])
 
 
-func _on_text_option_button_item_selected(index: int) -> void:
-	if index == 0:
-		unselect_track_type(VLCTrack.TYPE_TEXT)
-	else:
-		select_track(text_tracks[index - 1])
+# The text list is where the demo shows the one thing libvlc lets a caller select
+# more than one of: up to two subtitles at once. The whole set is handed over,
+# because that is what select_tracks means -- it replaces the type's selection
+# instead of adding to it, and an empty set is what clears it.
+func _on_text_item_list_multi_selected(_index: int, _selected: bool) -> void:
+	var text_items: ItemList = %TextTrack/ItemList
+	var wanted: Array[VLCTrack] = []
+	for i in text_tracks.size():
+		if text_items.is_selected(i):
+			wanted.append(text_tracks[i])
+	select_tracks(VLCTrack.TYPE_TEXT, wanted)
 
 
 func _on_statics_pressed() -> void:
@@ -321,10 +366,11 @@ layout_mode = 2
 size_flags_horizontal = 0
 text = "text track:"
 
-[node name="OptionButton" type="OptionButton" parent="ScrollContainer/VBoxContainer/TextTrack" unique_id=917506089]
+[node name="ItemList" type="ItemList" parent="ScrollContainer/VBoxContainer/TextTrack" unique_id=917506089]
+custom_minimum_size = Vector2(0, 64)
 layout_mode = 2
 size_flags_horizontal = 3
-clip_text = true
+select_mode = 2
 
 [node name="HSlider" type="HSlider" parent="ScrollContainer/VBoxContainer" unique_id=499565026]
 unique_name_in_owner = true
@@ -424,10 +470,15 @@ use_native_dialog = true
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/ResetLoop" to="." method="_on_reset_loop_pressed"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/VideoTrack/OptionButton" to="." method="_on_video_option_button_item_selected"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/AudioTrack/OptionButton" to="." method="_on_audio_option_button_item_selected"]
-[connection signal="item_selected" from="ScrollContainer/VBoxContainer/TextTrack/OptionButton" to="." method="_on_text_option_button_item_selected"]
+[connection signal="multi_selected" from="ScrollContainer/VBoxContainer/TextTrack/ItemList" to="." method="_on_text_item_list_multi_selected"]
 [connection signal="drag_ended" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_drag_ended"]
 [connection signal="drag_started" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_drag_started"]
 [connection signal="value_changed" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_value_changed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Statics" to="." method="_on_statics_pressed"]
 [connection signal="confirmed" from="InputMRLDialog" to="." method="_on_input_mrl_dialog_confirmed"]
 [connection signal="file_selected" from="FileDialog" to="." method="_on_file_dialog_file_selected"]
+[connection signal="track_added" from="." to="." method="_on_track_changed"]
+[connection signal="track_removed" from="." to="." method="_on_track_changed"]
+[connection signal="track_updated" from="." to="." method="_on_track_changed"]
+[connection signal="track_selected" from="." to="." method="_on_track_changed"]
+[connection signal="track_unselected" from="." to="." method="_on_track_changed"]
