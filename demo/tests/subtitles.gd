@@ -7,16 +7,18 @@ extends SceneTree
 #
 # Subtitle pixels are part of those frames: LibVLC's video output composites them, so
 # two frames taken at the same point of the same media differ by whether a subtitle was
-# shown. The comparison is done on the bottom strip, where subtitles are drawn, with
-# playback paused so that the video content is the same in both.
+# shown.
 #
 #   godot --headless --path demo --script res://tests/subtitles.gd
 
 const WAIT_TIMEOUT_MS := 20000
-const FRAME_TIMEOUT_MS := 5000
 
 # The first cue of demo/subtitle.srt covers 1-4 s.
 const CUE_MS := 2000
+
+# How much of the bottom of the picture the comparison looks at: where subtitles are
+# drawn, and nothing else that this test cares about.
+const STRIP_HEIGHT := 150
 
 var player: VLCMediaPlayer
 
@@ -56,38 +58,23 @@ func _init() -> void:
 		return
 	player.set_spu_text_scale(1.0)
 
+	if not await _subtitle_reaches_the_frames(imported):
+		return
+
+	# Attaching while playing is the half that has an input to attach to.
 	player.media = VLCMedia.load_from_file(ProjectSettings.globalize_path("res://test.mp4"))
 	player.play()
 	if not await _wait_for_state(VLCMediaPlayer.STATE_PLAYING):
 		_fail("playback never started")
 		return
-	if _text_tracks() != 0:
+	if _text_tracks() > 0:
 		_fail("the media already has a text track, so this test would prove nothing")
 		return
-
-	var without := await _frame_at(CUE_MS)
-	if without == null:
-		_fail("the software output produced no frame")
-		return
-
-	# Attaching while playing is the half that has an input to attach to.
 	if player.add_subtitle(imported, true) != 0:
 		_fail("adding a subtitle to a playing player was refused")
 		return
 	if not await _wait_for_text_track():
 		_fail("the subtitle never became a track")
-		return
-
-	var with := await _frame_at(CUE_MS)
-	if with == null:
-		_fail("no frame arrived after the subtitle was attached")
-		return
-
-	var before := _bottom_strip(without)
-	var after := _bottom_strip(with)
-	print("subtitles: the bottom strip is %d bytes, identical=%s" % [before.size(), before == after])
-	if before == after:
-		_fail("the frames are identical with and without the subtitle, so nothing was drawn")
 		return
 
 	# The delay is the input's: it reads back while playing and is gone after a stop.
@@ -99,6 +86,78 @@ func _init() -> void:
 	quit(0)
 
 
+# Whether a picture carrying the subtitle differs from one without it.
+#
+# Three playbacks of the same media, each stopped at the same point of the first cue:
+# two without the subtitle and one with it attached to the media before playback. The
+# two without it are what make the third mean something -- the picture at that point is
+# deterministic, so a difference there is the subtitle and not the timing.
+#
+# Two earlier shapes of this test are worth knowing about, because both were wrong in
+# the same way. Grabbing two frames from one playback while paused and seeking between
+# them compared a picture with itself: the player's clock reports a seek before the
+# picture for it arrives, and libvlc can drop a seek issued while paused entirely
+# (measured: a seek to 2000 ms left the clock at 366 ms). Attaching the subtitle while
+# paused and waiting does not help either: the paused video output does not composite
+# the new subpicture, so the frame stays the one without it (measured: no change in the
+# bottom strip over three seconds), while resuming playback draws it immediately.
+func _subtitle_reaches_the_frames(imported: Variant) -> bool:
+	var without := await _frame_at_cue(false, null)
+	var again := await _frame_at_cue(false, null)
+	if without == null or again == null:
+		_fail("the software output produced no frame")
+		return false
+
+	var before := _bottom_strip(without)
+	var repeated := _bottom_strip(again)
+	if before != repeated:
+		_fail(
+			"two playbacks without a subtitle disagree about the same point of the media, \
+			 so this comparison cannot attribute a difference to the subtitle"
+		)
+		return false
+
+	var with_subtitle := await _frame_at_cue(true, imported)
+	if with_subtitle == null:
+		_fail("no frame arrived from the playback with the subtitle")
+		return false
+
+	var after := _bottom_strip(with_subtitle)
+	print("subtitles: the bottom strip is %d bytes, identical=%s" % [before.size(), before == after])
+	if before == after:
+		_fail("the frames are identical with and without the subtitle, so nothing was drawn")
+		return false
+	return true
+
+
+# Plays the demo media to the middle of the first cue and returns the picture there.
+#
+# `subtitle` is attached to the media before it is played, which is the only moment
+# that works without an input; `null` plays it without one.
+func _frame_at_cue(with_subtitle: bool, subtitle: Variant) -> Image:
+	var player := VLCMediaPlayer.new()
+	root.add_child(player)
+	await process_frame
+
+	var media := VLCMedia.load_from_file(ProjectSettings.globalize_path("res://test.mp4"))
+	if with_subtitle:
+		media.add_subtitle(subtitle, 4)
+	player.media = media
+	player.play()
+
+	var deadline := Time.get_ticks_msec() + WAIT_TIMEOUT_MS
+	while Time.get_ticks_msec() < deadline and player.get_state() != VLCMediaPlayer.STATE_PLAYING:
+		await process_frame
+	while Time.get_ticks_msec() < deadline and player.get_time() < CUE_MS:
+		await process_frame
+	var frame: Image = player.get_frame()
+	print("subtitles: grabbed a frame at %d ms, with_subtitle=%s" % [player.get_time(), with_subtitle])
+
+	player.queue_free()
+	await process_frame
+	return frame
+
+
 func _text_tracks() -> int:
 	var tracks: Variant = player.get_tracklist(VLCTrack.TYPE_TEXT, false)
 	if tracks == null:
@@ -107,7 +166,7 @@ func _text_tracks() -> int:
 
 
 func _wait_for_text_track() -> bool:
-	var deadline := Time.get_ticks_msec() + FRAME_TIMEOUT_MS
+	var deadline := Time.get_ticks_msec() + WAIT_TIMEOUT_MS
 	while Time.get_ticks_msec() < deadline:
 		if _text_tracks() > 0:
 			return true
@@ -124,27 +183,9 @@ func _wait_for_state(wanted: int) -> bool:
 	return false
 
 
-# Seeks while paused and returns the frame that follows, so that two calls with the
-# same argument compare the same video content.
-func _frame_at(time_ms: int) -> Image:
-	player.set_pause(true)
-	player.set_time(time_ms, false)
-	var deadline := Time.get_ticks_msec() + FRAME_TIMEOUT_MS
-	var frame: Image = null
-	while Time.get_ticks_msec() < deadline:
-		var candidate: Image = player.get_frame()
-		if candidate != null:
-			frame = candidate
-			# A frame produced after the seek, rather than the one before it.
-			if player.get_time() >= time_ms:
-				break
-		await process_frame
-	return frame
-
-
 func _bottom_strip(image: Image) -> PackedByteArray:
 	var height := image.get_height()
-	var strip: int = mini(200, height / 4)
+	var strip: int = mini(STRIP_HEIGHT, height / 4)
 	return image.get_region(Rect2i(0, height - strip, image.get_width(), strip)).get_data()
 
 
