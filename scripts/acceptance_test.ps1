@@ -110,6 +110,28 @@ picture still comes out of the player node the list drives, and that the list pl
 *child* of that node, which is what makes Godot release it first -- is
 `demo/tests/media_list_player.gd`.
 
+Thumbnails and cover art are here in the half that libvlc does itself, and the acceptance is
+where three questions were answered before any of it was written. Whether the raw picture types
+can be produced at all was in real doubt -- ARGB and RGBA go through ffmpeg's rawvideo encoder,
+and a missing plugin looks exactly like a decode failure, a NULL payload -- and they can: both
+answer 256x256 in 262144 bytes. Whether `libvlc_picture_get_stride`'s computed `width * 4` is the
+truth about the buffer is asserted rather than repeated, and it holds to the byte (`262144 ==
+1024 * 256`), so the header's warning about "potential padding" does not describe this runtime.
+And ARGB's byte order, which its type name only claims, is measured by comparing the same frame
+taken in both raw types: rotating it left by one byte reproduces RGBA exactly, which is what the
+conversion does and what the test prints both buffers about if it ever stops holding.
+
+Two more facts came out of the same run and are documented where they bite. The cover event is
+**absent, not empty**, for a media with no embedded cover art -- libvlc's sender returns early on
+an empty attachment list -- so connecting before the parse is the only way to receive it, and a
+second `parse_request` for the same media is refused, so there is no way back. And a thumbnail is
+a decoded *video* frame: an audio-only file has none, while the same file's cover comes through
+the attachment path. The `imem://` media the demo plays is thumbnailed anyway, which is what lets
+an editor inspector show a picture for a `res://` media.
+
+The binding's own half -- a `VLCPicture` reaching a script, `to_image()`, a request whose `Drop`
+is what destroys libvlc's request -- is `demo/tests/thumbnail.gd`.
+
 It is deliberately stricter than "a frame arrived". LibVLC's failures are quiet:
 a plugin that cannot be loaded produces one error line and LibVLC carries on, and
 the visible symptom is a codec that "is not supported", which reads like a codec
