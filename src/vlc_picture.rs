@@ -170,6 +170,98 @@ impl VlcPicture {
         PackedByteArray::from(bytes)
     }
 
+    /// The picture as a Godot [Image].
+    ///
+    /// # Returns
+    /// an image, or null when this picture cannot be turned into one.
+    ///
+    /// # Note
+    /// - **The encoded types are decoded by Godot**, not re-encoded here: a PNG, JPEG or WebP
+    ///   buffer is a whole image file, so `Image`'s own loaders read it. Nothing is guessed
+    ///   about the file.
+    /// - **The raw types are copied row by row**, `[method get_stride]` bytes at a time, into
+    ///   an `RGBA8` image. The buffer must hold at least `stride * height` bytes; if it holds
+    ///   more, the extra is dropped rather than handed to `Image` -- a longer buffer would
+    ///   mean rows that are not tight against each other, which is the one thing the stride
+    ///   is supposed to describe.
+    /// - **[constant TYPE_ARGB] is refused for now, and not out of laziness.** Its buffer
+    ///   holds four bytes per pixel in the order libvlc names -- alpha, red, green, blue --
+    ///   while Godot wants red, green, blue, alpha, so a conversion has to rotate every
+    ///   pixel. Which byte actually lands where depends on the encoder and the platform, and
+    ///   that is what the acceptance test measures before this binding converts one: a
+    ///   rotation written ahead of the measurement is a guess, and a wrongly rotated image is
+    ///   worse than a refused one.
+    /// - **Nothing is shared with the picture**: the image owns a copy, so releasing the
+    ///   picture, or letting go of this wrapper, does not disturb it.
+    #[func]
+    fn to_image(&self) -> Option<Gd<godot::classes::Image>> {
+        use godot::classes::image::Format;
+
+        let picture_type = self.get_type();
+        let bytes = self.get_buffer();
+        if bytes.is_empty() {
+            godot_error!("godot-vlc: this picture has no bytes to turn into an image");
+            return None;
+        }
+
+        match picture_type {
+            Self::TYPE_PNG | Self::TYPE_JPG | Self::TYPE_WEBP => {
+                // Godot's own readers, because an encoded buffer is a whole image file.
+                let mut image = godot::classes::Image::new_gd();
+                let error = match picture_type {
+                    Self::TYPE_PNG => image.load_png_from_buffer(&bytes),
+                    Self::TYPE_JPG => image.load_jpg_from_buffer(&bytes),
+                    _ => image.load_webp_from_buffer(&bytes),
+                };
+                if error != godot::global::Error::OK {
+                    godot_error!(
+                        "godot-vlc: Godot could not read this encoded picture ({error:?}); a WebP needs a build of Godot with WebP support"
+                    );
+                    return None;
+                }
+                Some(image)
+            }
+            Self::TYPE_RGBA => {
+                let width = self.get_width();
+                let height = self.get_height();
+                let stride = self.get_stride();
+                if width <= 0 || height <= 0 || stride <= 0 {
+                    godot_error!(
+                        "godot-vlc: a raw picture reported {width}x{height} with a stride of {stride}"
+                    );
+                    return None;
+                }
+                let needed = stride as usize * height as usize;
+                if bytes.len() < needed {
+                    godot_error!(
+                        "godot-vlc: the picture holds {} bytes, fewer than the {needed} its stride and height describe",
+                        bytes.len()
+                    );
+                    return None;
+                }
+                let data = if bytes.len() == needed {
+                    bytes
+                } else {
+                    PackedByteArray::from(&bytes.as_slice()[..needed])
+                };
+                let mut image =
+                    godot::classes::Image::create_empty(width, height, false, Format::RGBA8)?;
+                image.set_data(width, height, false, Format::RGBA8, &data);
+                Some(image)
+            }
+            Self::TYPE_ARGB => {
+                godot_error!(
+                    "godot-vlc: to_image() refused an ARGB picture: its byte order is what the acceptance test measures before this binding converts one (see the method documentation)"
+                );
+                None
+            }
+            other => {
+                godot_error!("godot-vlc: to_image() does not know picture type {other}");
+                None
+            }
+        }
+    }
+
     /// Writes the picture to a file.
     ///
     /// # Parameters
