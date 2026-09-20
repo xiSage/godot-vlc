@@ -30,7 +30,7 @@ use ringbuf::{HeapProd, traits::Producer};
 
 use super::internal_audio_stream::InternalAudioStream;
 
-/// The node a callback was handed, if it is still there.
+/// The node a callback was handed, if it is still there and still playing somewhere.
 ///
 /// The audio player is a child of the `VLCMediaPlayer`, and Godot destroys a node's
 /// children **before** it destroys the extension instance behind the node -- so between
@@ -40,13 +40,19 @@ use super::internal_audio_stream::InternalAudioStream;
 /// "access to instance ... after it has been freed", in two runs out of three when the
 /// demo exits while it is playing).
 ///
+/// `is_inside_tree` is the second half of that, and it was measured rather than guessed:
+/// the run that aborts prints Godot's own `Playback can only happen when a node is inside
+/// the scene tree` immediately before the assert, which means the node had left the tree
+/// while still being a valid instance -- a state `is_instance_valid` alone lets through,
+/// and one where `play()` is refused and the callback should simply not bother.
+///
 /// Returns the pair the callbacks are given: the ring buffer producer and the node.
 unsafe fn audio_context<'a>(
     data: *mut c_void,
 ) -> Option<(&'a mut HeapProd<AudioFrame>, &'a mut Gd<AudioStreamPlayer>)> {
     let (producer, player) =
         unsafe { (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>)).as_mut()? };
-    if !player.is_instance_valid() {
+    if !player.is_instance_valid() || !player.is_inside_tree() {
         return None;
     }
     Some((producer, player))
