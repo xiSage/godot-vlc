@@ -6,23 +6,18 @@
 //! - [`VlcMediaInspectorPlugin`] decides *which* objects get the extra control and adds it;
 //! - [`VlcMediaInspector`] is the control: a picture, and what libvlc knows about the media.
 //!
-//! # Why the control is a plain `Control` with a container inside it
-//! `add_custom_control` takes a `Control`, and where it lands depends on what it is handed: an
+//! # Why the control is a container
+//! `add_custom_control` takes any `Control`, and where it lands depends on what it is handed: an
 //! `EditorProperty` is the widget a property's **value** is drawn in, so giving it one puts the
 //! picture in the value column, aligned with the input boxes and with half the inspector left
-//! empty. A `Control` is a row of its own.
+//! empty. This class is a `VBoxContainer` -- so the row *is* the control, and its three children
+//! are simply its children, laid out by it.
 //!
-//! It cannot be a `VBoxContainer` itself: a godot-rust class implements the trait of the class it
-//! declares as its base, and only `Control` is both a base this can implement and a `Control` for
-//! `add_custom_control`. So the layout lives in a child, anchored to fill it -- which is what
-//! `VlcMediaPlayer` does with its own children.
-//!
-//! # Why the picture has no size of its own
-//! It neither asks for a size nor lets its texture ask for one: `IGNORE_SIZE` keeps the image's own
-//! dimensions out of the layout, and the picture expands both ways inside the container -- which is
-//! what makes it fill the width the dock gives it, with the stretch mode keeping its proportions. A
-//! fixed box would be a guess at what the dock looks like, and a minimum size of its own would
-//! widen the dock for a wide media.
+//! # How the picture is sized
+//! It has no width of its own: `IGNORE_SIZE` keeps the image's dimensions out of the layout, and
+//! the picture expands both ways, so it fills whatever width the dock gives it while the stretch
+//! mode keeps its proportions. It has one minimum height, because a row whose height could only
+//! come from a picture that imposes nothing would have no height at all.
 //!
 //! # Why it is event-driven rather than blocking
 //! A thumbnail has no synchronous API -- a request is answered by an event, on a thread of
@@ -41,9 +36,8 @@
 //! [method VLCMedia.get_meta_extra_names] lists, not a chosen few, because an inspector has room
 //! for what a script might not want to ask for.
 
-use godot::classes::control::LayoutPreset;
 use godot::classes::{
-    Control, EditorInspectorPlugin, IControl, IEditorInspectorPlugin, ImageTexture, Label, Object,
+    EditorInspectorPlugin, IEditorInspectorPlugin, IVBoxContainer, ImageTexture, Label, Object,
     TextureRect, VBoxContainer, control as control_classes, texture_rect as texture_rect_classes,
 };
 use godot::prelude::*;
@@ -87,12 +81,9 @@ impl IEditorInspectorPlugin for VlcMediaInspectorPlugin {
 
 /// One media's picture and metadata, as a row in the inspector.
 #[derive(GodotClass)]
-#[class(tool, init, base=Control)]
+#[class(tool, init, base=VBoxContainer)]
 pub struct VlcMediaInspector {
-    base: Base<Control>,
-    /// The layout, a child anchored over the whole control: see the module notes on why the class
-    /// is not a container itself.
-    column: Option<Gd<VBoxContainer>>,
+    base: Base<VBoxContainer>,
     /// The picture.
     picture: Option<Gd<TextureRect>>,
     /// Where the picture came from, which is worth saying: a generated thumbnail and an embedded
@@ -107,16 +98,17 @@ pub struct VlcMediaInspector {
 }
 
 #[godot_api]
-impl IControl for VlcMediaInspector {
+impl IVBoxContainer for VlcMediaInspector {
     fn enter_tree(&mut self) {
         let mut picture = TextureRect::new_alloc();
-        // No size of its own: `KEEP_SIZE` takes the picture's proportions as the rect's minimum and
-        // the stretch fits that into the width it is given, so the picture fills that width and is
-        // exactly as tall as its own proportions make it.
+        // No width of its own, and a minimum height: `IGNORE_SIZE` keeps the image's dimensions out
+        // of the layout, the two expand flags let the container give it the whole row, and the
+        // minimum is what stops that row from having no height before a picture arrives.
         picture.set_expand_mode(texture_rect_classes::ExpandMode::IGNORE_SIZE);
         picture.set_stretch_mode(texture_rect_classes::StretchMode::KEEP_ASPECT_CENTERED);
         picture.set_h_size_flags(control_classes::SizeFlags::EXPAND_FILL);
         picture.set_v_size_flags(control_classes::SizeFlags::EXPAND_FILL);
+        picture.set_custom_minimum_size(Vector2 { x: 0.0, y: 256.0 });
         // Both labels wrap: a path or an MRL is one long word, and a label that will not break one
         // is a label that widens the whole inspector.
         let mut origin = Label::new_alloc();
@@ -124,19 +116,12 @@ impl IControl for VlcMediaInspector {
         let mut metadata = Label::new_alloc();
         metadata.set_autowrap_mode(godot::classes::text_server::AutowrapMode::WORD_SMART);
 
-        let mut column = VBoxContainer::new_alloc();
-        column.add_child(&picture);
-        column.add_child(&origin);
-        column.add_child(&metadata);
-        column
-            .set_anchors_and_offsets_preset_ex(LayoutPreset::FULL_RECT)
-            .resize_mode(godot::classes::control::LayoutPresetMode::KEEP_SIZE)
-            .done();
-        self.base_mut().add_child(&column);
+        self.base_mut().add_child(&picture);
+        self.base_mut().add_child(&origin);
+        self.base_mut().add_child(&metadata);
         self.base_mut()
             .set_h_size_flags(control_classes::SizeFlags::EXPAND_FILL);
 
-        self.column = Some(column);
         self.picture = Some(picture);
         self.origin = Some(origin);
         self.metadata = Some(metadata);
