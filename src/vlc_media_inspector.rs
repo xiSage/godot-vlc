@@ -1,40 +1,60 @@
 //! The editor's inspector, for a `VLCMedia` in a scene or a file system dock.
 //!
 //! Two classes make this work, and one line in [crate::vlc_editor_plugin::VlcEditorPlugin] joins
-//! them to the editor that already exists:
+//! them to the editor plugin that already exists:
 //!
 //! - [`VlcMediaInspectorPlugin`] decides *which* objects get the extra control and adds it;
-//! - [`VlcMediaInspector`] is the control: a picture and what libvlc knows about the media.
+//! - [`VlcMediaInspector`] is the control: a picture, and what libvlc knows about the media.
+//!
+//! # Why the control is a plain `Control` with a container inside it
+//! `add_custom_control` takes a `Control`, and where it lands depends on what it is handed: an
+//! `EditorProperty` is the widget a property's **value** is drawn in, so giving it one puts the
+//! picture in the value column, aligned with the input boxes and with half the inspector left
+//! empty. A `Control` is a row of its own.
+//!
+//! It cannot be a `VBoxContainer` itself: a godot-rust class implements the trait of the class it
+//! declares as its base, and only `Control` is both a base this can implement and a `Control` for
+//! `add_custom_control`. So the layout lives in a child, anchored to fill it -- which is what
+//! `VlcMediaPlayer` does with its own children.
+//!
+//! # Why the picture has no fixed size
+//! The row is as tall as the picture's proportions make it at the width the inspector gives it:
+//! the height is computed when the picture arrives, rather than guessed at build time. A fixed box
+//! would be a guess at what the dock looks like, and a minimum size of its own would widen the
+//! dock for a wide media.
 //!
 //! # Why it is event-driven rather than blocking
 //! A thumbnail has no synchronous API -- a request is answered by an event, on a thread of
-//! libvlc's -- and libvlc cannot even be asked whether a media *has* embedded cover art without
-//! parsing it. Both facts are measured rather than assumed: the acceptance shows a cover event
-//! arriving once per parse, never arriving at all for a media without a cover, and a second
-//! `parse_request` being refused.
+//! libvlc's -- and libvlc cannot be asked whether a media *has* embedded cover art without parsing
+//! it. Both facts are measured rather than assumed: the acceptance shows a cover event arriving
+//! once per parse, never arriving at all for a media without a cover, and a second `parse_request`
+//! being refused.
 //!
-//! So the control does what a script would: it asks for a thumbnail, it connects to the two
-//! signals, and it draws what arrives. The generated thumbnail is shown first and an embedded
-//! cover replaces it if one turns up, which is the order the measurements force -- waiting for
-//! the cover to decide whether there is one would mean waiting forever for most media.
+//! So the control does what a script would: it asks for a thumbnail, connects to the two signals,
+//! and draws whatever arrives. The generated thumbnail is shown first and an embedded cover
+//! replaces it if one turns up, which is the order those measurements force -- waiting for the
+//! cover to find out whether there is one would mean waiting forever for most media.
 //!
 //! # What it displays
-//! The picture, where it came from, and the metadata libvlc reports -- every name
-//! [method VLCMedia.get_meta_names] lists, not a chosen few, because an inspector has room for
-//! what a script might not want to ask for.
+//! The picture, where it came from, and the metadata libvlc reports: every name
+//! [method VLCMedia.get_meta_extra_names] lists, not a chosen few, because an inspector has room
+//! for what a script might not want to ask for.
 
+use godot::classes::control::LayoutPreset;
 use godot::classes::{
-    Control, EditorInspectorPlugin, EditorProperty, IEditorInspectorPlugin, IEditorProperty, Label,
-    Object, TextureRect, VBoxContainer,
+    Control, EditorInspectorPlugin, IControl, IEditorInspectorPlugin, ImageTexture, Label, Object,
+    TextureRect, VBoxContainer, control as control_classes, texture_rect as texture_rect_classes,
 };
 use godot::prelude::*;
 
 use crate::vlc::*;
 use crate::vlc_media::VlcMedia;
 use crate::vlc_picture::VlcPicture;
+use crate::vlc_thumbnail::VlcThumbnailRequest;
 
-/// The size asked for, in pixels. An inspector is a column, not a preview window.
-const THUMBNAIL_SIZE: i32 = 192;
+/// The size asked libvlc for, in pixels. Only the request: the preview takes whatever width the
+/// inspector gives it, at the picture's proportions.
+const THUMBNAIL_SIZE: i32 = 256;
 
 /// Adds the media control to the inspector of every `VLCMedia`.
 #[derive(GodotClass)]
@@ -45,129 +65,134 @@ pub struct VlcMediaInspectorPlugin {
 
 #[godot_api]
 impl IEditorInspectorPlugin for VlcMediaInspectorPlugin {
-    /// Whether this plugin handles an object: only a `VLCMedia`, and everything that extends it.
+    /// Whether this plugin handles an object: a `VLCMedia`, and everything that extends it.
     fn can_handle(&self, object: Option<Gd<Object>>) -> bool {
         object.is_some_and(|object| object.is_class("VLCMedia"))
     }
 
-    /// Adds the control at the top of the inspector, before the properties.
-    fn parse_begin(&mut self, _object: Option<Gd<Object>>) {
-        let control = VlcMediaInspector::new_alloc();
-        self.base_mut()
-            .add_custom_control(&control.upcast::<Control>());
-    }
-}
-
-/// The control itself: one media's picture and metadata.
-#[derive(GodotClass)]
-#[class(tool, init, base=EditorProperty)]
-pub struct VlcMediaInspector {
-    base: Base<EditorProperty>,
-    /// The picture, or the placeholder that stands in for it.
-    picture: Option<Gd<TextureRect>>,
-    /// Where the picture came from, which is worth saying because a generated thumbnail and an
-    /// embedded cover are different things.
-    origin: Option<Gd<Label>>,
-    /// The metadata, as one label: an inspector column has no room for a tree.
-    metadata: Option<Gd<Label>>,
-    /// The request, held so that it is not destroyed while libvlc is still working on it.
-    request: Option<Gd<crate::vlc_thumbnail::VlcThumbnailRequest>>,
-    /// The media this control was last built for, so that signals are connected once.
-    media: Option<Gd<VlcMedia>>,
-}
-
-#[godot_api]
-impl IEditorProperty for VlcMediaInspector {
-    fn enter_tree(&mut self) {
-        let mut column = VBoxContainer::new_alloc();
-        column.set_h_size_flags(godot::classes::control::SizeFlags::EXPAND_FILL);
-        let mut picture = TextureRect::new_alloc();
-        // No size of its own, and none from the texture either: `KEEP_SIZE` makes the rect's
-        // minimum the picture's size, and the stretch below fits that into whatever width the
-        // inspector hands over, keeping the aspect. So the picture fills the dock's width and is
-        // exactly as tall as its own proportions make it -- which is also what stops a wide
-        // media from widening the dock.
-        picture.set_expand_mode(godot::classes::texture_rect::ExpandMode::KEEP_SIZE);
-        picture.set_stretch_mode(godot::classes::texture_rect::StretchMode::KEEP_ASPECT_CENTERED);
-        picture.set_h_size_flags(godot::classes::control::SizeFlags::EXPAND_FILL);
-        let mut origin = Label::new_alloc();
-        // Both labels wrap: a path or an MRL is one long word, and a label that will not break
-        // one is a label that widens the whole inspector.
-        origin.set_autowrap_mode(godot::classes::text_server::AutowrapMode::WORD_SMART);
-        let mut metadata = Label::new_alloc();
-        metadata.set_autowrap_mode(godot::classes::text_server::AutowrapMode::WORD_SMART);
-
-        column.add_child(&picture);
-        column.add_child(&origin);
-        column.add_child(&metadata);
-        self.base_mut().add_child(&column);
-
-        self.picture = Some(picture);
-        self.origin = Some(origin);
-        self.metadata = Some(metadata);
-    }
-
-    /// Called when the inspector wants this control to show its object.
-    fn update_property(&mut self) {
-        let Some(object) = self.base().get_edited_object() else {
+    /// Adds the control at the top of the inspector, ahead of the properties.
+    fn parse_begin(&mut self, object: Option<Gd<Object>>) {
+        let Some(object) = object else {
             return;
         };
         let Ok(media) = object.try_cast::<VlcMedia>() else {
             return;
         };
+        let mut control = VlcMediaInspector::new_alloc();
+        control.bind_mut().show_media(media);
+        self.base_mut().add_custom_control(&control);
+    }
+}
+
+/// One media's picture and metadata, as a row in the inspector.
+#[derive(GodotClass)]
+#[class(tool, init, base=Control)]
+pub struct VlcMediaInspector {
+    base: Base<Control>,
+    /// The layout, a child anchored over the whole control: see the module notes on why the class
+    /// is not a container itself.
+    column: Option<Gd<VBoxContainer>>,
+    /// The picture.
+    picture: Option<Gd<TextureRect>>,
+    /// Where the picture came from, which is worth saying: a generated thumbnail and an embedded
+    /// cover are different things.
+    origin: Option<Gd<Label>>,
+    /// The metadata, as one label: a row has no room for a tree.
+    metadata: Option<Gd<Label>>,
+    /// The request, held so that it is not destroyed while libvlc is still working on it.
+    request: Option<Gd<VlcThumbnailRequest>>,
+    /// The media this control is showing, so that its signals can be let go of.
+    media: Option<Gd<VlcMedia>>,
+}
+
+#[godot_api]
+impl IControl for VlcMediaInspector {
+    fn enter_tree(&mut self) {
+        let mut picture = TextureRect::new_alloc();
+        // No size of its own: `KEEP_SIZE` takes the picture's proportions as the rect's minimum and
+        // the stretch fits that into the width it is given, so the picture fills that width and is
+        // exactly as tall as its own proportions make it.
+        picture.set_expand_mode(texture_rect_classes::ExpandMode::KEEP_SIZE);
+        picture.set_stretch_mode(texture_rect_classes::StretchMode::KEEP_ASPECT_CENTERED);
+        picture.set_h_size_flags(control_classes::SizeFlags::EXPAND_FILL);
+        // Both labels wrap: a path or an MRL is one long word, and a label that will not break one
+        // is a label that widens the whole inspector.
+        let mut origin = Label::new_alloc();
+        origin.set_autowrap_mode(godot::classes::text_server::AutowrapMode::WORD_SMART);
+        let mut metadata = Label::new_alloc();
+        metadata.set_autowrap_mode(godot::classes::text_server::AutowrapMode::WORD_SMART);
+
+        let mut column = VBoxContainer::new_alloc();
+        column.add_child(&picture);
+        column.add_child(&origin);
+        column.add_child(&metadata);
+        column
+            .set_anchors_and_offsets_preset_ex(LayoutPreset::FULL_RECT)
+            .resize_mode(godot::classes::control::LayoutPresetMode::KEEP_SIZE)
+            .done();
+        self.base_mut().add_child(&column);
+        self.base_mut()
+            .set_h_size_flags(control_classes::SizeFlags::EXPAND_FILL);
+
+        self.column = Some(column);
+        self.picture = Some(picture);
+        self.origin = Some(origin);
+        self.metadata = Some(metadata);
+    }
+}
+
+#[godot_api]
+impl VlcMediaInspector {
+    /// Shows a media: its metadata now, and its picture when one arrives.
+    ///
+    /// Called by the plugin as the control is built, once per inspector rebuild, which is why there
+    /// is no "the selection changed" path here: a rebuild makes a new control.
+    #[func]
+    fn show_media(&mut self, media: Gd<VlcMedia>) {
         self.describe(&media);
-        if self.media.as_ref() != Some(&media) {
-            self.unwatch();
-            self.watch(&media);
-            self.media = Some(media);
+        self.watch(&media);
+        self.media = Some(media);
+    }
+
+    /// A thumbnail request was answered -- with a picture, or with nothing at all.
+    #[func]
+    fn on_thumbnail_generated(&mut self, picture: Option<Gd<VlcPicture>>) {
+        match picture {
+            Some(picture) => self.show(&picture, "generated thumbnail"),
+            // libvlc's whole vocabulary of failure: no picture, and a line in its log.
+            None => self.say("generated thumbnail: libvlc produced none"),
+        }
+    }
+
+    /// Embedded cover art turned up, which is a better picture than a generated frame.
+    #[func]
+    fn on_attached_thumbnails_found(&mut self, pictures: Array<Gd<VlcPicture>>) {
+        match pictures.get(0) {
+            Some(picture) => self.show(&picture, "embedded cover"),
+            None => self.say("embedded cover: the event carried none"),
         }
     }
 }
 
+// The casts below bridge two types rather than being redundant: libvlc's enums are typed by
+// bindgen per target, while this binding's own #[func]s take i32. The same allowance, for the
+// same reason, as VlcMedia and VlcPicture carry.
 #[allow(clippy::unnecessary_cast)]
 impl VlcMediaInspector {
-    /// Lets go of the media this control was showing, so that it stops reporting into a control
-    /// that has moved on to another one.
+    /// Fills in what libvlc can already answer: the MRL, and whatever metadata there is.
     ///
-    /// The inspector reuses a single control for whatever is selected, and a media outlives the
-    /// selection: without this, every media ever inspected would keep a connection to this
-    /// control, and the picture of one would arrive to overwrite the picture of another. The
-    /// request goes with it, which is also what destroys libvlc's request.
-    fn unwatch(&mut self) {
-        let Some(previous) = self.media.take() else {
-            return;
-        };
-        let mut previous = previous.clone();
-        previous.disconnect(
-            "thumbnail_generated",
-            &self.base().callable("on_thumbnail_generated"),
-        );
-        previous.disconnect(
-            "attached_thumbnails_found",
-            &self.base().callable("on_attached_thumbnails_found"),
-        );
-        self.request = None;
-        self.say("no thumbnail yet");
-    }
-
-    /// Fills in what libvlc can already answer: the MRL and whatever metadata there is.
+    /// Metadata is empty until a media has been parsed, and an inspector must not parse anything by
+    /// itself: a parse is minutes of work for a large file, and this control asks for a thumbnail
+    /// instead. So an unparsed media says what it is rather than waiting.
     ///
-    /// Metadata is empty until a media has been parsed, and an inspector must not parse
-    /// anything by itself -- the parse is what tells the cover event where to come from, and
-    /// this control asks for a thumbnail rather than a parse. So an unparsed media says so.
+    /// `get_mrl` and the metadata methods are reached through Godot rather than directly, because
+    /// they are `#[func]`s: the binding exposes them to scripts, not to its own Rust.
     fn describe(&mut self, media: &Gd<VlcMedia>) {
-        // `Object::call` takes the object mutably, and this only has it by reference: a clone of
-        // the handle is the same object.
+        // `Object::call` takes the object mutably, and this only has it by reference: a clone of the
+        // handle is the same object.
         let mut media = media.clone();
-        // `get_mrl` is reached through Godot rather than directly: it is a `#[func]`, so the
-        // binding exposes it to scripts and not to its own Rust.
         let mrl = media.call("get_mrl", &[]).to::<GString>();
         let mut text = format!("MRL: {mrl}");
-        // `get_meta_extra_names` and `get_meta_extra` are the pair for this, and they are
-        // reached through Godot for the same reason `get_mrl` is: they are `#[func]`s, so the
-        // binding exposes them to scripts rather than to its own Rust. They are also the right
-        // pair: `get_meta` takes libvlc's metadata *kind*, while the extra names are the
-        // arbitrary ones a file happens to carry.
         let names = media
             .call("get_meta_extra_names", &[])
             .to::<PackedStringArray>();
@@ -191,7 +216,7 @@ impl VlcMediaInspector {
         }
     }
 
-    /// Connects to what the media reports and asks for a thumbnail at its middle.
+    /// Connects to what the media reports, and asks for a thumbnail at its middle.
     ///
     /// By position, not by time: `0.5` is the middle of any media and needs no known duration,
     /// which is the one thing an inspector cannot count on before a parse has run.
@@ -207,21 +232,27 @@ impl VlcMediaInspector {
             "attached_thumbnails_found",
             &self.base().callable("on_attached_thumbnails_found"),
         );
-        self.request = media.bind().thumbnail_request_by_pos(
+        let request = media.bind().thumbnail_request_by_pos(
             0.5,
-            crate::vlc_thumbnail::VlcThumbnailRequest::SEEK_PRECISE,
+            VlcThumbnailRequest::SEEK_PRECISE as i32,
             THUMBNAIL_SIZE,
             THUMBNAIL_SIZE,
             false,
             libvlc_picture_type_t_libvlc_picture_Png as i32,
             5000,
         );
-        if self.request.is_none() {
-            self.say("no thumbnail: libvlc refused the request");
+        if request.is_none() {
+            self.say("no thumbnail: libvlc requested none");
         }
+        self.request = request;
     }
 
-    /// Puts a picture in the control, saying where it came from.
+    /// Puts a picture in the control, and says where it came from.
+    ///
+    /// The row's height is set here, and nowhere else: it is the width the inspector gave this
+    /// control times the picture's own proportions, so the row is exactly as tall as the picture
+    /// needs and no taller. A width of zero means the inspector has not laid anything out yet, and
+    /// then the picture's own size is the only thing to go on.
     fn show(&mut self, picture: &Gd<VlcPicture>, from: &str) {
         let Some(image) = picture.bind().to_image() else {
             self.say(&format!(
@@ -229,28 +260,23 @@ impl VlcMediaInspector {
             ));
             return;
         };
-        let Some(texture) = godot::classes::ImageTexture::create_from_image(&image) else {
+        let Some(texture) = ImageTexture::create_from_image(&image) else {
             self.say(&format!("{from}: the image could not become a texture"));
             return;
         };
+        let width = self.base().get_size().x;
+        let height = if width > 1.0 && image.get_height() > 0 {
+            width * image.get_width() as f32 / image.get_height() as f32
+        } else {
+            image.get_height() as f32
+        };
+        self.base_mut()
+            .set_custom_minimum_size(Vector2::new(0.0, height));
         if let Some(picture_rect) = self.picture.as_mut() {
             picture_rect.set_texture(&texture);
         }
-        // What the rect actually is, while this is being worked out: the labels show and the
-        // picture does not, and that is not a thing that can be told apart from here -- a texture
-        // that was never set, a rect with no size, and a rect with both look identical in a
-        // screenshot of the code.
-        let rect = match self.picture.as_ref() {
-            Some(rect) => format!(
-                "rect {:?} visible {} texture {:?}",
-                rect.get_size(),
-                rect.is_visible(),
-                rect.get_texture().map(|texture| texture.get_size())
-            ),
-            None => "no rect at all".to_string(),
-        };
         self.say(&format!(
-            "{from}: {}x{}, {rect}",
+            "{from}: {}x{}",
             image.get_width(),
             image.get_height()
         ));
@@ -259,28 +285,6 @@ impl VlcMediaInspector {
     fn say(&mut self, text: &str) {
         if let Some(origin) = self.origin.as_mut() {
             origin.set_text(text);
-        }
-    }
-}
-
-#[godot_api]
-impl VlcMediaInspector {
-    /// A thumbnail request was answered -- with a picture, or with nothing at all.
-    #[func]
-    fn on_thumbnail_generated(&mut self, picture: Option<Gd<VlcPicture>>) {
-        match picture {
-            Some(picture) => self.show(&picture, "generated thumbnail"),
-            // Both halves of libvlc's vocabulary of failure: no picture, and libvlc's own log.
-            None => self.say("generated thumbnail: libvlc produced none"),
-        }
-    }
-
-    /// Embedded cover art turned up, which is a better picture than a generated frame.
-    #[func]
-    fn on_attached_thumbnails_found(&mut self, pictures: Array<Gd<VlcPicture>>) {
-        match pictures.get(0) {
-            Some(picture) => self.show(&picture, "embedded cover"),
-            None => self.say("embedded cover: the event carried none"),
         }
     }
 }
