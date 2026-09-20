@@ -141,6 +141,19 @@ impl VlcMediaInspector {
         self.media = Some(media);
     }
 
+    /// The parse this control asked for has moved on, so the metadata may be there now.
+    ///
+    /// libvlc reports its progress in steps and this runs for each of them: the names appear when
+    /// they appear. It is that parse which also finds embedded cover art, and that arrives on its
+    /// own signal.
+    #[func]
+    fn on_parsed_changed(&mut self, _status: i32) {
+        let Some(media) = self.media.clone() else {
+            return;
+        };
+        self.describe(&media);
+    }
+
     /// A thumbnail request was answered -- with a picture, or with nothing at all.
     #[func]
     fn on_thumbnail_generated(&mut self, picture: Option<Gd<VlcPicture>>) {
@@ -168,9 +181,9 @@ impl VlcMediaInspector {
 impl VlcMediaInspector {
     /// Fills in what libvlc can already answer: the MRL, and whatever metadata there is.
     ///
-    /// Metadata is empty until a media has been parsed, and an inspector must not parse anything by
-    /// itself: a parse is minutes of work for a large file, and this control asks for a thumbnail
-    /// instead. So an unparsed media says what it is rather than waiting.
+    /// Metadata is empty until a media has been parsed, so the control asks for a parse rather than
+    /// showing a media with nothing under it. It is the same parse that finds embedded cover art,
+    /// and the one [signal VLCMedia.parsed_changed] announces, which is when this runs again.
     ///
     /// `get_mrl` and the metadata methods are reached through Godot rather than directly, because
     /// they are `#[func]`s: the binding exposes them to scripts, not to its own Rust.
@@ -198,6 +211,9 @@ impl VlcMediaInspector {
                 text.push_str(&value.to_string());
             }
         }
+        if names.is_empty() {
+            text.push_str("\n(no metadata yet: libvlc fills it in as it parses)");
+        }
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.set_text(&text);
         }
@@ -219,6 +235,13 @@ impl VlcMediaInspector {
             "attached_thumbnails_found",
             &self.base().callable("on_attached_thumbnails_found"),
         );
+        media.connect("parsed_changed", &self.base().callable("on_parsed_changed"));
+        // The parse is asked for, not assumed: metadata is empty until one has run, and the same
+        // parse is what reports embedded cover art. `parse_request` is a `#[func]`, so it is
+        // reached through Godot like the metadata readers are.
+        let flags = libvlc_media_parse_flag_t_libvlc_media_parse_local as i32
+            | libvlc_media_parse_flag_t_libvlc_media_parse_forced as i32;
+        let _ = media.call("parse_request", &[flags.to_variant(), 0i32.to_variant()]);
         let request = media.bind().thumbnail_request_by_pos(
             0.5,
             VlcThumbnailRequest::SEEK_PRECISE as i32,
