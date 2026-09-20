@@ -17,11 +17,12 @@
 //! `add_custom_control`. So the layout lives in a child, anchored to fill it -- which is what
 //! `VlcMediaPlayer` does with its own children.
 //!
-//! # Why the picture has no fixed size
-//! The row is as tall as the picture's proportions make it at the width the inspector gives it:
-//! the height is computed when the picture arrives, rather than guessed at build time. A fixed box
-//! would be a guess at what the dock looks like, and a minimum size of its own would widen the
-//! dock for a wide media.
+//! # Why the picture has no size of its own
+//! It neither asks for a size nor lets its texture ask for one: `IGNORE_SIZE` keeps the image's own
+//! dimensions out of the layout, and the picture expands both ways inside the container -- which is
+//! what makes it fill the width the dock gives it, with the stretch mode keeping its proportions. A
+//! fixed box would be a guess at what the dock looks like, and a minimum size of its own would
+//! widen the dock for a wide media.
 //!
 //! # Why it is event-driven rather than blocking
 //! A thumbnail has no synchronous API -- a request is answered by an event, on a thread of
@@ -112,9 +113,10 @@ impl IControl for VlcMediaInspector {
         // No size of its own: `KEEP_SIZE` takes the picture's proportions as the rect's minimum and
         // the stretch fits that into the width it is given, so the picture fills that width and is
         // exactly as tall as its own proportions make it.
-        picture.set_expand_mode(texture_rect_classes::ExpandMode::KEEP_SIZE);
+        picture.set_expand_mode(texture_rect_classes::ExpandMode::IGNORE_SIZE);
         picture.set_stretch_mode(texture_rect_classes::StretchMode::KEEP_ASPECT_CENTERED);
         picture.set_h_size_flags(control_classes::SizeFlags::EXPAND_FILL);
+        picture.set_v_size_flags(control_classes::SizeFlags::EXPAND_FILL);
         // Both labels wrap: a path or an MRL is one long word, and a label that will not break one
         // is a label that widens the whole inspector.
         let mut origin = Label::new_alloc();
@@ -249,10 +251,8 @@ impl VlcMediaInspector {
 
     /// Puts a picture in the control, and says where it came from.
     ///
-    /// The row's height is set here, and nowhere else: it is the width the inspector gave this
-    /// control times the picture's own proportions, so the row is exactly as tall as the picture
-    /// needs and no taller. A width of zero means the inspector has not laid anything out yet, and
-    /// then the picture's own size is the only thing to go on.
+    /// Nothing about the size is decided here: the container lays the row out, the picture expands
+    /// into it and the stretch mode keeps the picture's proportions. See the module notes.
     fn show(&mut self, picture: &Gd<VlcPicture>, from: &str) {
         let Some(image) = picture.bind().to_image() else {
             self.say(&format!(
@@ -264,14 +264,7 @@ impl VlcMediaInspector {
             self.say(&format!("{from}: the image could not become a texture"));
             return;
         };
-        let width = self.base().get_size().x;
-        let height = if width > 1.0 && image.get_height() > 0 {
-            width * image.get_width() as f32 / image.get_height() as f32
-        } else {
-            image.get_height() as f32
-        };
-        self.base_mut()
-            .set_custom_minimum_size(Vector2::new(0.0, height));
+
         if let Some(picture_rect) = self.picture.as_mut() {
             picture_rect.set_texture(&texture);
         }
