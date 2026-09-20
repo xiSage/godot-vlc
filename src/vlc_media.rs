@@ -864,6 +864,19 @@ impl VlcMedia {
     /// the media's meta, or `""` -- which is also what an unparsed media answers,
     /// and what libvlc answers for a media that has no such meta. libvlc hands back
     /// no pointer in that case, so the empty string is the whole of the answer.
+    ///
+    /// # Note
+    /// - **`META_ARTWORK_URL` is not this media's artwork when this media has no artwork of its
+    ///   own**, and it is worth knowing before using it as a picture. libvlc's art cache is keyed
+    ///   on a media's URL, and every media [method load_from_file] makes answers the constant
+    ///   `imem://` (see [method get_mrl]) -- so all of them share one cache slot. Measured: a
+    ///   `res://` FLAC with an embedded cover, then a `res://` MP4 with none, in one process; the
+    ///   MP4's `META_ARTWORK_URL` named the **FLAC's** artwork file, because the FLAC's parse had
+    ///   put its cover in the slot they both look in. The file it names is real and loadable
+    ///   (`file:///` under the VLC profile's `art/artblob/<md5 of the artwork bytes>/`), which is
+    ///   exactly what makes it dangerous: only the URL is wrong. A media built by
+    ///   [method load_from_mrl] answers its own URL, so it is keyed by itself -- but "the media's
+    ///   URL" is the only thing that distinguishes the two cases, so read that first.
     #[func]
     fn get_meta(&self, meta: u32) -> GString {
         let value = unsafe { libvlc_media_get_meta(self.media_ptr, meta as libvlc_meta_t) };
