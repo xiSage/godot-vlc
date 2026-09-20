@@ -196,6 +196,55 @@ impl VlcMediaInspector {
         let mut media = media.clone();
         let mrl = media.call("get_mrl", &[]).to::<GString>();
         let mut text = format!("MRL: {mrl}");
+        let mut shown = 0;
+
+        // The standard kinds first, because they are the ones a demuxer actually fills: a tagged
+        // file reports its Title and Artist here and reports **no** extra names at all, which is why
+        // the row looked empty while the parse was working. The extra names below are for the
+        // arbitrary ones a file happens to carry, and they come second because they are the rarer
+        // case.
+        for (label, kind) in [
+            ("Title", libvlc_meta_t_libvlc_meta_Title),
+            ("Artist", libvlc_meta_t_libvlc_meta_Artist),
+            ("Album artist", libvlc_meta_t_libvlc_meta_AlbumArtist),
+            ("Album", libvlc_meta_t_libvlc_meta_Album),
+            ("Date", libvlc_meta_t_libvlc_meta_Date),
+            ("Genre", libvlc_meta_t_libvlc_meta_Genre),
+            ("Track", libvlc_meta_t_libvlc_meta_TrackNumber),
+            ("Tracks", libvlc_meta_t_libvlc_meta_TrackTotal),
+            ("Disc", libvlc_meta_t_libvlc_meta_DiscNumber),
+            ("Discs", libvlc_meta_t_libvlc_meta_DiscTotal),
+            ("Copyright", libvlc_meta_t_libvlc_meta_Copyright),
+            ("Publisher", libvlc_meta_t_libvlc_meta_Publisher),
+            ("Encoded by", libvlc_meta_t_libvlc_meta_EncodedBy),
+            ("Description", libvlc_meta_t_libvlc_meta_Description),
+            ("Language", libvlc_meta_t_libvlc_meta_Language),
+            ("Rating", libvlc_meta_t_libvlc_meta_Rating),
+            ("Setting", libvlc_meta_t_libvlc_meta_Setting),
+            ("URL", libvlc_meta_t_libvlc_meta_URL),
+            ("Artwork", libvlc_meta_t_libvlc_meta_ArtworkURL),
+            ("Director", libvlc_meta_t_libvlc_meta_Director),
+            ("Actors", libvlc_meta_t_libvlc_meta_Actors),
+            ("Show", libvlc_meta_t_libvlc_meta_ShowName),
+            ("Season", libvlc_meta_t_libvlc_meta_Season),
+            ("Episode", libvlc_meta_t_libvlc_meta_Episode),
+        ] {
+            let value = media
+                .call("get_meta", &[(kind as u32).to_variant()])
+                .to::<GString>()
+                .to_string();
+            // libvlc falls back to the input item's name for Title, which for an in-memory media is
+            // "imem://" -- measured -- and that is noise, not metadata.
+            if value.is_empty() || value == mrl.to_string() {
+                continue;
+            }
+            text.push('\n');
+            text.push_str(label);
+            text.push_str(": ");
+            text.push_str(&value);
+            shown += 1;
+        }
+
         let names = media
             .call("get_meta_extra_names", &[])
             .to::<PackedStringArray>();
@@ -212,9 +261,10 @@ impl VlcMediaInspector {
                 text.push_str(&name);
                 text.push_str(": ");
                 text.push_str(&value.to_string());
+                shown += 1;
             }
         }
-        if names.is_empty() {
+        if shown == 0 {
             match self.unparsed.clone() {
                 Some(reason) => {
                     text.push('\n');
