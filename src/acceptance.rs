@@ -3963,3 +3963,416 @@ fn the_log_context_names_the_module_and_where_it_came_from() {
          lines this test is about: {lines:?}"
     );
 }
+
+/// Collects what a thumbnail request reported, keeping a reference on each picture.
+///
+/// The payload is borrowed -- libvlc releases it as soon as the event has been delivered --
+/// so the probe retains, exactly as the binding does.
+#[derive(Default)]
+struct ThumbnailProbe {
+    pictures: Mutex<Vec<*mut libvlc_picture_t>>,
+}
+
+impl ThumbnailProbe {
+    fn take(&self) -> Vec<*mut libvlc_picture_t> {
+        std::mem::take(&mut *self.pictures.lock().expect("the probe lock was poisoned"))
+    }
+}
+
+unsafe extern "C" fn probe_thumbnail_generated(event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ThumbnailProbe);
+        let picture = (*event).u.media_thumbnail_generated.p_thumbnail;
+        let held = if picture.is_null() {
+            std::ptr::null_mut()
+        } else {
+            libvlc_picture_retain(picture)
+        };
+        probe
+            .pictures
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(held);
+    }
+}
+
+/// A thumbnail request answers with a picture, and its stride describes its buffer.
+///
+/// Two of the three measurements this section was opened with, in one run: whether the
+/// shipped runtime can produce a picture for each type at all -- ARGB and RGBA go through
+/// libvlc's raw-video encoder, which is a plugin that may or may not be there, and a missing
+/// one is reported as a NULL payload rather than an error -- and whether
+/// `libvlc_picture_get_stride`'s `width * 4` is the truth about the buffer, which the header
+/// does not promise: it describes the buffer as including "potential padding" while giving no
+/// way to ask how much.
+///
+/// The printout is the point of the test as much as the assertions are: it records what this
+/// runtime actually does, which is what the documentation of both types quotes.
+#[test]
+fn a_thumbnail_request_reports_a_picture_and_a_stride_that_matches_its_buffer() {
+    let sample = Sample::new();
+    for (label, picture_type, stride_is_meaningful) in [
+        ("ARGB", libvlc_picture_type_t_libvlc_picture_Argb, true),
+        ("RGBA", libvlc_picture_type_t_libvlc_picture_Rgba, true),
+        ("PNG", libvlc_picture_type_t_libvlc_picture_Png, false),
+    ] {
+        let mut probe = ThumbnailProbe::default();
+        unsafe {
+            libvlc_event_attach(
+                libvlc_media_event_manager(sample.media),
+                libvlc_event_e_libvlc_MediaThumbnailGenerated as libvlc_event_type_t,
+                Some(probe_thumbnail_generated),
+                &mut probe as *mut ThumbnailProbe as *mut c_void,
+            );
+        }
+
+        // The middle of the media, which is what the editor's inspector asks for: a position
+        // needs no known duration, so this works before anything has parsed it.
+        let request = unsafe {
+            libvlc_media_thumbnail_request_by_pos(
+                sample.instance,
+                sample.media,
+                0.5,
+                libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_precise,
+                256,
+                256,
+                false,
+                picture_type,
+                5000,
+            )
+        };
+        assert!(!request.is_null(), "{label}: libvlc refused the request");
+
+        let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+        while Instant::now() < deadline && probe.pictures.lock().unwrap().is_empty() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let reported = probe.take();
+        assert!(
+            !reported.is_empty(),
+            "{label}: no event arrived within {PLAYBACK_TIMEOUT:?}, so the request was neither \
+             answered nor refused"
+        );
+        let picture = reported[0];
+        if picture.is_null() {
+            println!("{label}: this runtime produced no picture (a NULL payload)");
+        } else {
+            let mut size: usize = 0;
+            let buffer = unsafe { libvlc_picture_get_buffer(picture, &mut size) };
+            let width = unsafe { libvlc_picture_get_width(picture) };
+            let height = unsafe { libvlc_picture_get_height(picture) };
+            let picture_type_reported = unsafe { libvlc_picture_type(picture) };
+            println!(
+                "{label}: {width}x{height}, buffer {size} bytes, reported type {picture_type_reported}"
+            );
+            assert!(!buffer.is_null() && size > 0, "{label}: no buffer");
+            if stride_is_meaningful {
+                let stride = unsafe { libvlc_picture_get_stride(picture) };
+                println!("{label}: stride {stride}");
+                assert_eq!(
+                    size,
+                    stride as usize * height as usize,
+                    "{label}: the buffer is {size} bytes but stride * height is {}, so the rows \
+                     are padded and the stride does not describe the buffer",
+                    stride as usize * height as usize
+                );
+            }
+            unsafe { libvlc_picture_release(picture) };
+        }
+
+        unsafe { libvlc_media_thumbnail_request_destroy(request) };
+    }
+}
+
+/// One picture from one request, retained for the caller, or null when there was none.
+///
+/// Requests are made one at a time and waited for one at a time: with two outstanding, an
+/// arrival cannot be attributed to the request that caused it.
+fn one_thumbnail_picture(
+    instance: *mut libvlc_instance_t,
+    media: *mut libvlc_media_t,
+    picture_type: libvlc_picture_type_t,
+    size: u32,
+) -> *mut libvlc_picture_t {
+    let mut probe = ThumbnailProbe::default();
+    unsafe {
+        libvlc_event_attach(
+            libvlc_media_event_manager(media),
+            libvlc_event_e_libvlc_MediaThumbnailGenerated as libvlc_event_type_t,
+            Some(probe_thumbnail_generated),
+            &mut probe as *mut ThumbnailProbe as *mut c_void,
+        );
+    }
+    let request = unsafe {
+        libvlc_media_thumbnail_request_by_pos(
+            instance,
+            media,
+            0.5,
+            libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_precise,
+            size,
+            size,
+            false,
+            picture_type,
+            5000,
+        )
+    };
+    assert!(!request.is_null(), "libvlc refused the request");
+    let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+    while Instant::now() < deadline && probe.pictures.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let reported = probe.take();
+    assert!(!reported.is_empty(), "no event arrived");
+    unsafe { libvlc_media_thumbnail_request_destroy(request) };
+    reported[0]
+}
+
+/// What byte order an ARGB buffer actually holds.
+///
+/// libvlc's own name for the type says alpha, red, green, blue, and Godot wants red, green,
+/// blue, alpha, so `to_image` has to rotate every pixel -- but the order a buffer really holds
+/// depends on the encoder and the platform, and the header does not pin it down. So this takes
+/// the same frame twice, in both raw types, and compares them: if rotating ARGB's four bytes
+/// left by one reproduces RGBA exactly, the documented order is what this runtime writes.
+///
+/// The printout is what the conversion is written from, whichever way it goes.
+#[test]
+fn the_argb_buffer_is_the_rgba_buffer_rotated() {
+    let sample = Sample::new();
+    let argb = one_thumbnail_picture(
+        sample.instance,
+        sample.media,
+        libvlc_picture_type_t_libvlc_picture_Argb,
+        64,
+    );
+    let rgba = one_thumbnail_picture(
+        sample.instance,
+        sample.media,
+        libvlc_picture_type_t_libvlc_picture_Rgba,
+        64,
+    );
+    assert!(
+        !argb.is_null() && !rgba.is_null(),
+        "a raw picture was missing"
+    );
+
+    let mut argb_size: usize = 0;
+    let mut rgba_size: usize = 0;
+    let argb_buffer = unsafe { libvlc_picture_get_buffer(argb, &mut argb_size) };
+    let rgba_buffer = unsafe { libvlc_picture_get_buffer(rgba, &mut rgba_size) };
+    assert_eq!(argb_size, rgba_size, "the two pictures differ in size");
+    let argb_bytes = unsafe { std::slice::from_raw_parts(argb_buffer, argb_size) };
+    let rgba_bytes = unsafe { std::slice::from_raw_parts(rgba_buffer, rgba_size) };
+
+    let mut rotated: Vec<u8> = Vec::with_capacity(argb_size);
+    for index in (0..argb_size).step_by(4) {
+        let pixel = &argb_bytes[index..index + 4];
+        rotated.extend_from_slice(&[pixel[1], pixel[2], pixel[3], pixel[0]]);
+    }
+    let matches = rotated == rgba_bytes;
+    println!("ARGB rotated left by one byte equals RGBA: {matches}");
+    if !matches {
+        let first = 8.min(argb_size);
+        println!(
+            "first bytes -- ARGB {:?}, RGBA {:?}",
+            &argb_bytes[..first],
+            &rgba_bytes[..first]
+        );
+    }
+    assert!(
+        matches,
+        "the ARGB buffer is not the RGBA buffer rotated by one byte: the conversion has to be \
+         written from the bytes printed above, not from libvlc's name for the type"
+    );
+
+    unsafe {
+        libvlc_picture_release(argb);
+        libvlc_picture_release(rgba);
+    }
+}
+
+/// Whether the cover-art event arrived at all, for a media that has no cover art.
+#[derive(Default)]
+struct CoverProbe {
+    count: std::sync::atomic::AtomicUsize,
+}
+
+impl CoverProbe {
+    fn count(&self) -> usize {
+        self.count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+unsafe extern "C" fn probe_attached_thumbnails(_event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        (*(data as *const CoverProbe))
+            .count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A media with no embedded cover art never reports one, across as many parses as it takes.
+///
+/// The interesting word is "never", not "not yet": libvlc's sender returns early when the
+/// attachment list is empty (`lib/media.c:251-257`), so there is no event with nothing in it to
+/// wait for. That is worth having as a measurement rather than as a reading, because it decides
+/// something for the editor's inspector: it cannot wait for this event to find out whether a
+/// media has a cover, since for most media the event never comes.
+///
+/// **The third measurement this section was opened with cannot be taken here.** It asked
+/// whether a second `parse_request` reports the covers again; the repository has no fixture with
+/// embedded cover art (`test/media` holds one video and a README), so a second parse has nothing
+/// to report again. The source says the event is sent from the parse path, which is what the
+/// documentation promises; putting a number on it needs a fixture with a cover.
+#[test]
+fn a_media_without_embedded_cover_art_never_reports_any() {
+    let sample = Sample::new();
+    let mut probe = CoverProbe::default();
+    unsafe {
+        libvlc_event_attach(
+            libvlc_media_event_manager(sample.media),
+            libvlc_event_e_libvlc_MediaAttachedThumbnailsFound as libvlc_event_type_t,
+            Some(probe_attached_thumbnails),
+            &mut probe as *mut CoverProbe as *mut c_void,
+        );
+    }
+
+    for round in 1..=2 {
+        let parsed = unsafe {
+            libvlc_media_parse_request(
+                sample.instance,
+                sample.media,
+                libvlc_media_parse_flag_t_libvlc_media_parse_local
+                    | libvlc_media_parse_flag_t_libvlc_media_parse_forced,
+                0,
+            )
+        };
+        if round == 2 {
+            println!(
+                "a second parse_request for the same media answered {parsed}: it is refused, so re-parsing is not a way back to this event"
+            );
+            break;
+        }
+        assert_eq!(parsed, 0, "the parse was refused");
+        // The absence is what is watched, so there is nothing to wait *for*: a couple of
+        // seconds per parse, and the count is read. The source quoted above is why it stays at
+        // zero rather than being late.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            probe.count(),
+            0,
+            "round {round}: a cover-art event arrived for a media with no attachments, which the \
+             source says cannot happen"
+        );
+    }
+    println!("two parses of a video with no cover art reported no cover-art event at all");
+}
+
+/// A tiny MP3 carrying one front-cover picture in its ID3v2 tag.
+///
+/// Built here rather than committed as a binary, because the repository has no fixture with
+/// embedded cover art and a 67-byte PNG plus an ID3 frame is not worth a file in `test/media`.
+fn mp3_with_a_cover() -> Vec<u8> {
+    // A 1x1 PNG: the signature, an IHDR, an IDAT and an IEND, 67 bytes in all.
+    const PNG: [u8; 67] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    let mut apic = Vec::new();
+    apic.push(0x00); // text encoding: ISO-8859-1
+    apic.extend_from_slice(b"image/png\0");
+    apic.push(0x03); // picture type: front cover
+    apic.push(0x00); // empty description
+    apic.extend_from_slice(&PNG);
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(b"APIC");
+    frame.extend_from_slice(&(apic.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&[0x00, 0x00]); // frame flags
+    frame.extend_from_slice(&apic);
+
+    let mut tag = Vec::new();
+    tag.extend_from_slice(b"ID3");
+    tag.extend_from_slice(&[0x03, 0x00, 0x00]); // version 2.3, no flags
+    let size = frame.len() as u32;
+    tag.extend_from_slice(&[
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+    ]);
+    tag.extend_from_slice(&frame);
+
+    // One MPEG-1 Layer III frame header and its silence, so the file has audio to demux as
+    // well as a tag for the cover to hang off.
+    tag.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+    tag.extend_from_slice(&vec![0u8; 413]);
+    tag
+}
+
+/// Whether this runtime reports an embedded cover at all.
+///
+/// The third measurement this section was opened with -- whether a second parse reports the
+/// covers again -- needed a file with a cover in it, and the repository has none. This builds
+/// one: an ID3v2.3 tag with a front-cover `APIC` frame carrying a 1x1 PNG, and one MPEG frame
+/// so the file is not only a tag. It is written to a temporary path, parsed, and the count is
+/// printed.
+///
+/// The number is the measurement, so the assertion is only what cannot be otherwise: a single
+/// parse cannot report covers twice. A zero here means this runtime did not accept the
+/// synthesized file as having a cover -- which is a fact about the fixture as much as about
+/// libvlc, and is exactly why the count is printed rather than asserted into a shape.
+#[test]
+fn an_embedded_cover_is_reported_when_a_file_has_one() {
+    let sample = Sample::new();
+    let path = std::env::temp_dir().join("godot-vlc-cover-probe.mp3");
+    std::fs::write(&path, mp3_with_a_cover()).expect("the fixture could not be written");
+    let uri = format!("file:///{}", path.to_string_lossy().replace('\\', "/"));
+    let location = CString::new(uri).expect("the URI contains a NUL byte");
+    let media = unsafe { libvlc_media_new_location(location.as_ptr()) };
+    assert!(!media.is_null(), "libvlc refused the fixture");
+
+    let mut probe = CoverProbe::default();
+    unsafe {
+        libvlc_event_attach(
+            libvlc_media_event_manager(media),
+            libvlc_event_e_libvlc_MediaAttachedThumbnailsFound as libvlc_event_type_t,
+            Some(probe_attached_thumbnails),
+            &mut probe as *mut CoverProbe as *mut c_void,
+        );
+    }
+    let parsed = unsafe {
+        libvlc_media_parse_request(
+            sample.instance,
+            media,
+            libvlc_media_parse_flag_t_libvlc_media_parse_local
+                | libvlc_media_parse_flag_t_libvlc_media_parse_forced,
+            0,
+        )
+    };
+    assert_eq!(parsed, 0, "the fixture was refused for parsing");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && probe.count() == 0 {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    println!(
+        "a file with one embedded cover reported {} cover-art event(s)",
+        probe.count()
+    );
+    assert!(
+        probe.count() <= 1,
+        "one parse reported the covers {} times, which cannot be right",
+        probe.count()
+    );
+
+    unsafe { libvlc_media_release(media) };
+    let _ = std::fs::remove_file(&path);
+}
