@@ -49,14 +49,21 @@ impl Drop for VlcThumbnailRequest {
     }
 }
 
+#[allow(clippy::unnecessary_cast)]
 #[godot_api]
 impl VlcThumbnailRequest {
     /// Seek to the exact time asked for, at the cost of decoding more of the media.
+    ///
+    /// The cast is for the targets where bindgen types this enum differently -- `c_int` here,
+    /// something else on Linux and Android -- which is what made this constant fail to compile
+    /// there while Windows was happy.
     #[constant]
-    const SEEK_PRECISE: i32 = libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_precise;
+    pub(crate) const SEEK_PRECISE: i32 =
+        libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_precise as i32;
     /// Jump near the time asked for and take what is there.
     #[constant]
-    const SEEK_FAST: i32 = libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_fast;
+    pub(crate) const SEEK_FAST: i32 =
+        libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_fast as i32;
 
     /// Destroys the request, cancelling it if it has not finished.
     ///
