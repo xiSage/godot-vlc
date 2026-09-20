@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://dakfnot14s0bk"]
 
 [ext_resource type="VLCMedia" uid="uid://n41raqiv2ion" path="res://test.mp4" id="1_ig7tw"]
-[ext_resource type="Script" path="res://ui_scale.gd" id="2_uiscale"]
+[ext_resource type="Script" uid="uid://bqp71e7q8po0q" path="res://ui_scale.gd" id="2_uiscale"]
 
 [sub_resource type="GDScript" id="GDScript_sho2u"]
 script/source = "extends VLCMediaPlayer
@@ -425,7 +425,7 @@ grow_horizontal = 2
 grow_vertical = 2
 script = SubResource("GDScript_sho2u")
 
-[node name="ScrollContainer" type="ScrollContainer" parent="."]
+[node name="ScrollContainer" type="ScrollContainer" parent="." unique_id=1707630249]
 unique_name_in_owner = true
 layout_mode = 0
 offset_right = 201.0
@@ -467,7 +467,7 @@ text = "List Next"
 
 [node name="Thumbnail" type="TextureRect" parent="ScrollContainer/VBoxContainer" unique_id=1443128243]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(100, 56)
+custom_minimum_size = Vector2(0, 256)
 layout_mode = 2
 expand_mode = 1
 stretch_mode = 5
@@ -486,15 +486,15 @@ text = "Thumbnail"
 layout_mode = 2
 text = "Stop"
 
-[node name="SetA" type="Button" parent="ScrollContainer/VBoxContainer"]
+[node name="SetA" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=822593268]
 layout_mode = 2
 text = "Set Loop A"
 
-[node name="SetB" type="Button" parent="ScrollContainer/VBoxContainer"]
+[node name="SetB" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=1055383570]
 layout_mode = 2
 text = "Set Loop B"
 
-[node name="ResetLoop" type="Button" parent="ScrollContainer/VBoxContainer"]
+[node name="ResetLoop" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=1179690670]
 layout_mode = 2
 text = "Reset Loop"
 
@@ -596,17 +596,17 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "position:"
 
-[node name="Buffering" type="Label" parent="ScrollContainer/VBoxContainer"]
+[node name="Buffering" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1153150234]
 unique_name_in_owner = true
 layout_mode = 2
 text = "buffering:"
 
-[node name="Error" type="Label" parent="ScrollContainer/VBoxContainer"]
+[node name="Error" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=355143131]
 unique_name_in_owner = true
 layout_mode = 2
 text = "error: no"
 
-[node name="Loop" type="Label" parent="ScrollContainer/VBoxContainer"]
+[node name="Loop" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1968113431]
 unique_name_in_owner = true
 layout_mode = 2
 text = "loop: none"
@@ -659,7 +659,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 text = "clock:"
 
-[node name="UIScale" type="Label" parent="ScrollContainer/VBoxContainer"]
+[node name="UIScale" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=412964805]
 unique_name_in_owner = true
 layout_mode = 2
 text = "ui scale:"
@@ -668,7 +668,7 @@ text = "ui scale:"
 layout_mode = 2
 text = "Statics"
 
-[node name="UIScaleAdjuster" type="Node" parent="."]
+[node name="UIScaleAdjuster" type="Node" parent="." unique_id=1491292616]
 script = ExtResource("2_uiscale")
 
 [node name="InputMRLDialog" type="ConfirmationDialog" parent="." unique_id=1361761297]
@@ -684,7 +684,7 @@ offset_right = 592.0
 offset_bottom = 51.0
 text = "https://github.com/xiSage/godot-vlc/raw/refs/heads/master/demo/test.mp4"
 
-[node name="Options" type="TextEdit" parent="InputMRLDialog"]
+[node name="Options" type="TextEdit" parent="InputMRLDialog" unique_id=1566216082]
 unique_name_in_owner = true
 offset_left = 8.0
 offset_top = 59.0
@@ -702,37 +702,37 @@ use_native_dialog = true
 
 [node name="ListPlayer" type="VLCMediaListPlayer" parent="." unique_id=1361761298]
 
-[connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="buffering" from="." to="." method="_on_buffering"]
 [connection signal="error" from="." to="." method="_on_error"]
+[connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="seekable_changed" from="." to="." method="_on_seekable_changed"]
+[connection signal="track_added" from="." to="." method="_on_track_changed"]
+[connection signal="track_removed" from="." to="." method="_on_track_changed"]
+[connection signal="track_selected" from="." to="." method="_on_track_changed"]
+[connection signal="track_unselected" from="." to="." method="_on_track_changed"]
+[connection signal="track_updated" from="." to="." method="_on_track_changed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Play" to="." method="_on_play_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Pause" to="." method="_on_pause_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Resume" to="." method="_on_resume_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/ListPlay" to="." method="_on_list_play_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/ListNext" to="." method="_on_list_next_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/ThumbnailRequest" to="." method="_on_thumbnail_request_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Stop" to="." method="_on_stop_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/SetA" to="." method="_on_set_a_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/SetB" to="." method="_on_set_b_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/ResetLoop" to="." method="_on_reset_loop_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/Jump/Back" to="." method="_on_jump_back_pressed"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/Jump/Forward" to="." method="_on_jump_forward_pressed"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/VideoTrack/OptionButton" to="." method="_on_video_option_button_item_selected"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/AudioTrack/OptionButton" to="." method="_on_audio_option_button_item_selected"]
+[connection signal="value_changed" from="ScrollContainer/VBoxContainer/AudioDelay/SpinBox" to="." method="_on_audio_delay_value_changed"]
 [connection signal="multi_selected" from="ScrollContainer/VBoxContainer/TextTrack/ItemList" to="." method="_on_text_item_list_multi_selected"]
 [connection signal="drag_ended" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_drag_ended"]
 [connection signal="drag_started" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_drag_started"]
-[connection signal="pressed" from="ScrollContainer/VBoxContainer/Jump/Back" to="." method="_on_jump_back_pressed"]
-[connection signal="pressed" from="ScrollContainer/VBoxContainer/Jump/Forward" to="." method="_on_jump_forward_pressed"]
-[connection signal="value_changed" from="ScrollContainer/VBoxContainer/AudioDelay/SpinBox" to="." method="_on_audio_delay_value_changed"]
+[connection signal="toggled" from="ScrollContainer/VBoxContainer/TimeWatch/Watch" to="." method="_on_time_watch_toggled"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Statics" to="." method="_on_statics_pressed"]
 [connection signal="confirmed" from="InputMRLDialog" to="." method="_on_input_mrl_dialog_confirmed"]
 [connection signal="file_selected" from="FileDialog" to="." method="_on_file_dialog_file_selected"]
-[connection signal="track_added" from="." to="." method="_on_track_changed"]
-[connection signal="track_removed" from="." to="." method="_on_track_changed"]
-[connection signal="track_updated" from="." to="." method="_on_track_changed"]
-[connection signal="track_selected" from="." to="." method="_on_track_changed"]
-[connection signal="track_unselected" from="." to="." method="_on_track_changed"]
-[connection signal="toggled" from="ScrollContainer/VBoxContainer/TimeWatch/Watch" to="." method="_on_time_watch_toggled"]
-[connection signal="pressed" from="ScrollContainer/VBoxContainer/ListPlay" to="." method="_on_list_play_pressed"]
-[connection signal="pressed" from="ScrollContainer/VBoxContainer/ListNext" to="." method="_on_list_next_pressed"]
 [connection signal="next_item_set" from="ListPlayer" to="." method="_on_list_item_set"]
-[connection signal="pressed" from="ScrollContainer/VBoxContainer/ThumbnailRequest" to="." method="_on_thumbnail_request_pressed"]
