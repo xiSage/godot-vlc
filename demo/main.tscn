@@ -234,6 +234,35 @@ func _on_list_item_set(item: VLCMedia) -> void:
 	%List.text = \"list item: %s\" % item.get_mrl()
 
 
+# A thumbnail at the middle of the media, asked for by position: a fraction needs no known
+# duration, which is the one thing a panel cannot count on before a parse has run. One shot,
+# so pressing twice does not leave the first connection behind.
+func _on_thumbnail_request_pressed() -> void:
+	if media == null:
+		%ThumbnailInfo.text = \"thumbnail: nothing loaded\"
+		return
+	media.thumbnail_generated.connect(_on_thumbnail_generated, CONNECT_ONE_SHOT)
+	var request := media.thumbnail_request_by_pos(
+		0.5, VLCThumbnailRequest.SEEK_PRECISE, 192, 192, false, VLCPicture.TYPE_PNG, 5000
+	)
+	if request == null:
+		%ThumbnailInfo.text = \"thumbnail: libvlc refused the request\"
+
+
+func _on_thumbnail_generated(picture: VLCPicture) -> void:
+	if picture == null:
+		%ThumbnailInfo.text = \"thumbnail: none (libvlc reports every failure this way)\"
+		return
+	var image: Image = picture.to_image()
+	if image == null:
+		%ThumbnailInfo.text = \"thumbnail: could not be turned into an image\"
+		return
+	%Thumbnail.texture = ImageTexture.create_from_image(image)
+	%ThumbnailInfo.text = \"thumbnail: %dx%d, %d bytes\" % [
+		image.get_width(), image.get_height(), picture.get_buffer().size()
+	]
+
+
 # What is inside the media, if it holds anything: a playlist's entries, a disc's titles,
 # a directory's files. They show up while it plays -- that is what parses it -- and the
 # list is read-only, because it belongs to the media.
@@ -418,6 +447,23 @@ text = "Play List"
 [node name="ListNext" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=1443128242]
 layout_mode = 2
 text = "List Next"
+
+[node name="Thumbnail" type="TextureRect" parent="ScrollContainer/VBoxContainer" unique_id=1443128243]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(100, 56)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="ThumbnailInfo" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=1443128244]
+unique_name_in_owner = true
+layout_mode = 2
+text = "thumbnail:"
+autowrap_mode = 3
+
+[node name="ThumbnailRequest" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=1443128245]
+layout_mode = 2
+text = "Thumbnail"
 
 [node name="Stop" type="Button" parent="ScrollContainer/VBoxContainer" unique_id=862739439]
 layout_mode = 2
@@ -672,3 +718,4 @@ use_native_dialog = true
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/ListPlay" to="." method="_on_list_play_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/ListNext" to="." method="_on_list_next_pressed"]
 [connection signal="next_item_set" from="ListPlayer" to="." method="_on_list_item_set"]
+[connection signal="pressed" from="ScrollContainer/VBoxContainer/ThumbnailRequest" to="." method="_on_thumbnail_request_pressed"]
