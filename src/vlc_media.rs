@@ -571,10 +571,20 @@ impl VlcMedia {
     ///   `dir://` MRL is [constant MEDIA_TYPE_DIRECTORY].
     /// - Every media from [method load_from_file] answers
     ///   [constant MEDIA_TYPE_UNKNOWN] and keeps answering it: the in-memory access
-    ///   has no scheme to guess from. That has a second consequence: libvlc refuses
-    ///   to parse a media it cannot type, so [method parse_request] reports
-    ///   [constant PARSED_STATUS_SKIPPED] for one unless the flags include
-    ///   [constant PARSE_FLAG_FORCED].
+    ///   has no scheme to guess from. That has a consequence worth knowing before a
+    ///   parse is asked for: libvlc's own type test only *skips* a media it cannot
+    ///   type, and it is [constant PARSE_FLAG_FORCED] that makes such a media parse at
+    ///   all -- measured, an in-memory media parses, reports its metadata and reaches
+    ///   [constant PARSED_STATUS_DONE] with that flag, and is skipped without it.
+    /// - **Asking twice is refused, and libvlc gives no reason.** A media that is
+    ///   already being parsed, or has been parsed -- playing one counts, since the
+    ///   player runs the same input item -- answers `-1` with `libvlc_errmsg()` left
+    ///   NULL, so the log line this binding writes for it has nothing after the colon.
+    ///   [method get_parsed_status] is how to know before asking.
+    /// - **This binding adds [constant PARSE_FLAG_FETCH_LOCAL] to every call**, which is
+    ///   why a parse libvlc itself would call [constant PARSED_STATUS_SKIPPED] is
+    ///   observed here as [constant PARSED_STATUS_FAILED]: the fetch is what it then
+    ///   cannot do. Measured, not deduced.
     /// - It is read under libvlc's own lock, but the answer can still be the
     ///   pre-parse one if a parse is running: the value moves, and this call cannot
     ///   wait for it.

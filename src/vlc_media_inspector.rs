@@ -249,25 +249,30 @@ impl VlcMediaInspector {
         // parse is what reports embedded cover art. `parse_request` is a `#[func]`, so it is reached
         // through Godot like the metadata readers are.
         //
-        // Measured: libvlc refuses to parse a media whose type it cannot identify, and a media from
-        // an in-memory input -- a `res://` file, the kind the demo plays -- has no type until a
-        // player reads it. So the type is checked first; asking anyway is what wrote an error to
-        // libvlc's log, and to Godot's, on every inspection.
-        let media_type = media.call("get_type", &[]).to::<i32>();
-        // Measured against the bindings: this revision's `libvlc_media_type_t` has no `node`, and
-        // file, directory and playlist are the types libvlc will parse a media of.
-        let parseable = media_type == libvlc_media_type_t_libvlc_media_type_file as i32
-            || media_type == libvlc_media_type_t_libvlc_media_type_directory as i32
-            || media_type == libvlc_media_type_t_libvlc_media_type_playlist as i32;
-        if parseable {
+        // Measured, and it is what an earlier version of this got wrong: libvlc does **not** refuse
+        // a media it cannot type. It skips the type test when PARSE_FORCED is passed, and an
+        // in-memory media -- what `load_from_file` makes, and what an inspector usually has --
+        // parses, fills its metadata and reaches `done` with that flag.
+        //
+        // What libvlc does refuse is a media that is already being parsed, or has been parsed
+        // (`lib/media.c:740-744`). That returns -1 with `libvlc_errmsg()` left NULL, which is the
+        // "refused to parse" line that appeared once per inspector rebuild. So the status is read
+        // first, and only a media with nothing to lose is asked again.
+        let status = media.call("get_parsed_status", &[]).to::<i32>();
+        let worth_asking = status
+            == libvlc_media_parsed_status_t_libvlc_media_parsed_status_none as i32
+            || status == libvlc_media_parsed_status_t_libvlc_media_parsed_status_failed as i32
+            || status == libvlc_media_parsed_status_t_libvlc_media_parsed_status_timeout as i32
+            || status == libvlc_media_parsed_status_t_libvlc_media_parsed_status_cancelled as i32;
+        if worth_asking {
             let flags = libvlc_media_parse_flag_t_libvlc_media_parse_local as i32
                 | libvlc_media_parse_flag_t_libvlc_media_parse_forced as i32;
             let _ = media.call("parse_request", &[flags.to_variant(), 0i32.to_variant()]);
+        } else if status == libvlc_media_parsed_status_t_libvlc_media_parsed_status_pending as i32 {
+            self.unparsed = Some("libvlc is reading this media: its metadata follows.".to_string());
         } else {
             self.unparsed = Some(
-                "libvlc cannot parse this media: it has no type yet, which is what an in-memory \
-                 media is until a player reads it, so there is no metadata to show."
-                    .to_string(),
+                "libvlc has read this media and reports no extra metadata for it.".to_string(),
             );
         }
         let request = media.bind().thumbnail_request_by_pos(
