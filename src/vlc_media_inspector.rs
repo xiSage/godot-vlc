@@ -36,6 +36,9 @@ use crate::vlc_picture::VlcPicture;
 /// The size asked for, in pixels. An inspector is a column, not a preview window.
 const THUMBNAIL_SIZE: i32 = 192;
 
+/// How tall the picture's box is, in pixels: an inspector is a column, and a thumbnail is not.
+const THUMBNAIL_BOX_HEIGHT: f32 = 108.0;
+
 /// Adds the media control to the inspector of every `VLCMedia`.
 #[derive(GodotClass)]
 #[class(tool, init, base=EditorInspectorPlugin)]
@@ -81,7 +84,10 @@ impl IEditorProperty for VlcMediaInspector {
     fn enter_tree(&mut self) {
         let mut column = VBoxContainer::new_alloc();
         let mut picture = TextureRect::new_alloc();
-        picture.set_custom_minimum_size(Vector2::new(THUMBNAIL_SIZE as f32, 0.0));
+        // A box, both ways. With `IGNORE_SIZE` the rect does not grow to fit its texture, so a
+        // height of zero would leave the picture invisible -- which is exactly what a zero did:
+        // the line under it showed and the picture did not.
+        picture.set_custom_minimum_size(Vector2::new(THUMBNAIL_SIZE as f32, THUMBNAIL_BOX_HEIGHT));
         picture.set_expand_mode(godot::classes::texture_rect::ExpandMode::IGNORE_SIZE);
         picture.set_stretch_mode(godot::classes::texture_rect::StretchMode::KEEP_ASPECT_CENTERED);
         let origin = Label::new_alloc();
