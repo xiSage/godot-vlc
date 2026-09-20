@@ -32,7 +32,7 @@ use crate::{
     vlc_track_list::VlcTrackList,
 };
 use godot::{
-    classes::{WeakRef, file_access::ModeFlags},
+    classes::{Texture2D, WeakRef, file_access::ModeFlags},
     global::weakref,
     prelude::*,
 };
@@ -74,6 +74,20 @@ pub struct VlcMedia {
     path: Option<Box<GString>>,
     pub media_ptr: *mut libvlc_media_t,
     self_gd: Option<Box<Gd<WeakRef>>>,
+    /// The cover the editor's inspector last showed for this media, when it has one.
+    ///
+    /// Nothing here asks libvlc for a picture and no libvlc call reads this: it is the editor's
+    /// state, kept on the object it describes. That lifetime is the point -- while this object
+    /// lives, the cover the editor drew for it is here, and when it is freed the editor loads the
+    /// media again, unparsed, so libvlc reports the cover again.
+    ///
+    /// `#[var]` rather than `#[export]` on purpose: a property without the `STORAGE` usage flag is
+    /// one Godot neither shows in the inspector nor writes into a `.tscn` or `.tres`, so this
+    /// cannot end up in a file. The media's own metadata can, and does: measured, packing the demo
+    /// scene with a 640x640 cover in a media's metadata produced a 6.6 MB scene file, the cover
+    /// written out as pixel data.
+    #[var]
+    editor_cover: Option<Gd<Texture2D>>,
 }
 
 #[allow(clippy::unnecessary_cast)]
@@ -448,6 +462,7 @@ impl VlcMedia {
             path: Some(path),
             media_ptr,
             self_gd: None,
+            editor_cover: None,
         });
         let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
         media.bind_mut().self_gd = Some(self_gd);
@@ -483,6 +498,7 @@ impl VlcMedia {
             path: None,
             media_ptr,
             self_gd: None,
+            editor_cover: None,
         });
         let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
         media.bind_mut().self_gd = Some(self_gd);
@@ -508,6 +524,7 @@ impl VlcMedia {
             path: None,
             media_ptr,
             self_gd: None,
+            editor_cover: None,
         });
         let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
         media.bind_mut().self_gd = Some(self_gd);
