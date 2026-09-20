@@ -233,8 +233,21 @@ impl VlcMediaInspector {
         if let Some(picture_rect) = self.picture.as_mut() {
             picture_rect.set_texture(&texture);
         }
+        // What the rect actually is, while this is being worked out: the labels show and the
+        // picture does not, and that is not a thing that can be told apart from here -- a texture
+        // that was never set, a rect with no size, and a rect with both look identical in a
+        // screenshot of the code.
+        let rect = match self.picture.as_ref() {
+            Some(rect) => format!(
+                "rect {:?} visible {} texture {:?}",
+                rect.get_size(),
+                rect.is_visible(),
+                rect.get_texture().map(|texture| texture.get_size())
+            ),
+            None => "no rect at all".to_string(),
+        };
         self.say(&format!(
-            "{from}: {}x{}",
+            "{from}: {}x{}, {rect}",
             image.get_width(),
             image.get_height()
         ));
