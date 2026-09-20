@@ -67,7 +67,7 @@ use godot::{
 /// [method get_type] answers what libvlc made of the media, and
 /// [method duplicate_media] makes an independent copy of it.
 #[derive(GodotClass)]
-#[class(base=Resource, rename=VLCMedia, no_init)]
+#[class(base=Resource, rename=VLCMedia, no_init, tool)]
 pub struct VlcMedia {
     base: Base<Resource>,
     #[allow(dead_code)]
