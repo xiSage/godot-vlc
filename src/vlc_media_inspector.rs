@@ -321,9 +321,8 @@ impl VlcMediaInspector {
         } else if status == libvlc_media_parsed_status_t_libvlc_media_parsed_status_pending as i32 {
             self.unparsed = Some("libvlc is reading this media: its metadata follows.".to_string());
         } else {
-            self.unparsed = Some(
-                "libvlc has read this media and reports no extra metadata for it.".to_string(),
-            );
+            self.unparsed =
+                Some("libvlc has read this media and reports no metadata for it.".to_string());
         }
         let request = media.bind().thumbnail_request_by_pos(
             0.5,
