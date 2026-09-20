@@ -36,9 +36,6 @@ use crate::vlc_picture::VlcPicture;
 /// The size asked for, in pixels. An inspector is a column, not a preview window.
 const THUMBNAIL_SIZE: i32 = 192;
 
-/// How tall the picture's box is, in pixels: an inspector is a column, and a thumbnail is not.
-const THUMBNAIL_BOX_HEIGHT: f32 = 108.0;
-
 /// Adds the media control to the inspector of every `VLCMedia`.
 #[derive(GodotClass)]
 #[class(tool, init, base=EditorInspectorPlugin)]
@@ -83,14 +80,20 @@ pub struct VlcMediaInspector {
 impl IEditorProperty for VlcMediaInspector {
     fn enter_tree(&mut self) {
         let mut column = VBoxContainer::new_alloc();
+        column.set_h_size_flags(godot::classes::control::SizeFlags::EXPAND_FILL);
         let mut picture = TextureRect::new_alloc();
-        // A box, both ways. With `IGNORE_SIZE` the rect does not grow to fit its texture, so a
-        // height of zero would leave the picture invisible -- which is exactly what a zero did:
-        // the line under it showed and the picture did not.
-        picture.set_custom_minimum_size(Vector2::new(THUMBNAIL_SIZE as f32, THUMBNAIL_BOX_HEIGHT));
-        picture.set_expand_mode(godot::classes::texture_rect::ExpandMode::IGNORE_SIZE);
+        // No size of its own, and none from the texture either: `KEEP_SIZE` makes the rect's
+        // minimum the picture's size, and the stretch below fits that into whatever width the
+        // inspector hands over, keeping the aspect. So the picture fills the dock's width and is
+        // exactly as tall as its own proportions make it -- which is also what stops a wide
+        // media from widening the dock.
+        picture.set_expand_mode(godot::classes::texture_rect::ExpandMode::KEEP_SIZE);
         picture.set_stretch_mode(godot::classes::texture_rect::StretchMode::KEEP_ASPECT_CENTERED);
-        let origin = Label::new_alloc();
+        picture.set_h_size_flags(godot::classes::control::SizeFlags::EXPAND_FILL);
+        let mut origin = Label::new_alloc();
+        // Both labels wrap: a path or an MRL is one long word, and a label that will not break
+        // one is a label that widens the whole inspector.
+        origin.set_autowrap_mode(godot::classes::text_server::AutowrapMode::WORD_SMART);
         let mut metadata = Label::new_alloc();
         metadata.set_autowrap_mode(godot::classes::text_server::AutowrapMode::WORD_SMART);
 
