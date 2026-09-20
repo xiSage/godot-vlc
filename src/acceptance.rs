@@ -2985,13 +2985,33 @@ fn a_parsed_playlist_holds_its_entries_as_read_only_subitems() {
         "libvlc_media_subitems answered NULL for a media this test built; its header allows \
          that, and its implementation cannot do it"
     );
+    // The entries are appended by the parsing thread as it finds them, and measured on CI:
+    // they can still be missing at the moment the media is already typed as a playlist.
+    // Playing it is what makes libvlc parse it at all, but the type is the demuxer's first
+    // word, not its last -- so this waits for the list to hold something rather than reading
+    // it the instant the type changes. Locally the entry was always there by then, which is
+    // how a test like this passes for a month and then fails on a slower machine.
+    let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+    let mut count = 0;
+    while Instant::now() < deadline {
+        unsafe { libvlc_media_list_lock(subitems) };
+        count = unsafe { libvlc_media_list_count(subitems) };
+        unsafe { libvlc_media_list_unlock(subitems) };
+        if count > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
     unsafe { libvlc_media_list_lock(subitems) };
-    let count = unsafe { libvlc_media_list_count(subitems) };
     let first = unsafe { libvlc_media_list_item_at_index(subitems, 0) };
     let read_only = unsafe { libvlc_media_list_is_readonly(subitems) };
     unsafe { libvlc_media_list_unlock(subitems) };
 
-    assert_eq!(count, 1, "the fixture names exactly one entry");
+    assert_eq!(
+        count, 1,
+        "the fixture names exactly one entry, and the list holds {count} after waiting for it"
+    );
     assert!(
         read_only,
         "a media's subitems answered that they are writable; libvlc marks them read-only"
