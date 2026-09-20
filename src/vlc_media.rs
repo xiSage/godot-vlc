@@ -863,13 +863,26 @@ impl VlcMedia {
     ///
     /// # Returns
     /// the media's meta extra name array
+    /// The names of the metadata libvlc keeps beyond its own kinds.
+    ///
+    /// # Returns
+    /// the names, or nothing when there are none.
+    ///
+    /// # Note
+    /// - This was **uncallable** until the editor's inspector became its first caller: it passed
+    ///   a NULL out-parameter to `libvlc_media_get_meta_extra_names`, which asserts on it
+    ///   (`lib/media.c:589`, `assert(p_md && pppsz_names)`) and, in a build with assertions off,
+    ///   would have been dereferenced as a pointer to nothing on the next line.
+    /// - The names belong to libvlc and are freed here with
+    ///   `libvlc_media_meta_extra_names_release`, which is the only release for them.
     #[func]
     fn get_meta_extra_names(&self) -> PackedStringArray {
-        let names = ptr::null_mut();
-        let count = unsafe { libvlc_media_get_meta_extra_names(self.media_ptr, names) };
+        // A real out-parameter: libvlc writes the array it allocated through it.
+        let mut names: *mut *mut c_char = ptr::null_mut();
+        let count = unsafe { libvlc_media_get_meta_extra_names(self.media_ptr, &mut names) };
         let arr = unsafe {
-            if count > 0 {
-                slice::from_raw_parts(*names, count as usize)
+            if count > 0 && !names.is_null() {
+                slice::from_raw_parts(names, count as usize)
                     .iter()
                     .map(|x| {
                         GString::try_from_cstr(CStr::from_ptr(*x), Encoding::Utf8)
@@ -881,7 +894,7 @@ impl VlcMedia {
             }
         };
         unsafe {
-            libvlc_media_meta_extra_names_release(*names, count);
+            libvlc_media_meta_extra_names_release(names, count);
         };
         arr
     }
