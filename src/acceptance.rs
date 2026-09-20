@@ -3963,3 +3963,123 @@ fn the_log_context_names_the_module_and_where_it_came_from() {
          lines this test is about: {lines:?}"
     );
 }
+
+/// Collects what a thumbnail request reported, keeping a reference on each picture.
+///
+/// The payload is borrowed -- libvlc releases it as soon as the event has been delivered --
+/// so the probe retains, exactly as the binding does.
+#[derive(Default)]
+struct ThumbnailProbe {
+    pictures: Mutex<Vec<*mut libvlc_picture_t>>,
+}
+
+impl ThumbnailProbe {
+    fn take(&self) -> Vec<*mut libvlc_picture_t> {
+        std::mem::take(&mut *self.pictures.lock().expect("the probe lock was poisoned"))
+    }
+}
+
+unsafe extern "C" fn probe_thumbnail_generated(event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        let probe = &*(data as *const ThumbnailProbe);
+        let picture = (*event).u.media_thumbnail_generated.p_thumbnail;
+        let held = if picture.is_null() {
+            std::ptr::null_mut()
+        } else {
+            libvlc_picture_retain(picture)
+        };
+        probe
+            .pictures
+            .lock()
+            .expect("the probe lock was poisoned")
+            .push(held);
+    }
+}
+
+/// A thumbnail request answers with a picture, and its stride describes its buffer.
+///
+/// Two of the three measurements this section was opened with, in one run: whether the
+/// shipped runtime can produce a picture for each type at all -- ARGB and RGBA go through
+/// libvlc's raw-video encoder, which is a plugin that may or may not be there, and a missing
+/// one is reported as a NULL payload rather than an error -- and whether
+/// `libvlc_picture_get_stride`'s `width * 4` is the truth about the buffer, which the header
+/// does not promise: it describes the buffer as including "potential padding" while giving no
+/// way to ask how much.
+///
+/// The printout is the point of the test as much as the assertions are: it records what this
+/// runtime actually does, which is what the documentation of both types quotes.
+#[test]
+fn a_thumbnail_request_reports_a_picture_and_a_stride_that_matches_its_buffer() {
+    let sample = Sample::new();
+    for (label, picture_type, stride_is_meaningful) in [
+        ("ARGB", libvlc_picture_type_t_libvlc_picture_Argb, true),
+        ("RGBA", libvlc_picture_type_t_libvlc_picture_Rgba, true),
+        ("PNG", libvlc_picture_type_t_libvlc_picture_Png, false),
+    ] {
+        let mut probe = ThumbnailProbe::default();
+        unsafe {
+            libvlc_event_attach(
+                libvlc_media_event_manager(sample.media),
+                libvlc_event_e_libvlc_MediaThumbnailGenerated as libvlc_event_type_t,
+                Some(probe_thumbnail_generated),
+                &mut probe as *mut ThumbnailProbe as *mut c_void,
+            );
+        }
+
+        // The middle of the media, which is what the editor's inspector asks for: a position
+        // needs no known duration, so this works before anything has parsed it.
+        let request = unsafe {
+            libvlc_media_thumbnail_request_by_pos(
+                sample.instance,
+                sample.media,
+                0.5,
+                libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_precise,
+                256,
+                256,
+                false,
+                picture_type,
+                5000,
+            )
+        };
+        assert!(!request.is_null(), "{label}: libvlc refused the request");
+
+        let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+        while Instant::now() < deadline && probe.pictures.lock().unwrap().is_empty() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let reported = probe.take();
+        assert!(
+            !reported.is_empty(),
+            "{label}: no event arrived within {PLAYBACK_TIMEOUT:?}, so the request was neither \
+             answered nor refused"
+        );
+        let picture = reported[0];
+        if picture.is_null() {
+            println!("{label}: this runtime produced no picture (a NULL payload)");
+        } else {
+            let mut size: usize = 0;
+            let buffer = unsafe { libvlc_picture_get_buffer(picture, &mut size) };
+            let width = unsafe { libvlc_picture_get_width(picture) };
+            let height = unsafe { libvlc_picture_get_height(picture) };
+            let picture_type_reported = unsafe { libvlc_picture_type(picture) };
+            println!(
+                "{label}: {width}x{height}, buffer {size} bytes, reported type {picture_type_reported}"
+            );
+            assert!(!buffer.is_null() && size > 0, "{label}: no buffer");
+            if stride_is_meaningful {
+                let stride = unsafe { libvlc_picture_get_stride(picture) };
+                println!("{label}: stride {stride}");
+                assert_eq!(
+                    size,
+                    stride as usize * height as usize,
+                    "{label}: the buffer is {size} bytes but stride * height is {}, so the rows \
+                     are padded and the stride does not describe the buffer",
+                    stride as usize * height as usize
+                );
+            }
+            unsafe { libvlc_picture_release(picture) };
+        }
+
+        unsafe { libvlc_media_thumbnail_request_destroy(request) };
+    }
+}
