@@ -298,7 +298,7 @@ impl VlcMedia {
     // repackage a library's signature into something of its own design.
     #[allow(clippy::too_many_arguments)]
     #[func]
-    fn thumbnail_request_by_time(
+    pub(crate) fn thumbnail_request_by_time(
         &self,
         time_ms: i64,
         speed: i32,
@@ -338,7 +338,7 @@ impl VlcMedia {
     // repackage a library's signature into something of its own design.
     #[allow(clippy::too_many_arguments)]
     #[func]
-    fn thumbnail_request_by_pos(
+    pub(crate) fn thumbnail_request_by_pos(
         &self,
         position: f64,
         speed: i32,

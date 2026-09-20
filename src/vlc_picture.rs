@@ -193,7 +193,7 @@ impl VlcPicture {
     /// - **Nothing is shared with the picture**: the image owns a copy, so releasing the
     ///   picture, or letting go of this wrapper, does not disturb it.
     #[func]
-    fn to_image(&self) -> Option<Gd<godot::classes::Image>> {
+    pub(crate) fn to_image(&self) -> Option<Gd<godot::classes::Image>> {
         use godot::classes::image::Format;
 
         let picture_type = self.get_type();
