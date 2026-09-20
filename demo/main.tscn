@@ -9,6 +9,10 @@ script/source = "extends VLCMediaPlayer
 
 var dragging = false
 var error_count = 0
+# The one request in flight, if any, held on purpose: dropping a request is what cancels it, so a
+# request kept only in a local is destroyed by the time its answer arrives -- and libvlc answers
+# that with a null picture.
+var thumbnail_request: VLCThumbnailRequest = null
 var loop_a = -1
 var video_tracks: Array[VLCTrack]
 var audio_tracks: Array[VLCTrack]
@@ -235,21 +239,34 @@ func _on_list_item_set(item: VLCMedia) -> void:
 
 
 # A thumbnail at the middle of the media, asked for by position: a fraction needs no known
-# duration, which is the one thing a panel cannot count on before a parse has run. One shot,
-# so pressing twice does not leave the first connection behind.
+# duration, which is the one thing a panel cannot count on before a parse has run.
+#
+# Pressing twice ends with exactly one request in flight and one connection on the media: the
+# previous connection comes off and the previous request is let go first, because cancelling a
+# request makes libvlc answer it from inside the call, and that answer is not this press's.
 func _on_thumbnail_request_pressed() -> void:
 	if media == null:
 		%ThumbnailInfo.text = \"thumbnail: nothing loaded\"
 		return
-	media.thumbnail_generated.connect(_on_thumbnail_generated, CONNECT_ONE_SHOT)
+	if media.thumbnail_generated.is_connected(_on_thumbnail_generated):
+		media.thumbnail_generated.disconnect(_on_thumbnail_generated)
+	thumbnail_request = null
 	var request := media.thumbnail_request_by_pos(
 		0.5, VLCThumbnailRequest.SEEK_PRECISE, 192, 192, false, VLCPicture.TYPE_PNG, 5000
 	)
 	if request == null:
 		%ThumbnailInfo.text = \"thumbnail: libvlc refused the request\"
+		return
+	# Held, not dropped: see the field above. The signal is the only way the answer arrives, and a
+	# request whose last reference is gone is a request libvlc has cancelled.
+	thumbnail_request = request
+	media.thumbnail_generated.connect(_on_thumbnail_generated, CONNECT_ONE_SHOT)
 
 
 func _on_thumbnail_generated(picture: VLCPicture) -> void:
+	# The answer has arrived, so the request has done its job and can go; letting it go here is
+	# what destroys libvlc's, rather than leaving it on the panel until the next press.
+	thumbnail_request = null
 	if picture == null:
 		%ThumbnailInfo.text = \"thumbnail: none (libvlc reports every failure this way)\"
 		return

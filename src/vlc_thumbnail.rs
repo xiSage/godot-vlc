@@ -12,10 +12,11 @@
 //! # Hold it for as long as the answer matters
 //! Measured: a caller that lets the returned object fall out of scope -- the natural mistake,
 //! since `media.thumbnail_request_by_pos(...)` reads as a call whose result may be ignored --
-//! has destroyed its own request by the time the answer arrives. The demo's panel did exactly
-//! that and the signal came back carrying libvlc's null picture; the same drop in a headless
-//! run went further and corrupted the heap (exit `0xC0000374`, `STATUS_HEAP_CORRUPTION`),
-//! which is the use-after-free described below being reached the ordinary way.
+//! has destroyed its own request by the time the answer arrives, and the answer is libvlc's
+//! null picture. A headless run of the same mistake went further and corrupted the heap
+//! (exit `0xC0000374`, `STATUS_HEAP_CORRUPTION`), which is the use-after-free described below
+//! being reached the ordinary way. The demo panel's button was written that way first, and
+//! answered nothing until the request was given a field to live in.
 //!
 //! Keep the request while the answer matters -- a field, or a local that lives across the
 //! `await` -- and let it go when the answer has arrived or is no longer wanted.
@@ -88,7 +89,8 @@ impl VlcThumbnailRequest {
     ///   frees the request while the worker may still be about to call back with it. Nothing
     ///   this binding does can remove that; see the module documentation for the two paths
     ///   and where they differ. Cancelling a request that has not started is safe, and the
-    ///   event arrives from inside the call -- a the media's     humbnail_generated signal with nothing in it.
+    ///   event arrives from inside the call, as the media's `thumbnail_generated` signal with
+    ///   nothing in it.
     /// - Destroying twice is safe here, unlike libvlc's own function, which dereferences
     ///   whatever it is given.
     #[func]
