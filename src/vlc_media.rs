@@ -878,7 +878,7 @@ impl VlcMedia {
     #[func]
     fn get_meta_extra_names(&self) -> PackedStringArray {
         // A real out-parameter: libvlc writes the array it allocated through it.
-        let mut names: *mut *mut c_char = ptr::null_mut();
+        let mut names: *mut *mut ::std::os::raw::c_char = ptr::null_mut();
         let count = unsafe { libvlc_media_get_meta_extra_names(self.media_ptr, &mut names) };
         let arr = unsafe {
             if count > 0 && !names.is_null() {
