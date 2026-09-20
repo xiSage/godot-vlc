@@ -35,10 +35,57 @@
 //! The picture, where it came from, and the metadata libvlc reports: every name
 //! [method VLCMedia.get_meta_extra_names] lists, not a chosen few, because an inspector has room
 //! for what a script might not want to ask for.
+//!
+//! # Why the description is written twice
+//! Because the control is filled *before* it is handed to the inspector: the plugin builds it,
+//! calls [method VlcMediaInspector.show_media], and only then hands it to `add_custom_control`.
+//! The labels are made in `enter_tree`, so the description `show_media` writes has nowhere to
+//! land and is dropped. The one that lands is written when the control enters the tree, which is
+//! also the first moment the panel has anything to write into.
+//!
+//! That would be no more than untidy if every panel was driven by events -- but a panel is not
+//! always driven by events, because of what "opening a media" means to the editor.
+//!
+//! # A media that was read before the panel existed
+//! Opening the same file twice is not two parses: the loader caches a `VLCMedia` by path, so the
+//! second inspector is handed the media the first one parsed. libvlc will not announce that media
+//! again -- its cover event is once per parse, and a second `parse_request` for a media it has
+//! already read is refused, both measured and both written down on
+//! [method VLCMedia.parse_request] -- so a panel that only redraws on a parse shows nothing at
+//! all, which is what a second open looked like.
+//!
+//! The panel therefore reads what libvlc already knows when it enters the tree, whether or not a
+//! parse is coming, and a cover that libvlc will not report again is found on the media itself:
+//! [member VLCMedia.editor_cover] is where a panel leaves the cover it drew, and the next panel
+//! built for that media finds it there. The lifetime is the whole reason it works -- while the
+//! media object lives the cover is with it, and when it is freed the editor loads the media again,
+//! unparsed, so libvlc reports the cover again.
+//!
+//! # Why the cover is not read out of libvlc's art cache
+//! It looks like the obvious source -- a parsed media's `ArtworkURL` names a file libvlc wrote --
+//! and it is wrong for exactly the media this panel is usually showing. That cache is keyed on a
+//! media's URL, and every media this extension loads through callbacks answers the constant
+//! `imem://` (see [method VLCMedia.get_mrl]), so a media with a cover and a media without one
+//! share one cache slot. Measured on two `res://` media: a 13 KB FLAC with an embedded 16x16 cover
+//! and the demo's `test.mp4`, which has none. After the FLAC was read, the MP4's own `ArtworkURL`
+//! named the FLAC's artwork file and the panel drew the FLAC's cover on the MP4 -- which is the
+//! defect that replaced the cache route. The art cache is still worth knowing about for other
+//! reasons; [method VLCMedia.get_meta] says what it is and is not.
+//!
+//! # Why the cover is not in the media's metadata either
+//! `set_meta` looks like the same idea with less machinery, and it is not: Godot writes a
+//! resource's metadata into any `.tres` or `.tscn` that carries that resource. Measured, packing
+//! the demo scene around a media whose metadata held a 640x640 cover produced a 6.6 MB scene file
+//! with the cover in it as pixel data. A plain `#[var]` property is not written -- it carries no
+//! `STORAGE` usage flag -- which is what [member VLCMedia.editor_cover] is.
+//!
+//! A cover outranks a generated frame whichever way round the two arrive, on the first open and on
+//! every later one, so every panel for a media ends up showing the same picture.
 
 use godot::classes::{
     EditorInspectorPlugin, IEditorInspectorPlugin, IVBoxContainer, ImageTexture, Label, Object,
-    TextureRect, VBoxContainer, control as control_classes, texture_rect as texture_rect_classes,
+    Texture2D, TextureRect, VBoxContainer, control as control_classes,
+    texture_rect as texture_rect_classes,
 };
 use godot::prelude::*;
 
@@ -96,6 +143,11 @@ pub struct VlcMediaInspector {
     /// Why there will be no metadata, when that is already known: an unparsed media would otherwise
     /// look like one that is still being read.
     unparsed: Option<String>,
+    /// Whether the picture that is up is a cover rather than a generated frame.
+    ///
+    /// A cover outranks a frame: that is the order a first open arrives in (the module notes say
+    /// why), and the two are independent events, so the precedence is kept rather than assumed.
+    picture_is_cover: bool,
     /// The media this control is showing, so that its signals can be let go of.
     media: Option<Gd<VlcMedia>>,
 }
@@ -128,6 +180,21 @@ impl IVBoxContainer for VlcMediaInspector {
         self.picture = Some(picture);
         self.origin = Some(origin);
         self.metadata = Some(metadata);
+
+        // Now that the labels exist, the description is written again -- and this is the one that
+        // lands, because the plugin filled this control before the inspector had it. Nothing is
+        // waiting for an event to make that necessary: a media libvlc has already read never
+        // announces itself again, and this is the only description such a panel will ever get.
+        // (`show_media` still describes, for a caller that fills a control already in the tree.)
+        if let Some(media) = self.media.clone() {
+            self.describe(&media);
+            // The same is true of the picture, and the cover for it is on the media itself: the
+            // panel that first saw one left it in [member VLCMedia.editor_cover], which lives
+            // exactly as long as the media does. This is where there is a picture to put it in.
+            if let Ok(cover) = media.get("editor_cover").try_to::<Gd<Texture2D>>() {
+                self.show_cover_texture(&cover, "remembered from when this media was last shown");
+            }
+        }
     }
 }
 
@@ -161,9 +228,13 @@ impl VlcMediaInspector {
     #[func]
     fn on_thumbnail_generated(&mut self, picture: Option<Gd<VlcPicture>>) {
         match picture {
-            Some(picture) => self.show(&picture, "generated thumbnail"),
+            // A cover that is already up is the better picture, and this is the one event that
+            // could replace it: the two arrive independently, and a remembered cover is up before
+            // the request it was made alongside has been answered.
+            Some(picture) if !self.picture_is_cover => self.show(&picture, "generated thumbnail"),
+            Some(_) => {}
             // libvlc's whole vocabulary of failure: no picture, and a line in its log.
-            None => self.say("generated thumbnail: libvlc produced none"),
+            None => self.say_while_no_picture("generated thumbnail: libvlc produced none"),
         }
     }
 
@@ -171,8 +242,8 @@ impl VlcMediaInspector {
     #[func]
     fn on_attached_thumbnails_found(&mut self, pictures: Array<Gd<VlcPicture>>) {
         match pictures.get(0) {
-            Some(picture) => self.show(&picture, "embedded cover"),
-            None => self.say("embedded cover: the event carried none"),
+            Some(picture) => self.show_cover(&picture, "embedded cover"),
+            None => self.say_while_no_picture("embedded cover: the event carried none"),
         }
     }
 }
@@ -321,8 +392,16 @@ impl VlcMediaInspector {
         } else if status == libvlc_media_parsed_status_t_libvlc_media_parsed_status_pending as i32 {
             self.unparsed = Some("libvlc is reading this media: its metadata follows.".to_string());
         } else {
-            self.unparsed =
-                Some("libvlc has read this media and reports no metadata for it.".to_string());
+            // Read, or declined to read: either way libvlc has nothing more to say about this
+            // media, so nothing will arrive that could redraw the metadata.
+            self.unparsed = Some(
+                if status == libvlc_media_parsed_status_t_libvlc_media_parsed_status_done as i32 {
+                    "libvlc has read this media; it reports no metadata for it."
+                } else {
+                    "libvlc did not parse this media, so it has no metadata to report."
+                }
+                .to_string(),
+            );
         }
         let request = media.bind().thumbnail_request_by_pos(
             0.5,
@@ -365,9 +444,64 @@ impl VlcMediaInspector {
         ));
     }
 
+    /// Puts up a cover that libvlc is not going to report, with the line saying where it came from.
+    ///
+    /// The panel cannot ask libvlc for it again: the cover event fires once per parse, and a second
+    /// `parse_request` for a media libvlc has already read is refused (both measured; see
+    /// [method VLCMedia.parse_request]). The media's `ArtworkURL` is not an answer either, and it is
+    /// worth saying why, because it looks like one: that cache is keyed on the media's URL, and
+    /// every media this extension loads through callbacks answers the constant `imem://`, so a
+    /// media with a cover and a media without one share one slot -- measured on the engine test's
+    /// FLAC fixture and the demo's `test.mp4`, where the MP4 was handed the FLAC's artwork file.
+    fn show_cover_texture(&mut self, cover: &Gd<Texture2D>, from: &str) {
+        if let Some(picture) = self.picture.as_mut() {
+            picture.set_texture(cover);
+        }
+        // It is a cover, so the generated thumbnail that is still on its way must not replace it.
+        self.picture_is_cover = true;
+        self.say(&format!(
+            "embedded cover: {}x{} ({from})",
+            cover.get_width(),
+            cover.get_height()
+        ));
+    }
+
+    /// Shows a cover from libvlc's event, and leaves it on the media for the panels built after
+    /// this one.
+    fn show_cover(&mut self, picture: &Gd<VlcPicture>, from: &str) {
+        self.picture_is_cover = true;
+        self.show(picture, from);
+        // The picture that is up is the one to leave behind: `show` fails quietly when a picture
+        // cannot be turned into a texture, and then there is nothing worth keeping.
+        let shown = self
+            .picture
+            .as_ref()
+            .and_then(|picture| picture.get_texture());
+        if let (Some(mut media), Some(shown)) = (self.media.clone(), shown) {
+            media.set("editor_cover", &shown.to_variant());
+        }
+    }
+
     fn say(&mut self, text: &str) {
         if let Some(origin) = self.origin.as_mut() {
             origin.set_text(text);
+        }
+    }
+
+    /// Says why there is no picture, but only while there is none.
+    ///
+    /// The line describes the picture that is up, so a picture that came from somewhere else must
+    /// not be talked over by the news that a generated thumbnail produced nothing. Measured: a
+    /// media with a cover arrived at `picture=1x1` while its row read `generated thumbnail: libvlc
+    /// produced none`, because the cover event and the thumbnail's own answer are two independent
+    /// events and either can be last.
+    fn say_while_no_picture(&mut self, text: &str) {
+        let has_picture = self
+            .picture
+            .as_ref()
+            .is_some_and(|picture| picture.get_texture().is_some());
+        if !has_picture {
+            self.say(text);
         }
     }
 }
