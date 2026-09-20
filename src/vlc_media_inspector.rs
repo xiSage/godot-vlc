@@ -93,6 +93,9 @@ pub struct VlcMediaInspector {
     metadata: Option<Gd<Label>>,
     /// The request, held so that it is not destroyed while libvlc is still working on it.
     request: Option<Gd<VlcThumbnailRequest>>,
+    /// Why there will be no metadata, when that is already known: an unparsed media would otherwise
+    /// look like one that is still being read.
+    unparsed: Option<String>,
     /// The media this control is showing, so that its signals can be let go of.
     media: Option<Gd<VlcMedia>>,
 }
@@ -212,7 +215,13 @@ impl VlcMediaInspector {
             }
         }
         if names.is_empty() {
-            text.push_str("\n(no metadata yet: libvlc fills it in as it parses)");
+            match self.unparsed.clone() {
+                Some(reason) => {
+                    text.push('\n');
+                    text.push_str(&reason);
+                }
+                None => text.push_str("\n(no metadata yet: libvlc fills it in as it parses)"),
+            }
         }
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.set_text(&text);
@@ -237,11 +246,30 @@ impl VlcMediaInspector {
         );
         media.connect("parsed_changed", &self.base().callable("on_parsed_changed"));
         // The parse is asked for, not assumed: metadata is empty until one has run, and the same
-        // parse is what reports embedded cover art. `parse_request` is a `#[func]`, so it is
-        // reached through Godot like the metadata readers are.
-        let flags = libvlc_media_parse_flag_t_libvlc_media_parse_local as i32
-            | libvlc_media_parse_flag_t_libvlc_media_parse_forced as i32;
-        let _ = media.call("parse_request", &[flags.to_variant(), 0i32.to_variant()]);
+        // parse is what reports embedded cover art. `parse_request` is a `#[func]`, so it is reached
+        // through Godot like the metadata readers are.
+        //
+        // Measured: libvlc refuses to parse a media whose type it cannot identify, and a media from
+        // an in-memory input -- a `res://` file, the kind the demo plays -- has no type until a
+        // player reads it. So the type is checked first; asking anyway is what wrote an error to
+        // libvlc's log, and to Godot's, on every inspection.
+        let media_type = media.call("get_type", &[]).to::<i32>();
+        // Measured against the bindings: this revision's `libvlc_media_type_t` has no `node`, and
+        // file, directory and playlist are the types libvlc will parse a media of.
+        let parseable = media_type == libvlc_media_type_t_libvlc_media_type_file as i32
+            || media_type == libvlc_media_type_t_libvlc_media_type_directory as i32
+            || media_type == libvlc_media_type_t_libvlc_media_type_playlist as i32;
+        if parseable {
+            let flags = libvlc_media_parse_flag_t_libvlc_media_parse_local as i32
+                | libvlc_media_parse_flag_t_libvlc_media_parse_forced as i32;
+            let _ = media.call("parse_request", &[flags.to_variant(), 0i32.to_variant()]);
+        } else {
+            self.unparsed = Some(
+                "libvlc cannot parse this media: it has no type yet, which is what an in-memory \
+                 media is until a player reads it, so there is no metadata to show."
+                    .to_string(),
+            );
+        }
         let request = media.bind().thumbnail_request_by_pos(
             0.5,
             VlcThumbnailRequest::SEEK_PRECISE as i32,
