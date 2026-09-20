@@ -108,6 +108,7 @@ impl IEditorProperty for VlcMediaInspector {
         };
         self.describe(&media);
         if self.media.as_ref() != Some(&media) {
+            self.unwatch();
             self.watch(&media);
             self.media = Some(media);
         }
@@ -115,6 +116,30 @@ impl IEditorProperty for VlcMediaInspector {
 }
 
 impl VlcMediaInspector {
+    /// Lets go of the media this control was showing, so that it stops reporting into a control
+    /// that has moved on to another one.
+    ///
+    /// The inspector reuses a single control for whatever is selected, and a media outlives the
+    /// selection: without this, every media ever inspected would keep a connection to this
+    /// control, and the picture of one would arrive to overwrite the picture of another. The
+    /// request goes with it, which is also what destroys libvlc's request.
+    fn unwatch(&mut self) {
+        let Some(previous) = self.media.take() else {
+            return;
+        };
+        let mut previous = previous.clone();
+        previous.disconnect(
+            "thumbnail_generated",
+            &self.base().callable("on_thumbnail_generated"),
+        );
+        previous.disconnect(
+            "attached_thumbnails_found",
+            &self.base().callable("on_attached_thumbnails_found"),
+        );
+        self.request = None;
+        self.say("no thumbnail yet");
+    }
+
     /// Fills in what libvlc can already answer: the MRL and whatever metadata there is.
     ///
     /// Metadata is empty until a media has been parsed, and an inspector must not parse
