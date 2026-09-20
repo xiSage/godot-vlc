@@ -115,6 +115,7 @@ impl IEditorProperty for VlcMediaInspector {
     }
 }
 
+#[allow(clippy::unnecessary_cast)]
 impl VlcMediaInspector {
     /// Lets go of the media this control was showing, so that it stops reporting into a control
     /// that has moved on to another one.
@@ -203,7 +204,7 @@ impl VlcMediaInspector {
             THUMBNAIL_SIZE,
             THUMBNAIL_SIZE,
             false,
-            libvlc_picture_type_t_libvlc_picture_Png,
+            libvlc_picture_type_t_libvlc_picture_Png as i32,
             5000,
         );
         if self.request.is_none() {
