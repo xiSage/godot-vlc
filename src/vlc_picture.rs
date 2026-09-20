@@ -184,13 +184,12 @@ impl VlcPicture {
     ///   more, the extra is dropped rather than handed to `Image` -- a longer buffer would
     ///   mean rows that are not tight against each other, which is the one thing the stride
     ///   is supposed to describe.
-    /// - **[constant TYPE_ARGB] is refused for now, and not out of laziness.** Its buffer
-    ///   holds four bytes per pixel in the order libvlc names -- alpha, red, green, blue --
-    ///   while Godot wants red, green, blue, alpha, so a conversion has to rotate every
-    ///   pixel. Which byte actually lands where depends on the encoder and the platform, and
-    ///   that is what the acceptance test measures before this binding converts one: a
-    ///   rotation written ahead of the measurement is a guess, and a wrongly rotated image is
-    ///   worse than a refused one.
+    /// - **[constant TYPE_ARGB] is rotated, because the rotation was measured.** Its buffer
+    ///   holds its four bytes per pixel in libvlc's own order -- alpha, red, green, blue --
+    ///   while Godot wants red, green, blue, alpha. The acceptance compares the same frame
+    ///   taken in both raw types and asserts that rotating ARGB left by one byte reproduces
+    ///   RGBA exactly; it passes on this runtime and prints both buffers if a future one
+    ///   writes a different order, so the conversion follows the bytes rather than the name.
     /// - **Nothing is shared with the picture**: the image owns a copy, so releasing the
     ///   picture, or letting go of this wrapper, does not disturb it.
     #[func]
@@ -221,7 +220,7 @@ impl VlcPicture {
                 }
                 Some(image)
             }
-            Self::TYPE_RGBA => {
+            Self::TYPE_RGBA | Self::TYPE_ARGB => {
                 let width = self.get_width();
                 let height = self.get_height();
                 let stride = self.get_stride();
@@ -244,17 +243,17 @@ impl VlcPicture {
                 } else {
                     PackedByteArray::from(&bytes.as_slice()[..needed])
                 };
+                let data = if picture_type == Self::TYPE_ARGB {
+                    rotated_left_by_one(&data)
+                } else {
+                    data
+                };
                 let mut image =
                     godot::classes::Image::create_empty(width, height, false, Format::RGBA8)?;
                 image.set_data(width, height, false, Format::RGBA8, &data);
                 Some(image)
             }
-            Self::TYPE_ARGB => {
-                godot_error!(
-                    "godot-vlc: to_image() refused an ARGB picture: its byte order is what the acceptance test measures before this binding converts one (see the method documentation)"
-                );
-                None
-            }
+
             other => {
                 godot_error!("godot-vlc: to_image() does not know picture type {other}");
                 None
@@ -300,4 +299,20 @@ impl VlcPicture {
         }
         Some(Gd::from_init_fn(|base| Self { base, ptr }))
     }
+}
+
+/// The same bytes with each pixel's four bytes rotated left by one.
+///
+/// libvlc names the ARGB order alpha, red, green, blue and writes it that way -- measured by
+/// [`the_argb_buffer_is_the_rgba_buffer_rotated`] in the acceptance, which compares the same
+/// frame taken in both raw types -- while Godot wants red, green, blue, alpha. One rotation of
+/// each group of four is the whole conversion.
+fn rotated_left_by_one(bytes: &PackedByteArray) -> PackedByteArray {
+    let source = bytes.as_slice();
+    let mut rotated: Vec<u8> = Vec::with_capacity(source.len());
+    for index in (0..source.len()).step_by(4) {
+        let pixel = &source[index..index + 4];
+        rotated.extend_from_slice(&[pixel[1], pixel[2], pixel[3], pixel[0]]);
+    }
+    PackedByteArray::from(rotated.as_slice())
 }

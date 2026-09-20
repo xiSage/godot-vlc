@@ -4083,3 +4083,110 @@ fn a_thumbnail_request_reports_a_picture_and_a_stride_that_matches_its_buffer() 
         unsafe { libvlc_media_thumbnail_request_destroy(request) };
     }
 }
+
+/// One picture from one request, retained for the caller, or null when there was none.
+///
+/// Requests are made one at a time and waited for one at a time: with two outstanding, an
+/// arrival cannot be attributed to the request that caused it.
+fn one_thumbnail_picture(
+    instance: *mut libvlc_instance_t,
+    media: *mut libvlc_media_t,
+    picture_type: libvlc_picture_type_t,
+    size: u32,
+) -> *mut libvlc_picture_t {
+    let mut probe = ThumbnailProbe::default();
+    unsafe {
+        libvlc_event_attach(
+            libvlc_media_event_manager(media),
+            libvlc_event_e_libvlc_MediaThumbnailGenerated as libvlc_event_type_t,
+            Some(probe_thumbnail_generated),
+            &mut probe as *mut ThumbnailProbe as *mut c_void,
+        );
+    }
+    let request = unsafe {
+        libvlc_media_thumbnail_request_by_pos(
+            instance,
+            media,
+            0.5,
+            libvlc_thumbnailer_seek_speed_t_libvlc_media_thumbnail_seek_precise,
+            size,
+            size,
+            false,
+            picture_type,
+            5000,
+        )
+    };
+    assert!(!request.is_null(), "libvlc refused the request");
+    let deadline = Instant::now() + PLAYBACK_TIMEOUT;
+    while Instant::now() < deadline && probe.pictures.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let reported = probe.take();
+    assert!(!reported.is_empty(), "no event arrived");
+    unsafe { libvlc_media_thumbnail_request_destroy(request) };
+    reported[0]
+}
+
+/// What byte order an ARGB buffer actually holds.
+///
+/// libvlc's own name for the type says alpha, red, green, blue, and Godot wants red, green,
+/// blue, alpha, so `to_image` has to rotate every pixel -- but the order a buffer really holds
+/// depends on the encoder and the platform, and the header does not pin it down. So this takes
+/// the same frame twice, in both raw types, and compares them: if rotating ARGB's four bytes
+/// left by one reproduces RGBA exactly, the documented order is what this runtime writes.
+///
+/// The printout is what the conversion is written from, whichever way it goes.
+#[test]
+fn the_argb_buffer_is_the_rgba_buffer_rotated() {
+    let sample = Sample::new();
+    let argb = one_thumbnail_picture(
+        sample.instance,
+        sample.media,
+        libvlc_picture_type_t_libvlc_picture_Argb,
+        64,
+    );
+    let rgba = one_thumbnail_picture(
+        sample.instance,
+        sample.media,
+        libvlc_picture_type_t_libvlc_picture_Rgba,
+        64,
+    );
+    assert!(
+        !argb.is_null() && !rgba.is_null(),
+        "a raw picture was missing"
+    );
+
+    let mut argb_size: usize = 0;
+    let mut rgba_size: usize = 0;
+    let argb_buffer = unsafe { libvlc_picture_get_buffer(argb, &mut argb_size) };
+    let rgba_buffer = unsafe { libvlc_picture_get_buffer(rgba, &mut rgba_size) };
+    assert_eq!(argb_size, rgba_size, "the two pictures differ in size");
+    let argb_bytes = unsafe { std::slice::from_raw_parts(argb_buffer, argb_size) };
+    let rgba_bytes = unsafe { std::slice::from_raw_parts(rgba_buffer, rgba_size) };
+
+    let mut rotated: Vec<u8> = Vec::with_capacity(argb_size);
+    for index in (0..argb_size).step_by(4) {
+        let pixel = &argb_bytes[index..index + 4];
+        rotated.extend_from_slice(&[pixel[1], pixel[2], pixel[3], pixel[0]]);
+    }
+    let matches = rotated == rgba_bytes;
+    println!("ARGB rotated left by one byte equals RGBA: {matches}");
+    if !matches {
+        let first = 8.min(argb_size);
+        println!(
+            "first bytes -- ARGB {:?}, RGBA {:?}",
+            &argb_bytes[..first],
+            &rgba_bytes[..first]
+        );
+    }
+    assert!(
+        matches,
+        "the ARGB buffer is not the RGBA buffer rotated by one byte: the conversion has to be \
+         written from the bytes printed above, not from libvlc's name for the type"
+    );
+
+    unsafe {
+        libvlc_picture_release(argb);
+        libvlc_picture_release(rgba);
+    }
+}
