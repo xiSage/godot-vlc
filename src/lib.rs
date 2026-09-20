@@ -42,6 +42,7 @@ mod vlc_editor_plugin;
 mod vlc_instance;
 mod vlc_media;
 mod vlc_media_format_loader;
+mod vlc_media_inspector;
 mod vlc_media_list;
 mod vlc_media_player;
 mod vlc_picture;

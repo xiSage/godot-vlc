@@ -17,9 +17,10 @@
 * USA
 */
 
+use crate::vlc_media_inspector::VlcMediaInspectorPlugin;
 use crate::vlc_subtitle_importer::VlcSubtitleImporter;
 use godot::{
-    classes::{EditorImportPlugin, EditorPlugin, IEditorPlugin},
+    classes::{EditorImportPlugin, EditorInspectorPlugin, EditorPlugin, IEditorPlugin},
     prelude::*,
 };
 
@@ -46,6 +47,10 @@ pub struct VlcEditorPlugin {
     /// Held for as long as the plugin lives: `add_import_plugin` keeps a reference to
     /// what it was given, and `remove_import_plugin` has to be handed the same object.
     importer: Option<Gd<VlcSubtitleImporter>>,
+    /// Held for the same reason, and handed back on the way out: Godot's own note on
+    /// `add_inspector_plugin` says to remove it again with the same object to avoid a leak and
+    /// a plugin that outlives the editor's expectation.
+    inspector: Option<Gd<VlcMediaInspectorPlugin>>,
 }
 
 #[godot_api]
@@ -55,9 +60,23 @@ impl IEditorPlugin for VlcEditorPlugin {
         let as_editor_import_plugin: Gd<EditorImportPlugin> = importer.clone().upcast();
         self.base_mut().add_import_plugin(&as_editor_import_plugin);
         self.importer = Some(importer);
+
+        // And the inspector's control, which is where a media's picture and metadata are shown
+        // with no scene running: see `vlc_media_inspector`. Registered on the plugin this
+        // extension already has, because an `EditorPlugin` of a GDExtension is added to the
+        // editor automatically -- there is nothing to enable, and nothing to remove here
+        // either: the editor owns the plugin for as long as it lives.
+        let inspector = VlcMediaInspectorPlugin::new_gd();
+        self.base_mut().add_inspector_plugin(&inspector);
+        self.inspector = Some(inspector);
     }
 
     fn exit_tree(&mut self) {
+        if let Some(inspector) = self.inspector.take() {
+            let as_editor_inspector_plugin: Gd<EditorInspectorPlugin> = inspector.upcast();
+            self.base_mut()
+                .remove_inspector_plugin(&as_editor_inspector_plugin);
+        }
         if let Some(importer) = self.importer.take() {
             let as_editor_import_plugin: Gd<EditorImportPlugin> = importer.upcast();
             self.base_mut()

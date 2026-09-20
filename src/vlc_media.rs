@@ -67,7 +67,7 @@ use godot::{
 /// [method get_type] answers what libvlc made of the media, and
 /// [method duplicate_media] makes an independent copy of it.
 #[derive(GodotClass)]
-#[class(base=Resource, rename=VLCMedia, no_init)]
+#[class(base=Resource, rename=VLCMedia, no_init, tool)]
 pub struct VlcMedia {
     base: Base<Resource>,
     #[allow(dead_code)]
@@ -298,7 +298,7 @@ impl VlcMedia {
     // repackage a library's signature into something of its own design.
     #[allow(clippy::too_many_arguments)]
     #[func]
-    fn thumbnail_request_by_time(
+    pub(crate) fn thumbnail_request_by_time(
         &self,
         time_ms: i64,
         speed: i32,
@@ -338,7 +338,7 @@ impl VlcMedia {
     // repackage a library's signature into something of its own design.
     #[allow(clippy::too_many_arguments)]
     #[func]
-    fn thumbnail_request_by_pos(
+    pub(crate) fn thumbnail_request_by_pos(
         &self,
         position: f64,
         speed: i32,
@@ -571,10 +571,20 @@ impl VlcMedia {
     ///   `dir://` MRL is [constant MEDIA_TYPE_DIRECTORY].
     /// - Every media from [method load_from_file] answers
     ///   [constant MEDIA_TYPE_UNKNOWN] and keeps answering it: the in-memory access
-    ///   has no scheme to guess from. That has a second consequence: libvlc refuses
-    ///   to parse a media it cannot type, so [method parse_request] reports
-    ///   [constant PARSED_STATUS_SKIPPED] for one unless the flags include
-    ///   [constant PARSE_FLAG_FORCED].
+    ///   has no scheme to guess from. That has a consequence worth knowing before a
+    ///   parse is asked for: libvlc's own type test only *skips* a media it cannot
+    ///   type, and it is [constant PARSE_FLAG_FORCED] that makes such a media parse at
+    ///   all -- measured, an in-memory media parses, reports its metadata and reaches
+    ///   [constant PARSED_STATUS_DONE] with that flag, and is skipped without it.
+    /// - **Asking twice is refused, and libvlc gives no reason.** A media that is
+    ///   already being parsed, or has been parsed -- playing one counts, since the
+    ///   player runs the same input item -- answers `-1` with `libvlc_errmsg()` left
+    ///   NULL, so the log line this binding writes for it has nothing after the colon.
+    ///   [method get_parsed_status] is how to know before asking.
+    /// - **This binding adds [constant PARSE_FLAG_FETCH_LOCAL] to every call**, which is
+    ///   why a parse libvlc itself would call [constant PARSED_STATUS_SKIPPED] is
+    ///   observed here as [constant PARSED_STATUS_FAILED]: the fetch is what it then
+    ///   cannot do. Measured, not deduced.
     /// - It is read under libvlc's own lock, but the answer can still be the
     ///   pre-parse one if a parse is running: the value moves, and this call cannot
     ///   wait for it.
@@ -863,13 +873,26 @@ impl VlcMedia {
     ///
     /// # Returns
     /// the media's meta extra name array
+    /// The names of the metadata libvlc keeps beyond its own kinds.
+    ///
+    /// # Returns
+    /// the names, or nothing when there are none.
+    ///
+    /// # Note
+    /// - This was **uncallable** until the editor's inspector became its first caller: it passed
+    ///   a NULL out-parameter to `libvlc_media_get_meta_extra_names`, which asserts on it
+    ///   (`lib/media.c:589`, `assert(p_md && pppsz_names)`) and, in a build with assertions off,
+    ///   would have been dereferenced as a pointer to nothing on the next line.
+    /// - The names belong to libvlc and are freed here with
+    ///   `libvlc_media_meta_extra_names_release`, which is the only release for them.
     #[func]
     fn get_meta_extra_names(&self) -> PackedStringArray {
-        let names = ptr::null_mut();
-        let count = unsafe { libvlc_media_get_meta_extra_names(self.media_ptr, names) };
+        // A real out-parameter: libvlc writes the array it allocated through it.
+        let mut names: *mut *mut ::std::os::raw::c_char = ptr::null_mut();
+        let count = unsafe { libvlc_media_get_meta_extra_names(self.media_ptr, &mut names) };
         let arr = unsafe {
-            if count > 0 {
-                slice::from_raw_parts(*names, count as usize)
+            if count > 0 && !names.is_null() {
+                slice::from_raw_parts(names, count as usize)
                     .iter()
                     .map(|x| {
                         GString::try_from_cstr(CStr::from_ptr(*x), Encoding::Utf8)
@@ -881,7 +904,7 @@ impl VlcMedia {
             }
         };
         unsafe {
-            libvlc_media_meta_extra_names_release(*names, count);
+            libvlc_media_meta_extra_names_release(names, count);
         };
         arr
     }
