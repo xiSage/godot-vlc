@@ -2,13 +2,23 @@
 //!
 //! A request is how a thumbnail is asked for. It is **asynchronous** -- libvlc may decode a
 //! frame, convert it, and only then answer -- and the answer arrives as the media's
-//! the media's     humbnail_generated signal signal, carrying a
-//! [crate::vlc_picture::VlcPicture] or nothing.
+//! `thumbnail_generated` signal, carrying a [crate::vlc_picture::VlcPicture] or nothing.
 //!
 //! The request itself is an opaque pointer, and this wrapper owns it: `Drop` destroys it,
 //! and [method destroy] destroys it early, which is also the only way to cancel. A request
 //! is not reference-counted -- libvlc allocates it plainly and frees it in one place -- so
 //! there is no such thing as two owners of one request.
+//!
+//! # Hold it for as long as the answer matters
+//! Measured: a caller that lets the returned object fall out of scope -- the natural mistake,
+//! since `media.thumbnail_request_by_pos(...)` reads as a call whose result may be ignored --
+//! has destroyed its own request by the time the answer arrives. The demo's panel did exactly
+//! that and the signal came back carrying libvlc's null picture; the same drop in a headless
+//! run went further and corrupted the heap (exit `0xC0000374`, `STATUS_HEAP_CORRUPTION`),
+//! which is the use-after-free described below being reached the ordinary way.
+//!
+//! Keep the request while the answer matters -- a field, or a local that lives across the
+//! `await` -- and let it go when the answer has arrived or is no longer wanted.
 //!
 //! # Cancelling is not as safe as its documentation says
 //! Read out of the source at the revision this binding pins, not measured:
