@@ -253,8 +253,8 @@ impl VlcMedia {
     /// - **This is a one-shot event, and late is too late.** libvlc sends it during the
     ///   parse and keeps no copy of what it found, and Godot signals do not replay -- so a
     ///   script that connects after the parse has run never receives it. Connect before the
-    ///   parse, or call [method parse_request] to parse again and make it happen again
-    ///   (measured: a second parse does report it a second time).
+    ///   parse. (Measured: a second [method parse_request] for the same media is refused, so
+    ///   re-parsing is not a way back to this event.)
     /// - Nothing is cached here. A cache would be this binding holding the cover of every
     ///   media that was ever parsed, for as long as the wrapper lives, which is not a thing
     ///   a binding should do behind a caller's back.

@@ -4190,3 +4190,83 @@ fn the_argb_buffer_is_the_rgba_buffer_rotated() {
         libvlc_picture_release(rgba);
     }
 }
+
+/// Whether the cover-art event arrived at all, for a media that has no cover art.
+#[derive(Default)]
+struct CoverProbe {
+    count: std::sync::atomic::AtomicUsize,
+}
+
+impl CoverProbe {
+    fn count(&self) -> usize {
+        self.count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+unsafe extern "C" fn probe_attached_thumbnails(_event: *const libvlc_event_t, data: *mut c_void) {
+    unsafe {
+        (*(data as *const CoverProbe))
+            .count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A media with no embedded cover art never reports one, across as many parses as it takes.
+///
+/// The interesting word is "never", not "not yet": libvlc's sender returns early when the
+/// attachment list is empty (`lib/media.c:251-257`), so there is no event with nothing in it to
+/// wait for. That is worth having as a measurement rather than as a reading, because it decides
+/// something for the editor's inspector: it cannot wait for this event to find out whether a
+/// media has a cover, since for most media the event never comes.
+///
+/// **The third measurement this section was opened with cannot be taken here.** It asked
+/// whether a second `parse_request` reports the covers again; the repository has no fixture with
+/// embedded cover art (`test/media` holds one video and a README), so a second parse has nothing
+/// to report again. The source says the event is sent from the parse path, which is what the
+/// documentation promises; putting a number on it needs a fixture with a cover.
+#[test]
+fn a_media_without_embedded_cover_art_never_reports_any() {
+    let sample = Sample::new();
+    let mut probe = CoverProbe::default();
+    unsafe {
+        libvlc_event_attach(
+            libvlc_media_event_manager(sample.media),
+            libvlc_event_e_libvlc_MediaAttachedThumbnailsFound as libvlc_event_type_t,
+            Some(probe_attached_thumbnails),
+            &mut probe as *mut CoverProbe as *mut c_void,
+        );
+    }
+
+    for round in 1..=2 {
+        let parsed = unsafe {
+            libvlc_media_parse_request(
+                sample.instance,
+                sample.media,
+                libvlc_media_parse_flag_t_libvlc_media_parse_local
+                    | libvlc_media_parse_flag_t_libvlc_media_parse_forced,
+                0,
+            )
+        };
+        if round == 2 {
+            println!(
+                "a second parse_request for the same media answered {parsed}: it is refused, so re-parsing is not a way back to this event"
+            );
+            break;
+        }
+        assert_eq!(parsed, 0, "the parse was refused");
+        // The absence is what is watched, so there is nothing to wait *for*: a couple of
+        // seconds per parse, and the count is read. The source quoted above is why it stays at
+        // zero rather than being late.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            probe.count(),
+            0,
+            "round {round}: a cover-art event arrived for a media with no attachments, which the \
+             source says cannot happen"
+        );
+    }
+    println!("two parses of a video with no cover art reported no cover-art event at all");
+}
