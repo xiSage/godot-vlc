@@ -4270,3 +4270,109 @@ fn a_media_without_embedded_cover_art_never_reports_any() {
     }
     println!("two parses of a video with no cover art reported no cover-art event at all");
 }
+
+/// A tiny MP3 carrying one front-cover picture in its ID3v2 tag.
+///
+/// Built here rather than committed as a binary, because the repository has no fixture with
+/// embedded cover art and a 67-byte PNG plus an ID3 frame is not worth a file in `test/media`.
+fn mp3_with_a_cover() -> Vec<u8> {
+    // A 1x1 PNG: the signature, an IHDR, an IDAT and an IEND, 67 bytes in all.
+    const PNG: [u8; 67] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    let mut apic = Vec::new();
+    apic.push(0x00); // text encoding: ISO-8859-1
+    apic.extend_from_slice(b"image/png\0");
+    apic.push(0x03); // picture type: front cover
+    apic.push(0x00); // empty description
+    apic.extend_from_slice(&PNG);
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(b"APIC");
+    frame.extend_from_slice(&(apic.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&[0x00, 0x00]); // frame flags
+    frame.extend_from_slice(&apic);
+
+    let mut tag = Vec::new();
+    tag.extend_from_slice(b"ID3");
+    tag.extend_from_slice(&[0x03, 0x00, 0x00]); // version 2.3, no flags
+    let size = frame.len() as u32;
+    tag.extend_from_slice(&[
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+    ]);
+    tag.extend_from_slice(&frame);
+
+    // One MPEG-1 Layer III frame header and its silence, so the file has audio to demux as
+    // well as a tag for the cover to hang off.
+    tag.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+    tag.extend_from_slice(&vec![0u8; 413]);
+    tag
+}
+
+/// Whether this runtime reports an embedded cover at all.
+///
+/// The third measurement this section was opened with -- whether a second parse reports the
+/// covers again -- needed a file with a cover in it, and the repository has none. This builds
+/// one: an ID3v2.3 tag with a front-cover `APIC` frame carrying a 1x1 PNG, and one MPEG frame
+/// so the file is not only a tag. It is written to a temporary path, parsed, and the count is
+/// printed.
+///
+/// The number is the measurement, so the assertion is only what cannot be otherwise: a single
+/// parse cannot report covers twice. A zero here means this runtime did not accept the
+/// synthesized file as having a cover -- which is a fact about the fixture as much as about
+/// libvlc, and is exactly why the count is printed rather than asserted into a shape.
+#[test]
+fn an_embedded_cover_is_reported_when_a_file_has_one() {
+    let sample = Sample::new();
+    let path = std::env::temp_dir().join("godot-vlc-cover-probe.mp3");
+    std::fs::write(&path, mp3_with_a_cover()).expect("the fixture could not be written");
+    let uri = format!("file:///{}", path.to_string_lossy().replace('\\', "/"));
+    let location = CString::new(uri).expect("the URI contains a NUL byte");
+    let media = unsafe { libvlc_media_new_location(location.as_ptr()) };
+    assert!(!media.is_null(), "libvlc refused the fixture");
+
+    let mut probe = CoverProbe::default();
+    unsafe {
+        libvlc_event_attach(
+            libvlc_media_event_manager(media),
+            libvlc_event_e_libvlc_MediaAttachedThumbnailsFound as libvlc_event_type_t,
+            Some(probe_attached_thumbnails),
+            &mut probe as *mut CoverProbe as *mut c_void,
+        );
+    }
+    let parsed = unsafe {
+        libvlc_media_parse_request(
+            sample.instance,
+            media,
+            libvlc_media_parse_flag_t_libvlc_media_parse_local
+                | libvlc_media_parse_flag_t_libvlc_media_parse_forced,
+            0,
+        )
+    };
+    assert_eq!(parsed, 0, "the fixture was refused for parsing");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && probe.count() == 0 {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    println!(
+        "a file with one embedded cover reported {} cover-art event(s)",
+        probe.count()
+    );
+    assert!(
+        probe.count() <= 1,
+        "one parse reported the covers {} times, which cannot be right",
+        probe.count()
+    );
+
+    unsafe { libvlc_media_release(media) };
+    let _ = std::fs::remove_file(&path);
+}
