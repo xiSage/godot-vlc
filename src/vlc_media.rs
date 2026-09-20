@@ -227,6 +227,188 @@ impl VlcMedia {
     #[signal]
     fn parsed_changed(status: i32);
 
+    /// A thumbnail request finished.
+    ///
+    /// # Parameters
+    /// - [param picture] the thumbnail, or null when libvlc produced none.
+    ///
+    /// # Note
+    /// - **A null picture is the whole vocabulary of failure.** A timeout, a cancelled
+    ///   request, a media that cannot be decoded and a conversion that failed all arrive
+    ///   this way, because the status that would tell them apart is dropped by the sender
+    ///   before the event is sent. This signal says a request ended; it cannot say why.
+    /// - It is per request, not per media: it is what answers the request, and the request is
+    ///   what knows the position and the size that were asked for.
+    /// - It arrives on the main thread, one frame after libvlc produced it: the callback
+    ///   only records, and the picture is wrapped where Godot objects may be made.
+    #[signal]
+    fn thumbnail_generated(picture: Option<Gd<crate::vlc_picture::VlcPicture>>);
+
+    /// Embedded cover art was found while this media was parsed.
+    ///
+    /// # Parameters
+    /// - [param pictures] what was found, in libvlc's order.
+    ///
+    /// # Note
+    /// - **This is a one-shot event, and late is too late.** libvlc sends it during the
+    ///   parse and keeps no copy of what it found, and Godot signals do not replay -- so a
+    ///   script that connects after the parse has run never receives it. Connect before the
+    ///   parse, or call [method parse_request] to parse again and make it happen again
+    ///   (measured: a second parse does report it a second time).
+    /// - Nothing is cached here. A cache would be this binding holding the cover of every
+    ///   media that was ever parsed, for as long as the wrapper lives, which is not a thing
+    ///   a binding should do behind a caller's back.
+    /// - This is the only way to the cover art of a local file: [method get_meta] with
+    ///   `META_ARTWORK_URL` answers an empty string for one, because that key is for artwork
+    ///   that lives at a URL.
+    #[signal]
+    fn attached_thumbnails_found(pictures: Array<Gd<crate::vlc_picture::VlcPicture>>);
+
+    /// Asks libvlc for a thumbnail of this media at a time in it.
+    ///
+    /// # Parameters
+    /// - [param time_ms] where in the media to take the picture, in milliseconds.
+    /// - [param speed] [constant VLCThumbnailRequest.SEEK_PRECISE] to land exactly there, or
+    ///   [constant VLCThumbnailRequest.SEEK_FAST] to take what is near it.
+    /// - [param width] and [param height]: both set asks for that exact size, the image
+    ///   stretched or cropped to it; one of them `0` derives that one from the media's
+    ///   aspect ratio.
+    /// - [param crop] whether to crop rather than stretch when both are set.
+    /// - [param picture_type] one of the [constant VLCPicture] `TYPE_*` constants.
+    /// - [param timeout_ms] a deadline in milliseconds, or `0` for none.
+    ///
+    /// # Returns
+    /// the request, or null when libvlc refused to queue it -- in which case its reason is
+    /// in libvlc's log, and this writes it to Godot's as well. [signal thumbnail_generated]
+    /// is the answer, and it is guaranteed to arrive for a request that was queued unless
+    /// the request is destroyed first.
+    ///
+    /// # Note
+    /// - **`timeout_ms` is not per request.** libvlc stores it on the thumbnailer the whole
+    ///   instance shares, so a later request overwrites the deadline of one still in flight.
+    ///   There is no way to ask for a request's own timeout: this is passed through and
+    ///   documented rather than pretended away.
+    /// - **A request must be destroyed.** [member VLCThumbnailRequest] does that when it is
+    ///   dropped, so the thing not to do is take the request and let it go on the floor,
+    ///   which leaks the request, its reference to this media and its reference to the
+    ///   instance. See [method VLCThumbnailRequest.destroy] for what cancelling costs.
+    /// - Generation does not go through a player: libvlc runs it on a preparser of its own,
+    ///   so this works with no [VLCMediaPlayer] in the scene at all.
+    // Eight arguments because libvlc's own function has them: the binding does not
+    // repackage a library's signature into something of its own design.
+    #[allow(clippy::too_many_arguments)]
+    #[func]
+    fn thumbnail_request_by_time(
+        &self,
+        time_ms: i64,
+        speed: i32,
+        width: i32,
+        height: i32,
+        crop: bool,
+        picture_type: i32,
+        timeout_ms: i64,
+    ) -> Option<Gd<crate::vlc_thumbnail::VlcThumbnailRequest>> {
+        unsafe {
+            let request = libvlc_media_thumbnail_request_by_time(
+                crate::vlc_instance::get(),
+                self.media_ptr,
+                time_ms as libvlc_time_t,
+                speed as libvlc_thumbnailer_seek_speed_t,
+                width.max(0) as c_uint,
+                height.max(0) as c_uint,
+                crop,
+                picture_type as libvlc_picture_type_t,
+                timeout_ms as libvlc_time_t,
+            );
+            self.wrap_thumbnail_request(request)
+        }
+    }
+
+    /// Asks libvlc for a thumbnail of this media at a position in it.
+    ///
+    /// # Parameters
+    /// - [param position] where in the media to take the picture, `0.0` to `1.0`. This is
+    ///   the one to use when a fraction is wanted rather than a time: the middle of a media
+    ///   is `0.5` whatever its length, and its length does not have to be known first.
+    /// - the rest as in [method thumbnail_request_by_time].
+    ///
+    /// # Returns
+    /// the request, or null when libvlc refused to queue it.
+    // Eight arguments because libvlc's own function has them: the binding does not
+    // repackage a library's signature into something of its own design.
+    #[allow(clippy::too_many_arguments)]
+    #[func]
+    fn thumbnail_request_by_pos(
+        &self,
+        position: f64,
+        speed: i32,
+        width: i32,
+        height: i32,
+        crop: bool,
+        picture_type: i32,
+        timeout_ms: i64,
+    ) -> Option<Gd<crate::vlc_thumbnail::VlcThumbnailRequest>> {
+        unsafe {
+            let request = libvlc_media_thumbnail_request_by_pos(
+                crate::vlc_instance::get(),
+                self.media_ptr,
+                position,
+                speed as libvlc_thumbnailer_seek_speed_t,
+                width.max(0) as c_uint,
+                height.max(0) as c_uint,
+                crop,
+                picture_type as libvlc_picture_type_t,
+                timeout_ms as libvlc_time_t,
+            );
+            self.wrap_thumbnail_request(request)
+        }
+    }
+
+    /// Internal: emits [signal thumbnail_generated] on the main thread.
+    ///
+    /// Called by the event callback through `call_deferred`, because a Godot object can only
+    /// be made on the main thread and the callback runs on libvlc's. [param pointer] is the
+    /// reference the callback took on the picture, or `0` when libvlc produced none.
+    #[func]
+    fn emit_thumbnail_generated(&mut self, pointer: i64) {
+        let picture =
+            crate::vlc_picture::VlcPicture::from_retained(pointer as *mut libvlc_picture_t);
+        self.signals().thumbnail_generated().emit(picture.as_ref());
+    }
+
+    /// Internal: emits [signal attached_thumbnails_found] on the main thread.
+    ///
+    /// Called by the event callback through `call_deferred`, carrying the reference it took
+    /// on each picture before libvlc destroyed the list.
+    #[func]
+    fn emit_attached_thumbnails_found(&mut self, pointers: PackedInt64Array) {
+        let mut pictures: Array<Gd<crate::vlc_picture::VlcPicture>> = Array::new();
+        for pointer in pointers.as_slice() {
+            if let Some(picture) =
+                crate::vlc_picture::VlcPicture::from_retained(*pointer as *mut libvlc_picture_t)
+            {
+                pictures.push(&picture);
+            }
+        }
+        self.signals().attached_thumbnails_found().emit(&pictures);
+    }
+
+    /// Wraps a request libvlc just made, or reports why there is none.
+    fn wrap_thumbnail_request(
+        &self,
+        request: *mut libvlc_media_thumbnail_request_t,
+    ) -> Option<Gd<crate::vlc_thumbnail::VlcThumbnailRequest>> {
+        if request.is_null() {
+            godot_error!(
+                "godot-vlc: libvlc refused a thumbnail request for {}: {}",
+                self.get_mrl(),
+                crate::vlc_instance::last_error()
+            );
+            return None;
+        }
+        crate::vlc_thumbnail::VlcThumbnailRequest::from_ptr(request)
+    }
+
     /// Create a new `VLCMedia` from a file path.
     ///
     /// The file is read through **Godot's own filesystem**, not handed to libvlc as
@@ -445,6 +627,18 @@ impl VlcMedia {
                 event_manager,
                 libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
                 Some(parsed_changed_callback),
+                Self::event_data(media),
+            );
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaThumbnailGenerated as libvlc_event_type_t,
+                Some(thumbnail_generated_callback),
+                Self::event_data(media),
+            );
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaAttachedThumbnailsFound as libvlc_event_type_t,
+                Some(attached_thumbnails_callback),
                 Self::event_data(media),
             );
         }
@@ -885,6 +1079,78 @@ unsafe extern "C" fn parsed_changed_callback(
                 status.to_variant(),
             ],
         );
+    }
+}
+
+/// The media an event's user data points at, if it is still there.
+///
+/// The user data is the object pointer of the media's weak reference, and the object may be
+/// gone by the time libvlc calls back: `WeakRef::get_ref` answers nothing for a freed object,
+/// and that is a state these callbacks can genuinely be in.
+unsafe fn media_of_event(user_data: *mut c_void) -> Option<Gd<VlcMedia>> {
+    unsafe {
+        let weak = (user_data as *mut WeakRef).as_ref()?;
+        let object = weak.get_ref();
+        if object.is_nil() {
+            return None;
+        }
+        Some(object.to::<Gd<VlcMedia>>())
+    }
+}
+
+/// Reports a finished thumbnail, or its absence, to the main thread.
+///
+/// The picture in the payload is **borrowed**: libvlc releases it as soon as the event has
+/// been delivered, so a reference has to be taken here or not at all. A NULL picture is how
+/// every kind of failure arrives -- a timeout, a cancel, a media that cannot be decoded, a
+/// conversion that failed -- because the status that would tell them apart is dropped by the
+/// sender. It is passed on as nothing rather than swallowed, so a caller learns that the
+/// request ended, and that it ended without a picture.
+unsafe extern "C" fn thumbnail_generated_callback(
+    event: *const libvlc_event_t,
+    user_data: *mut c_void,
+) {
+    unsafe {
+        let Some(mut media) = media_of_event(user_data) else {
+            return;
+        };
+        let picture = (*event).u.media_thumbnail_generated.p_thumbnail;
+        let pointer = if picture.is_null() {
+            0
+        } else {
+            libvlc_picture_retain(picture) as i64
+        };
+        media.call_deferred("emit_thumbnail_generated", &[pointer.to_variant()]);
+    }
+}
+
+/// Reports the embedded cover art a parse found to the main thread.
+///
+/// The list is **borrowed and destroyed by the sender** as soon as the event has been
+/// delivered, and a list has no retain of its own: each picture has to be taken out and
+/// retained here, inside the callback, or the list is gone with nothing kept.
+unsafe extern "C" fn attached_thumbnails_callback(
+    event: *const libvlc_event_t,
+    user_data: *mut c_void,
+) {
+    unsafe {
+        let Some(mut media) = media_of_event(user_data) else {
+            return;
+        };
+        let list = (*event).u.media_attached_thumbnails_found.thumbnails;
+        if list.is_null() {
+            return;
+        }
+        let count = libvlc_picture_list_count(list);
+        let mut pointers = PackedInt64Array::new();
+        for index in 0..count {
+            let picture = libvlc_picture_list_at(list, index);
+            if picture.is_null() {
+                continue;
+            }
+            pointers.push(libvlc_picture_retain(picture) as i64);
+        }
+        media.call_deferred("emit_attached_thumbnails_found", &[pointers.to_variant()]);
     }
 }
 
