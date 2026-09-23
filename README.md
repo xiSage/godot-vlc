@@ -13,7 +13,9 @@ You can also use `VLCMedia.load_from_file()` to load media from disk or `VLCMedi
 
 Subtitles are resources too. A `.srt`, `.ass`, `.ssa`, `.vtt`, `.sub`, `.smi` or `.ttml` file inside `res://` is imported as a `VLCSubtitle`, and one from anywhere else can be built with `VLCSubtitle.load_from_file()` or `VLCSubtitle.load_from_mrl()`. Either can be handed to `VLCMedia.add_subtitle()` before the media is assigned to a player, or to `VLCMediaPlayer.add_subtitle()` while it is playing; `set_spu_delay_us()` and `set_spu_text_scale()` adjust subtitles that are out of step or too small. VLC's per-media options go through `VLCMedia.add_option()`.
 
-There are some other features, such as chapters, that can be accessed through scripts. For more information, see the in-editor documentation.
+Chapters and titles are read back by name. `VLCMediaPlayer.get_full_chapter_descriptions()` gives one dictionary per chapter -- `name`, `time_offset`, `duration` -- and `get_full_title_descriptions()` one per title -- `name`, `duration`, `flags`; both lists belong to the input rather than to the media, so both are empty until something is playing, and `chapter_changed`, `title_list_changed` and `title_selection_changed` announce what moves in them. `get_chapter()`, `set_chapter()`, `next_chapter()` and `previous_chapter()` are the libvlc names for moving.
+
+There are some other features, such as statistics, that can be accessed through scripts. For more information, see the in-editor documentation.
 
 ## Screenshot
 <img src="img/screenshot.png" alt="screenshot">

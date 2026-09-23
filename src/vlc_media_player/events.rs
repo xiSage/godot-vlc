@@ -44,6 +44,9 @@ const PARKED_EVENT_CAPACITY: usize = 64;
 /// rather than pointed at: it belongs to the track, which can be gone before the
 /// main thread ever sees the record. That is why this is not `Copy` -- every other
 /// variant is a plain value and could be.
+///
+/// The title selection event carries a whole title for the same reason, and
+/// copies it the same way: see [ParkedTitle].
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ParkedEvent {
     Opening,
@@ -64,6 +67,37 @@ pub(crate) enum ParkedEvent {
     TrackUpdated(i32, String),
     TrackSelected(i32, String),
     TrackUnselected(i32, String),
+    ChapterChanged(i32),
+    TitleListChanged,
+    TitleSelectionChanged(i32, ParkedTitle),
+}
+
+/// One title, as the event that selected it described it.
+///
+/// These are the same three values -- and the same three dictionary keys -- as one
+/// entry of [VlcMediaPlayer::get_full_title_descriptions], but held as Rust values
+/// instead of libvlc's structure. The event points into the frame of the call it
+/// arrives in and borrows the name inside it, so the fields are copied while the
+/// callback that received it is still running, exactly as the track events copy
+/// their ids.
+///
+/// The dictionary is built on the main thread, from this, rather than in the
+/// callback: the signal carries a `Dictionary` and constructing one is a Godot
+/// call, which a libvlc thread may not make.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ParkedTitle {
+    name: String,
+    duration: i64,
+    flags: i32,
+}
+
+impl ParkedTitle {
+    fn dictionary(&self) -> VarDictionary {
+        // The same three keys as a getter entry, built by the same function: the
+        // signal is documented as carrying one of those, and a second copy here is
+        // how the two would drift apart.
+        super::title_dictionary(self.name.clone(), self.duration, self.flags)
+    }
 }
 
 /// Where the player's event callbacks leave what they received.
@@ -197,6 +231,49 @@ unsafe fn read_es_selection(event: *const libvlc_event_t) -> Option<ParkedEvent>
     } else {
         None
     }
+}
+
+/// Reads the chapter number out of a `libvlc_MediaPlayerChapterChanged` event.
+///
+/// The number is all libvlc puts in it: the title it belongs to and the chapter's
+/// name are both in libvlc's hands where it raises this, and neither is passed on.
+///
+/// # Safety
+/// `event` must be a `libvlc_MediaPlayerChapterChanged` event.
+#[allow(clippy::unnecessary_cast)]
+unsafe fn read_chapter_changed(event: *const libvlc_event_t) -> i32 {
+    unsafe { (*event).u.media_player_chapter_changed.new_chapter as i32 }
+}
+
+/// Reads the title out of a `libvlc_MediaPlayerTitleSelectionChanged` event.
+///
+/// libvlc fills both fields of the payload, but only for the length of the call
+/// it is making: the pointer is to its own bookkeeping for the title and the name
+/// inside is borrowed rather than owned, so everything wanted from it is copied
+/// here, in the callback, and nothing is kept. `index` is libvlc's own count of
+/// the title that was selected.
+///
+/// A payload naming no title is reported as `None` and nothing is emitted for it:
+/// such an event says nothing this signal is for, and an empty dictionary would
+/// say something it does not mean. The pinned runtime does not send one.
+///
+/// # Safety
+/// `event` must be a `libvlc_MediaPlayerTitleSelectionChanged` event.
+#[allow(clippy::unnecessary_cast)]
+unsafe fn read_title_selection(event: *const libvlc_event_t) -> Option<ParkedEvent> {
+    let payload = unsafe { (*event).u.media_player_title_selection_changed };
+    if payload.title.is_null() {
+        return None;
+    }
+    let title = unsafe { &*payload.title };
+    Some(ParkedEvent::TitleSelectionChanged(
+        payload.index as i32,
+        ParkedTitle {
+            name: c_string(title.psz_name),
+            duration: title.i_duration,
+            flags: title.i_flags as i32,
+        },
+    ))
 }
 
 /// Records an event from inside a libvlc callback.
@@ -520,6 +597,57 @@ impl VlcMediaPlayer {
                 Some(es_selected_callback),
                 park_ptr,
             );
+
+            // The three chapter and title events. Each is attached on the name
+            // the generated bindings gave it rather than on a value counted from
+            // a neighbour: that enumeration is re-anchored by hand whenever libvlc
+            // comments an entry out -- `TitleChanged` is commented out in the
+            // pinned header, and the entries after it moved with it -- so anything
+            // computed from a neighbour is exactly what goes wrong quietly.
+            unsafe extern "C" fn chapter_changed_callback(
+                event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                let chapter = unsafe { read_chapter_changed(event) };
+                unsafe { park(user_data, ParkedEvent::ChapterChanged(chapter)) };
+            }
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerChapterChanged as libvlc_event_type_t,
+                Some(chapter_changed_callback),
+                park_ptr,
+            );
+
+            // Its payload is empty, and libvlc leaves the union uninitialised
+            // rather than zeroing it, so this callback reads nothing: the event
+            // only says to ask for the titles again.
+            unsafe extern "C" fn title_list_changed_callback(
+                _event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                unsafe { park(user_data, ParkedEvent::TitleListChanged) };
+            }
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerTitleListChanged as libvlc_event_type_t,
+                Some(title_list_changed_callback),
+                park_ptr,
+            );
+
+            unsafe extern "C" fn title_selection_changed_callback(
+                event: *const libvlc_event_t,
+                user_data: *mut c_void,
+            ) {
+                if let Some(event) = unsafe { read_title_selection(event) } {
+                    unsafe { park(user_data, event) };
+                }
+            }
+            libvlc_event_attach(
+                event_manager,
+                libvlc_event_e_libvlc_MediaPlayerTitleSelectionChanged as libvlc_event_type_t,
+                Some(title_selection_changed_callback),
+                park_ptr,
+            );
         }
     }
 
@@ -578,6 +706,15 @@ impl VlcMediaPlayer {
                     self.signals()
                         .track_unselected()
                         .emit(track_type, &GString::from(id.as_str()));
+                }
+                ParkedEvent::ChapterChanged(chapter) => {
+                    self.signals().chapter_changed().emit(chapter);
+                }
+                ParkedEvent::TitleListChanged => self.signals().title_list_changed().emit(),
+                ParkedEvent::TitleSelectionChanged(index, title) => {
+                    self.signals()
+                        .title_selection_changed()
+                        .emit(index, &title.dictionary());
                 }
             }
         }
@@ -710,6 +847,105 @@ mod tests {
                 },
             },
         }
+    }
+
+    /// The payload `ChapterChanged` uses, which is a number and nothing else.
+    fn chapter_changed_event(chapter: i32) -> libvlc_event_t {
+        libvlc_event_t {
+            type_: libvlc_event_e_libvlc_MediaPlayerChapterChanged as libvlc_event_type_t,
+            p_obj: std::ptr::null_mut(),
+            u: libvlc_event_t__bindgen_ty_1 {
+                media_player_chapter_changed: libvlc_event_t__bindgen_ty_1__bindgen_ty_10 {
+                    new_chapter: chapter,
+                },
+            },
+        }
+    }
+
+    /// The payload `TitleSelectionChanged` uses: the title that was selected and
+    /// its index. Both are pointers into libvlc's own frame, which is why the
+    /// reader under test has to copy rather than keep.
+    fn title_selection_event(
+        index: i32,
+        title: *const libvlc_title_description_t,
+    ) -> libvlc_event_t {
+        libvlc_event_t {
+            type_: libvlc_event_e_libvlc_MediaPlayerTitleSelectionChanged as libvlc_event_type_t,
+            p_obj: std::ptr::null_mut(),
+            u: libvlc_event_t__bindgen_ty_1 {
+                media_player_title_selection_changed: libvlc_event_t__bindgen_ty_1__bindgen_ty_13 {
+                    title,
+                    index,
+                },
+            },
+        }
+    }
+
+    /// A title description the way libvlc would fill one in.
+    ///
+    /// The name points at a `'static` literal, which stands in for libvlc's own
+    /// storage: what the reader has to do with either is the same, which is copy
+    /// the characters out and keep none of the pointer.
+    fn title_description(
+        name: *const std::ffi::c_char,
+        duration: i64,
+        flags: u32,
+    ) -> libvlc_title_description_t {
+        libvlc_title_description_t {
+            i_duration: duration,
+            psz_name: name.cast_mut(),
+            i_flags: flags,
+        }
+    }
+
+    /// The chapter and title events: one carries a number, the other a whole
+    /// title that has to be copied out of the frame it arrives in.
+    #[test]
+    fn reads_the_chapter_and_title_events() {
+        assert_eq!(
+            unsafe { read_chapter_changed(&chapter_changed_event(0)) },
+            0
+        );
+        assert_eq!(
+            unsafe { read_chapter_changed(&chapter_changed_event(3)) },
+            3
+        );
+
+        let title = title_description(c"Title 0 [00:00:04]".as_ptr(), 4000, 0);
+        assert_eq!(
+            unsafe { read_title_selection(&title_selection_event(0, &title)) },
+            Some(ParkedEvent::TitleSelectionChanged(
+                0,
+                ParkedTitle {
+                    name: String::from("Title 0 [00:00:04]"),
+                    duration: 4000,
+                    flags: 0,
+                }
+            ))
+        );
+
+        // A title whose length libvlc does not know arrives as `0`, and a menu
+        // title's flags arrive as they are: the reader is not a filter.
+        let menu = title_description(c"Main Menu".as_ptr(), 0, 1);
+        assert_eq!(
+            unsafe { read_title_selection(&title_selection_event(2, &menu)) },
+            Some(ParkedEvent::TitleSelectionChanged(
+                2,
+                ParkedTitle {
+                    name: String::from("Main Menu"),
+                    duration: 0,
+                    flags: 1,
+                }
+            ))
+        );
+
+        // A payload that names no title is not a title with empty fields, and
+        // nothing is emitted for it: there would be no name to report while the
+        // index would claim there was one.
+        assert_eq!(
+            unsafe { read_title_selection(&title_selection_event(0, std::ptr::null())) },
+            None
+        );
     }
 
     /// The ends of the range are the ones a handler branches on: `0.0` is what

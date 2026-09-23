@@ -4376,3 +4376,465 @@ fn an_embedded_cover_is_reported_when_a_file_has_one() {
     unsafe { libvlc_media_release(media) };
     let _ = std::fs::remove_file(&path);
 }
+
+// ── chapters and titles ──────────────────────────────────────────────────────
+
+/// A file that names its chapters, made with ffmpeg.
+///
+/// The other samples have no chapter list at all, which is the case
+/// `libvlc_media_player_get_full_chapter_descriptions` answers with `0` rather
+/// than `-1`: naming one is the whole point of this file. `test/media/README.md`
+/// records how it was made.
+const CHAPTERED_SAMPLE: &str = "test/media/h264_64x64_4s_4chapters.mp4";
+
+/// The chapter names the fixture carries, in the order the file lists them.
+const CHAPTERED_SAMPLE_CHAPTER_NAMES: [&str; 4] =
+    ["Opening Scene", "Second Part", "Third Part", "Closing Part"];
+
+/// How long the fixture runs, and how long each of its four chapters runs.
+const CHAPTERED_SAMPLE_MS: i64 = 4_000;
+const CHAPTERED_SAMPLE_CHAPTER_MS: i64 = 1_000;
+
+/// One title, copied out of the array libvlc allocated for it.
+#[derive(Clone, Debug, PartialEq)]
+struct TitleDescription {
+    duration: i64,
+    name: String,
+    flags: u32,
+}
+
+/// One chapter, copied out of the array libvlc allocated for it.
+#[derive(Clone, Debug, PartialEq)]
+struct ChapterDescription {
+    time_offset: i64,
+    duration: i64,
+    name: String,
+}
+
+/// Every title libvlc reports for a player, with the count it answered.
+///
+/// The count is kept as it came back rather than folded into the length because
+/// it is what the release call needs: `-1` is libvlc's "no list at all" and comes
+/// with no allocation, while `0` is a title that lists no chapters and does come
+/// with one. The binding folds those two together -- a caller acts on both the
+/// same way -- but a test that has to free what it read cannot, which is also why
+/// `count >= 0` is the release condition rather than `count > 0`.
+///
+/// The array is released before this returns, so the entries are copied out
+/// first.
+fn title_descriptions(sample: &Sample) -> (i32, Vec<TitleDescription>) {
+    let mut entries: *mut *mut libvlc_title_description_t = ptr::null_mut();
+    let count =
+        unsafe { libvlc_media_player_get_full_title_descriptions(sample.player, &mut entries) };
+
+    let mut titles = Vec::new();
+    if count >= 0 {
+        for index in 0..count as usize {
+            let title = unsafe { &**entries.add(index) };
+            titles.push(TitleDescription {
+                duration: title.i_duration,
+                name: c_string(title.psz_name),
+                flags: title.i_flags,
+            });
+        }
+        unsafe { libvlc_title_descriptions_release(entries, count as c_uint) };
+    }
+    (count, titles)
+}
+
+/// The same, for one title's chapters. `-1` asks for the selected title's.
+fn chapter_descriptions(sample: &Sample, title: i32) -> (i32, Vec<ChapterDescription>) {
+    let mut entries: *mut *mut libvlc_chapter_description_t = ptr::null_mut();
+    let count = unsafe {
+        libvlc_media_player_get_full_chapter_descriptions(sample.player, title, &mut entries)
+    };
+
+    let mut chapters = Vec::new();
+    if count >= 0 {
+        for index in 0..count as usize {
+            let chapter = unsafe { &**entries.add(index) };
+            chapters.push(ChapterDescription {
+                time_offset: chapter.i_time_offset,
+                duration: chapter.i_duration,
+                name: c_string(chapter.psz_name),
+            });
+        }
+        unsafe { libvlc_chapter_descriptions_release(entries, count as c_uint) };
+    }
+    (count, chapters)
+}
+
+/// Polls until libvlc publishes a title list, or `timeout` passes.
+///
+/// The list arrives with playback rather than with the media: the input thread
+/// publishes it once the input is in playback, and until then both getters answer
+/// `-1`.
+fn wait_for_titles(sample: &Sample, timeout: Duration) -> (i32, Vec<TitleDescription>) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let read = title_descriptions(sample);
+        if read.0 >= 0 {
+            return read;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no title list arrived within {timeout:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The same, for the chapters of one title.
+fn wait_for_chapters(
+    sample: &Sample,
+    title: i32,
+    timeout: Duration,
+) -> (i32, Vec<ChapterDescription>) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let read = chapter_descriptions(sample, title);
+        if read.0 >= 0 {
+            return read;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no chapter list arrived within {timeout:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The chapters a file declares arrive with their names.
+///
+/// This is the gap §3.8 of the feature notes described: `get_chapter` counts
+/// chapters and nothing named them, so a chapter menu could only offer "chapter
+/// 1". The test pins the three things the binding rests on -- that the
+/// descriptions arrive at all, that they arrive in the file's order with the
+/// file's names, and that a player which has not started playing refuses instead
+/// of answering an empty list.
+#[test]
+fn names_the_chapters_a_file_declares() {
+    let sample = Sample::from_path(path_of(CHAPTERED_SAMPLE));
+
+    // Nothing has created an input yet, so there is no title list to describe and
+    // libvlc says so with -1 -- the same answer it gives for a failure, which the
+    // binding folds into an empty array.
+    assert_eq!(
+        title_descriptions(&sample).0,
+        -1,
+        "a player with no media reported a title list"
+    );
+    assert_eq!(
+        chapter_descriptions(&sample, -1).0,
+        -1,
+        "a player with no media reported a chapter list"
+    );
+
+    sample.attach_media();
+
+    // An assigned media is still not an input: libvlc creates one when playback
+    // starts, and the title list comes from that input.
+    assert_eq!(
+        title_descriptions(&sample).0,
+        -1,
+        "a media that has not started playing reported a title list"
+    );
+
+    play_until_playing(&sample);
+
+    let (count, titles) = wait_for_titles(&sample, Duration::from_secs(5));
+    assert_eq!(
+        count, 1,
+        "the fixture declares one title, libvlc reported {count}: {titles:?}"
+    );
+    assert_eq!(
+        titles[0].duration, CHAPTERED_SAMPLE_MS,
+        "the fixture is {CHAPTERED_SAMPLE_MS} ms long"
+    );
+    assert_eq!(
+        titles[0].flags, 0,
+        "the fixture's title is plain content and carries no flag"
+    );
+    // The mp4 demuxer does not name its title, so this is libvlc's own
+    // construction from the index and the length: `src/player/title.c` builds it
+    // as "Title %i%s", and the bracketed length is `vlc_tick_to_str`, which writes
+    // `MM:SS` and only grows to `H:MM:SS` past the hour.
+    assert_eq!(
+        titles[0].name, "Title 0 [00:04]",
+        "libvlc names an unnamed title after its index and length"
+    );
+
+    let (count, chapters) = wait_for_chapters(&sample, -1, Duration::from_secs(5));
+    println!("the fixture declares {count} chapters: {chapters:?}");
+    assert_eq!(
+        count, 4,
+        "the fixture declares four chapters, libvlc reported {count}: {chapters:?}"
+    );
+
+    let names: Vec<&str> = chapters
+        .iter()
+        .map(|chapter| chapter.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        CHAPTERED_SAMPLE_CHAPTER_NAMES.to_vec(),
+        "the chapter names come from the file's `chpl` box, in file order"
+    );
+
+    for (index, chapter) in chapters.iter().enumerate() {
+        assert_eq!(
+            chapter.time_offset,
+            index as i64 * CHAPTERED_SAMPLE_CHAPTER_MS,
+            "chapter {index} starts where the file says it does"
+        );
+        assert_eq!(
+            chapter.duration, CHAPTERED_SAMPLE_CHAPTER_MS,
+            "chapter {index} runs for {CHAPTERED_SAMPLE_CHAPTER_MS} ms"
+        );
+    }
+
+    // Asking for a title by index is the same list, and an index that is not there
+    // is an error rather than an empty answer.
+    assert_eq!(
+        chapter_descriptions(&sample, 0).1,
+        chapters,
+        "the selected title's chapters are the ones title 0 has"
+    );
+    assert_eq!(
+        chapter_descriptions(&sample, 1).0,
+        -1,
+        "the fixture has one title, so title 1 cannot have chapters"
+    );
+}
+
+/// A media with no chapter list has no titles to report either.
+///
+/// This is the measurement behind the empty array the binding returns. The C API
+/// has two ways of answering "no chapters" -- `0` for a title that lists none, and
+/// `-1` for having no title list at all -- and an MP4 that carries no chapter list
+/// takes the second one, because the demuxer builds its single title *out of* the
+/// chapter list. The sample is a file of that kind, and long enough that this
+/// cannot be playback having already ended.
+#[test]
+fn reports_no_titles_or_chapters_for_a_media_that_has_neither() {
+    let sample = Sample::from_path(path_of(SECOND_SAMPLE));
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    // Give libvlc the time it would need to publish a title list, so that a list
+    // which appears late cannot be mistaken for one that never appears.
+    std::thread::sleep(Duration::from_millis(500));
+
+    assert_eq!(
+        title_descriptions(&sample).0,
+        -1,
+        "a media with no chapter list has no title to report"
+    );
+    assert_eq!(
+        chapter_descriptions(&sample, -1).0,
+        -1,
+        "and with no title, no chapters to report either"
+    );
+}
+
+/// One chapter or title event, as a test read it out of libvlc's event object.
+///
+/// A variant per event rather than one struct with an index and a name: the three
+/// carry three different things, and two of them carry no payload at all. An
+/// `index` field holding `-1` for "this event has none" would be a value libvlc
+/// never sends, invented here, and the test would be asserting on filler.
+#[derive(Clone, Debug)]
+enum RecordedChapterTitleEvent {
+    /// `ChapterChanged`: the chapter the input moved to, and nothing else.
+    Chapter(i32),
+    /// `TitleListChanged`: the titles are different, and libvlc says nothing about
+    /// how.
+    TitleList,
+    /// `TitleSelectionChanged`: the title now selected. Both fields are copied
+    /// while the callback runs -- libvlc points into its own frame and borrows the
+    /// name inside it, so nothing here may outlive the event.
+    TitleSelection {
+        index: i32,
+        name: String,
+        duration: i64,
+    },
+}
+
+/// Where the chapter and title events land. Written from libvlc's input thread.
+#[derive(Default)]
+struct ChapterTitleProbe {
+    events: Mutex<Vec<RecordedChapterTitleEvent>>,
+}
+
+impl ChapterTitleProbe {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn snapshot(&self) -> Vec<RecordedChapterTitleEvent> {
+        match self.events.lock() {
+            Ok(events) => events.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Waits for the first recorded event a caller can get something out of.
+    ///
+    /// It panics with everything it saw when nothing matches, because the useful
+    /// part of a failure here is which events did arrive.
+    fn wait_for<T, F>(&self, what: &str, timeout: Duration, extract: F) -> T
+    where
+        F: Fn(&RecordedChapterTitleEvent) -> Option<T>,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let events = self.snapshot();
+            if let Some(found) = events.iter().find_map(&extract) {
+                return found;
+            }
+            if Instant::now() >= deadline {
+                panic!("no {what} arrived within {timeout:?}; the events seen were {events:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Records one chapter or title event.
+///
+/// Written from libvlc's input thread, holding the player's lock, so nothing here
+/// may touch the player or a Godot object. The selection event's title is a
+/// borrowed local of libvlc's own frame and its name is a borrowed `char *`, so
+/// both are read here rather than kept: nothing of the event may outlive it.
+unsafe extern "C" fn record_chapter_title_event(
+    event: *const libvlc_event_t,
+    user_data: *mut c_void,
+) {
+    unsafe {
+        let probe = &*(user_data as *const ChapterTitleProbe);
+        let event_type = (*event).type_;
+        let recorded = if event_type
+            == libvlc_event_e_libvlc_MediaPlayerChapterChanged as libvlc_event_type_t
+        {
+            RecordedChapterTitleEvent::Chapter((*event).u.media_player_chapter_changed.new_chapter)
+        } else if event_type
+            == libvlc_event_e_libvlc_MediaPlayerTitleSelectionChanged as libvlc_event_type_t
+        {
+            let payload = (*event).u.media_player_title_selection_changed;
+            // libvlc dereferences this pointer unconditionally in the callback that
+            // fills the event in, so a null one would already have crashed there.
+            let title = &*payload.title;
+            RecordedChapterTitleEvent::TitleSelection {
+                index: payload.index,
+                name: c_string(title.psz_name),
+                duration: title.i_duration,
+            }
+        } else {
+            // The list-changed event, whose payload member libvlc never fills in:
+            // the event object handed to a listener is the sender's stack frame,
+            // and that member is whatever was there. Nothing is read from it.
+            RecordedChapterTitleEvent::TitleList
+        };
+        let mut events = match probe.events.lock() {
+            Ok(events) => events,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        events.push(recorded);
+    }
+}
+
+/// The three chapter and title events arrive, and say what moved.
+///
+/// This is the half of §3.8 that cannot be seen from the getters: a caller that
+/// wants to follow the file has to be told when the list appears and when the
+/// selection moves, and it has to be told the truth about what the events carry.
+/// The list event carries nothing, so the only way to learn what it announced is
+/// to ask the getter again -- which is what the test does.
+#[test]
+fn the_chapter_and_title_events_reach_a_callback_with_their_payloads() {
+    // The probe is declared first so that it outlives the player: locals drop in
+    // reverse order, and releasing the player is what stops the callbacks.
+    let mut probe = Box::new(ChapterTitleProbe::new());
+    let opaque = probe.as_mut() as *mut ChapterTitleProbe as *mut c_void;
+    let sample = Sample::from_path(path_of(CHAPTERED_SAMPLE));
+
+    let event_manager = unsafe { libvlc_media_player_event_manager(sample.player) };
+    for event_type in [
+        libvlc_event_e_libvlc_MediaPlayerTitleListChanged,
+        libvlc_event_e_libvlc_MediaPlayerTitleSelectionChanged,
+        libvlc_event_e_libvlc_MediaPlayerChapterChanged,
+    ] {
+        let attached = unsafe {
+            libvlc_event_attach(
+                event_manager,
+                event_type as libvlc_event_type_t,
+                Some(record_chapter_title_event),
+                opaque,
+            )
+        };
+        assert_eq!(
+            attached, 0,
+            "the chapter or title event {event_type} could not be attached"
+        );
+    }
+
+    sample.attach_media();
+    play_until_playing(&sample);
+
+    // The list event is what a caller has to act on, and it is also the one with no
+    // payload at all: the test reads the getter afterwards, which is the only way to
+    // learn what changed. That it carries nothing needs no assertion here, because
+    // the variant it is recorded as has nothing to carry.
+    probe.wait_for("a title list change", Duration::from_secs(5), |event| {
+        matches!(event, RecordedChapterTitleEvent::TitleList).then_some(())
+    });
+
+    let (_, titles) = title_descriptions(&sample);
+    assert_eq!(
+        titles.len(),
+        1,
+        "the list event announced the fixture's title"
+    );
+
+    // The selection event is the one whose payload is borrowed: the title it points
+    // at lives in libvlc's frame and only for as long as this callback runs.
+    let (index, name, duration) = probe.wait_for(
+        "a title selection change",
+        Duration::from_secs(5),
+        |event| match event {
+            RecordedChapterTitleEvent::TitleSelection {
+                index,
+                name,
+                duration,
+            } => Some((*index, name.clone(), *duration)),
+            _ => None,
+        },
+    );
+    assert_eq!(index, 0, "the only title is the one selected");
+    assert_eq!(
+        name, titles[0].name,
+        "the selection event names the title the getter would have read"
+    );
+    assert_eq!(
+        duration, titles[0].duration,
+        "the selection event carries the same title the getter would have read"
+    );
+
+    // Asking for a chapter moves the selection, and that is what the chapter event
+    // announces -- the new index, and nothing else.
+    unsafe { libvlc_media_player_set_chapter(sample.player, 2) };
+    let changed = probe.wait_for(
+        "a chapter change",
+        Duration::from_secs(5),
+        |event| match event {
+            RecordedChapterTitleEvent::Chapter(chapter) if *chapter == 2 => Some(*chapter),
+            _ => None,
+        },
+    );
+    assert_eq!(changed, 2, "the chapter that was asked for");
+    assert_eq!(
+        chapter_descriptions(&sample, -1).1[2].name,
+        CHAPTERED_SAMPLE_CHAPTER_NAMES[2],
+        "the chapter libvlc moved to is the third one"
+    );
+}
