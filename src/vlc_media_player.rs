@@ -30,6 +30,7 @@ mod gpu_d3d11;
 
 use std::{
     ffi::c_int,
+    ptr,
     sync::{
         atomic::{AtomicU32, Ordering},
         mpsc,
@@ -43,7 +44,7 @@ use crate::{
     vlc_media::VlcMedia,
     vlc_media_player::internal_audio_stream::InternalAudioStream,
     vlc_subtitle::VlcSubtitle,
-    vlc_track::VlcTrack,
+    vlc_track::{VlcTrack, c_string},
     vlc_track_list::VlcTrackList,
 };
 use godot::{
@@ -105,6 +106,139 @@ struct AbLoop {
     a_pos: f64,
     b_time: i64,
     b_pos: f64,
+}
+
+/// An array of descriptions libvlc allocated for the caller, and the count that
+/// goes with it.
+///
+/// Both `get_full_*_descriptions` calls below hand out an array the caller has to
+/// free with the matching release function, and both report how many entries it
+/// holds -- as an `int`, while that release takes an `unsigned`. Pairing each
+/// struct with its own release through [Description] is what keeps a chapter array
+/// from being freed with the title release: the two layouts differ, and libvlc
+/// would free pointers it read out of the middle of a struct.
+///
+/// The array is freed when this drops, so no early return can leak it. libvlc's
+/// `0` is a real answer -- the chapter getter allocates an empty array for it,
+/// which may come back NULL -- so a zero-length array is released as well, and
+/// only a NULL one is skipped.
+struct Descriptions<T: Description> {
+    entries: *mut *mut T,
+    count: u32,
+}
+
+impl<T: Description> Descriptions<T> {
+    /// Takes over an array a getter returned.
+    ///
+    /// # Safety
+    /// `entries` must be the array that `count` came back with, from the getter
+    /// whose [Description] this is, and nothing else may free it afterwards.
+    /// `count` is unsigned here on purpose: libvlc answers `-1` for "no array at
+    /// all" and writes nothing, so the sign is what tells the two apart, and
+    /// [dictionaries] is where that is decided -- once, before this is built.
+    unsafe fn new(entries: *mut *mut T, count: u32) -> Self {
+        Self { entries, count }
+    }
+
+    fn len(&self) -> usize {
+        self.count as usize
+    }
+
+    /// # Safety
+    /// `index` must be below [Self::len].
+    unsafe fn get(&self, index: usize) -> &T {
+        unsafe { &**self.entries.add(index) }
+    }
+}
+
+impl<T: Description> Drop for Descriptions<T> {
+    fn drop(&mut self) {
+        if !self.entries.is_null() {
+            unsafe { T::release(self.entries, self.count) }
+        }
+    }
+}
+
+/// One of the two description structs, together with the C function that frees an
+/// array of it and the shape a caller sees it as.
+///
+/// The release function travels with the type it frees here rather than being
+/// called at each site, which is also what lets [Descriptions] be generic over the
+/// two.
+trait Description: Sized {
+    /// # Safety
+    /// `entries` must be an array from the matching getter, holding `count`
+    /// entries, and nothing else may free it afterwards.
+    unsafe fn release(entries: *mut *mut Self, count: u32);
+
+    /// The fields of one entry, as a dictionary. Every key is always present:
+    /// there is no member of either struct that libvlc leaves unwritten.
+    fn dictionary(&self) -> VarDictionary;
+}
+
+impl Description for libvlc_chapter_description_t {
+    unsafe fn release(entries: *mut *mut Self, count: u32) {
+        unsafe { libvlc_chapter_descriptions_release(entries, count) }
+    }
+
+    fn dictionary(&self) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("name", c_string(self.psz_name));
+        dict.set("time_offset", self.i_time_offset);
+        dict.set("duration", self.i_duration);
+        dict
+    }
+}
+
+impl Description for libvlc_title_description_t {
+    unsafe fn release(entries: *mut *mut Self, count: u32) {
+        unsafe { libvlc_title_descriptions_release(entries, count) }
+    }
+
+    fn dictionary(&self) -> VarDictionary {
+        title_dictionary(
+            c_string(self.psz_name),
+            self.i_duration,
+            self.i_flags as i32,
+        )
+    }
+}
+
+/// The three fields of a title, as the dictionary both
+/// [VlcMediaPlayer::get_full_title_descriptions] and [signal
+/// VlcMediaPlayer::title_selection_changed] hand out.
+///
+/// One function rather than a copy at each site: the two are documented as
+/// carrying exactly the same keys, and a second copy is how they stop matching.
+fn title_dictionary(name: String, duration: i64, flags: i32) -> VarDictionary {
+    let mut dict = VarDictionary::new();
+    dict.set("name", name);
+    dict.set("duration", duration);
+    dict.set("flags", flags);
+    dict
+}
+
+/// Turns what one of the `get_full_*_descriptions` calls below answered into the
+/// array a script sees, freeing libvlc's array on the way out.
+///
+/// # Safety
+/// `entries` and `count` must be exactly what the matching getter answered, and
+/// nothing else may free `entries`.
+unsafe fn dictionaries<T: Description>(entries: *mut *mut T, count: c_int) -> Array<VarDictionary> {
+    if count < 0 {
+        // libvlc's "no array at all": it wrote nothing to `entries`, so there is
+        // neither a list to report nor anything to free. `0` is a different
+        // answer and not this one -- it means libvlc allocated an empty array.
+        return Array::new();
+    }
+    // The array belongs to `descriptions` from here, and it frees it however this
+    // returns -- including on a panic in the loop below.
+    let descriptions = unsafe { Descriptions::<T>::new(entries, count as u32) };
+    let mut entries = Array::new();
+    for index in 0..descriptions.len() {
+        entries.push(&unsafe { descriptions.get(index) }.dictionary());
+    }
+    entries
 }
 
 /// A control used for video playback.\
@@ -398,6 +532,18 @@ impl VlcMediaPlayer {
     /// is the state a loop has to be in to run.
     #[constant]
     const ABLOOP_B: i32 = libvlc_abloop_t_libvlc_abloop_b as i32;
+
+    /// The flag [method get_full_title_descriptions] reports on a title whose
+    /// content is a menu, for [constant NAVIGATE_ACTIVATE] and its siblings.
+    #[constant]
+    const TITLE_MENU: i32 = libvlc_title_menu as i32;
+    /// The same, for a title whose content is interactive.
+    ///
+    /// Both come from libvlc's `libvlc_title_description_t.i_flags`, which is `0`
+    /// for a plain title; libvlc has no constant for that case and this binding
+    /// adds none, so `flags == 0` is the test for it.
+    #[constant]
+    const TITLE_INTERACTIVE: i32 = libvlc_title_interactive as i32;
 
     #[signal]
     fn opening();
@@ -702,6 +848,73 @@ impl VlcMediaPlayer {
     #[signal]
     fn track_unselected(track_type: i32, id: GString);
 
+    // ── chapters and titles ──
+
+    /// Emitted when the chapter being played changes.
+    ///
+    /// # Parameters
+    /// - [param chapter] the number of the chapter now playing, counted from `0`
+    ///   inside whichever title is selected.
+    ///
+    /// # Note
+    /// - The number is all libvlc sends. It holds the title index and the
+    ///   chapter's own name where it raises this and passes on neither, so a
+    ///   listener that has to name the chapter asks [method get_title] and
+    ///   [method get_full_chapter_descriptions] for them.
+    /// - One change can be reported more than once, and not in the order it
+    ///   happened: the number follows the input's demuxer, which reads ahead of
+    ///   playback. Measured with `test/media/h264_64x64_4s_4chapters.mp4`, a
+    ///   single [method set_chapter]`(2)` arrived as `0`, `1`, `2`, `3` within
+    ///   half a second, while the input had already reported `1` and `2` before
+    ///   the jump. Treat this as "the number moved"; read [method get_chapter]
+    ///   for where it stands.
+    /// - A chapter number is counted inside a title, and every title numbers its
+    ///   own chapters from `0`, so on an input with several titles this alone does
+    ///   not say where playback is. This binding keeps no record of the previous
+    ///   title to work it out from, by design.
+    /// - [method set_chapter] and [method next_chapter] return nothing and report
+    ///   nothing when they do not apply, whether the index is out of range or the
+    ///   media has no chapters at all. This signal is the only report that a
+    ///   change happened, which means its absence is not proof that one did not.
+    #[signal]
+    fn chapter_changed(chapter: i32);
+
+    /// Emitted when the titles an input offers change.
+    ///
+    /// # Note
+    /// - It carries nothing on purpose: libvlc raises it with an empty payload,
+    ///   and the answer is to ask [method get_full_title_descriptions] again.
+    /// - This is what makes that call start answering. Titles are published by a
+    ///   running input, so before playback there is no list to read and nothing
+    ///   announces that one exists -- this signal does.
+    /// - A *different* title being selected from that list is [signal
+    ///   title_selection_changed], which is a separate thing and can follow this
+    ///   one.
+    #[signal]
+    fn title_list_changed();
+
+    /// Emitted when the selected title changes.
+    ///
+    /// # Parameters
+    /// - [param index] the index of the title that is now selected, counted from
+    ///   `0`. [method get_title] reports the same number.
+    /// - [param title] that title's description, with exactly the keys one entry
+    ///   of [method get_full_title_descriptions] has: `name`, `duration` and
+    ///   `flags`.
+    ///
+    /// # Note
+    /// - The description is copied out of the event and handed over as an
+    ///   ordinary dictionary. libvlc raises this with a pointer into the frame it
+    ///   is calling from, and the name inside it is borrowed rather than owned,
+    ///   so the copy is the point: nothing here outlives the call that received
+    ///   it.
+    /// - A payload that names no title is not reported at all: an event saying a
+    ///   title was selected while pointing at none is not something to hand on,
+    ///   so this signal never carries an empty dictionary. The pinned runtime
+    ///   does not send one either.
+    #[signal]
+    fn title_selection_changed(index: i32, title: VarDictionary);
+
     // ── media / texture / GPU ──
 
     #[func]
@@ -983,6 +1196,25 @@ impl VlcMediaPlayer {
     ///
     /// # Returns
     /// chapter number currently playing, or -1 if there is no media.
+    ///
+    /// # Note
+    /// - The number is the one libvlc's own `ChapterChanged` events carry, which
+    ///   is where the input's demuxer has read to -- and a demuxer reads ahead of
+    ///   playback. Measured with `test/media/h264_64x64_4s_4chapters.mp4`: the
+    ///   events for chapters `1` and `2` arrived while a test that had just
+    ///   started playing was still waiting for the title list, and one
+    ///   [method set_chapter]`(2)` moved the reporting through `0`, `1`, `2`, `3`
+    ///   inside half a second. Read it as "the chapter the input is at", not as
+    ///   "the chapter on screen".
+    /// - The number is counted from `0` inside whichever title is selected, and
+    ///   every title numbers its own chapters from `0`.
+    /// - A media that has no chapter list still has an answer here: while an input
+    ///   is running this is `0`, not `-1`. libvlc keeps `-1` for having no input at
+    ///   all -- `vlc_player_GetSelectedChapterIdx` answers it in that case, and
+    ///   otherwise returns a field that starts at `0` -- so on the demo's own movie,
+    ///   an MP4 with no chapter table, this reads `0` while [method
+    ///   get_full_chapter_descriptions] returns an empty array. The list is what
+    ///   tells "the chapter list has not arrived" from "there is no chapter list".
     #[func]
     fn get_chapter(&self) -> i32 {
         unsafe { libvlc_media_player_get_chapter(self.player_ptr) }
@@ -1000,13 +1232,94 @@ impl VlcMediaPlayer {
     /// Get title chapter count.
     ///
     /// # Parameters
-    /// - [param title] title
+    /// - [param title] the index of the title to ask about, counted from `0`.
     ///
     /// # Returns
-    /// number of chapters in title, or -1.
+    /// the number of chapters in that title, or `-1` when there is no title to
+    /// ask about -- the player has no media, or the index is out of range.
+    ///
+    /// # Note
+    /// - **A negative `title` is refused here instead of being passed on.**
+    ///   libvlc's implementation opens with `assert(i_title >= 0)`
+    ///   (`lib/media_player.c`, `libvlc_media_player_get_chapter_count_for_title`)
+    ///   and that assert is live in the runtime this binds: the pinned build is
+    ///   configured without `--disable-debug`, which is the switch that defines
+    ///   `NDEBUG`. Passing a negative index through aborts the process; libvlc's
+    ///   own header promises a `-1` for the same call. This is the one argument
+    ///   in this binding that is refused rather than forwarded, and `-1` is what
+    ///   it answers instead.
+    /// - Chapter *names* are [method get_full_chapter_descriptions], and title
+    ///   flags are [method get_full_title_descriptions].
     #[func]
     fn get_chapter_count_for_title(&self, title: i32) -> i32 {
+        if title < 0 {
+            return -1;
+        }
         unsafe { libvlc_media_player_get_chapter_count_for_title(self.player_ptr, title) }
+    }
+
+    /// Get the full description of the chapters of one title.
+    ///
+    /// This is the call that carries a chapter's *name*: [method get_chapter] and
+    /// [method get_chapter_count] only count, so a chapter list built from those
+    /// reads "Chapter 1" through "Chapter N" and shows nothing the file declared.
+    ///
+    /// # Parameters
+    /// - [param title] the index of the title to ask about, or `-1` for the one
+    ///   that is selected now. An index that is out of range is not an error: it
+    ///   is one of the ways to get an empty answer.
+    ///
+    /// # Returns
+    /// one dictionary per chapter, in playback order, each with the same three
+    /// keys:
+    /// - `name`: the chapter's name, and it is never empty. libvlc makes one up
+    ///   when the file does not name a chapter -- `seekpoint_GetName` in
+    ///   `src/player/title.c` answers `Chapter N` -- and when even that fails it
+    ///   drops the title list rather than hand out a nameless entry. The name is
+    ///   guaranteed by how the list is built, not by the file.
+    /// - `time_offset`: where the chapter starts, in milliseconds from the start
+    ///   of its title.
+    /// - `duration`: how long it lasts, in milliseconds.
+    ///
+    /// An empty array means there is nothing to describe, and that is the answer
+    /// for every way of getting one: a player with no media, a media that has not
+    /// started playing (see the note), an index that is not there, a failed call,
+    /// and a title that lists no chapters. libvlc keeps the last of those apart --
+    /// that one alone comes back as `0`, every other one as `-1` -- and this
+    /// binding folds them together, because a caller acts on all of them the same
+    /// way: there is no list. Nothing is reported as a chapter that libvlc did not
+    /// report.
+    ///
+    /// # Note
+    /// - **Chapters exist only while the media is playing.** They are part of the
+    ///   title list an input publishes once it is running, so this answers an
+    ///   empty array before [method play] has got that far -- and parsing is not
+    ///   enough: `libvlc_media_parse` never reports titles or chapters at all.
+    ///   [signal title_list_changed] is what says the list has arrived.
+    /// - `duration` is computed rather than stored: libvlc takes it from the start
+    ///   of the next chapter, and for the last chapter from the length of the
+    ///   title. When that length is unknown the last chapter's duration comes out
+    ///   **negative**. It is reported as it is rather than clamped, because a
+    ///   clamped `0` would read as a real length; treat a negative one as
+    ///   unknown.
+    /// - The array libvlc allocates is freed before this returns: there is no
+    ///   release call to make from GDScript, and no way to leak it.
+    /// - The `0` that libvlc reserves for "the title exists and lists no chapters"
+    ///   is written down rather than exercised: no format used here produces one.
+    ///   An MP4 without a chapter list has no title to ask about either, so it
+    ///   takes the `-1` path -- `test/media/h264_64x64_1s.mp4` in the acceptance
+    ///   tests is exactly that case.
+    ///
+    /// # See also
+    /// - [method VLCTrack.get_info] for the same "one call, one dictionary"
+    ///   shape on the track side.
+    #[func]
+    fn get_full_chapter_descriptions(&self, title: i32) -> Array<VarDictionary> {
+        let mut entries: *mut *mut libvlc_chapter_description_t = ptr::null_mut();
+        let count = unsafe {
+            libvlc_media_player_get_full_chapter_descriptions(self.player_ptr, title, &mut entries)
+        };
+        unsafe { dictionaries(entries, count) }
     }
 
     /// Get the current movie length (in ms).
@@ -1087,6 +1400,57 @@ impl VlcMediaPlayer {
     #[func]
     fn get_title_count(&self) -> i32 {
         unsafe { libvlc_media_player_get_title_count(self.player_ptr) }
+    }
+
+    /// Get the full description of the available titles.
+    ///
+    /// A title is one selectable part of an input: the feature on a DVD, a
+    /// subsong in a chiptune file, a part a demuxer publishes separately.
+    /// [method get_title_count] says how many there are; [method set_title]
+    /// switches between them.
+    ///
+    /// # Returns
+    /// one dictionary per title, in libvlc's order, each with the same three keys:
+    /// - `name`: the title's name. This one is always there, and when the file
+    ///   declares none libvlc generates it -- see the note.
+    /// - `duration`: the title's length in milliseconds, or `0` when libvlc does
+    ///   not know it.
+    /// - `flags`: [constant TITLE_MENU], [constant TITLE_INTERACTIVE], both of
+    ///   them, or `0` for a plain title.
+    ///
+    /// An empty array means there is nothing to describe: a player with no media,
+    /// a media that is not playing (see the note), or a failed call -- libvlc
+    /// answers `-1` for that last one, and this folds it in.
+    ///
+    /// # Note
+    /// - **An MP4 only has titles when it has chapters.** The demuxer builds its
+    ///   single title out of the file's chapter list, so
+    ///   `test/media/h264_64x64_4s_4chapters.mp4` answers one title with its four
+    ///   chapters under it, and `test/media/h264_64x64_1s.mp4`, which has no
+    ///   chapter list at all, answers no title list at all. Chapters are never
+    ///   titles.
+    /// - An empty array therefore rarely means "this media has no titles": for the
+    ///   formats here it means the file declared no chapters, or the list has not
+    ///   arrived yet. [signal title_list_changed] is what settles which.
+    /// - A name libvlc generated for itself is `Title 0`, with the length in
+    ///   brackets appended when libvlc knows it -- `Title 0 [00:04]` for the sample
+    ///   above. That is libvlc's `vlc_tick_to_str`, which writes `MM:SS` and only
+    ///   grows to `H:MM:SS` past the hour; the wording is libvlc's, and this
+    ///   binding changes none of it. A name that came from the file arrives as the
+    ///   file wrote it.
+    /// - **Titles, like chapters, exist only while the media is playing**, for the
+    ///   same reason and with the same symptom: an empty array before then.
+    /// - Which chapters a title has is [method get_full_chapter_descriptions]'
+    ///   job, and a title whose flags include [constant TITLE_MENU] is what
+    ///   [method navigate] directs.
+    /// - The array libvlc allocates is freed before this returns.
+    #[func]
+    fn get_full_title_descriptions(&self) -> Array<VarDictionary> {
+        let mut entries: *mut *mut libvlc_title_description_t = ptr::null_mut();
+        let count = unsafe {
+            libvlc_media_player_get_full_title_descriptions(self.player_ptr, &mut entries)
+        };
+        unsafe { dictionaries(entries, count) }
     }
 
     /// Get the track list for one type.\

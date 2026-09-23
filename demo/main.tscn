@@ -213,6 +213,7 @@ func _on_playing() -> void:
 	%Media.text = _media_identity()
 	%Playlist.text = _playlist_line()
 	_refresh_tracks()
+	_refresh_chapter_panel()
 
 
 # The list player hangs off this node -- it plays through the VLCMediaPlayer it is a child
@@ -372,10 +373,76 @@ func _refresh_tracks() -> void:
 					text_items.select(i, false)
 
 
+# Nothing about a chapter is known before something plays: libvlc publishes the chapter
+# and title lists with the input, not with the media, so both are empty -- and both
+# getters answer -1 -- until playback starts, and both are redrawn whenever libvlc says
+# something moved. A media with no chapter list at all is the common case, the movie
+# this demo ships with being one of them, so the dropdown says so rather than showing a
+# blank row that looks the same as a media whose chapters have not arrived yet.
+func _refresh_chapters() -> void:
+	var chapter_button: OptionButton = %Chapter/OptionButton
+	var chapters := get_full_chapter_descriptions(-1)
+	chapter_button.clear()
+	if chapters.is_empty():
+		chapter_button.add_item(\"(no chapters)\")
+		chapter_button.disabled = true
+	else:
+		chapter_button.disabled = false
+		for i in chapters.size():
+			chapter_button.add_item(\"%d: %s\" % [i + 1, chapters[i][\"name\"]])
+		# Asked of the player, not read off the list: the chapter a media starts on is
+		# whatever libvlc selected, and the list itself does not record a selection.
+		var current := get_chapter()
+		if current >= 0 and current < chapters.size():
+			chapter_button.selected = current
+
+
+# Both halves of the panel, for the events that move either of them. A chapter event
+# carries no title index -- libvlc has one and does not send it -- so a chapter change is
+# also the moment to re-read which title playback is in.
+func _refresh_chapter_panel() -> void:
+	_refresh_chapters()
+	_refresh_title()
+
+
+# How many titles the input has and which one it is on. Both getters answer -1 while
+# there is no title list, which is what a plain video without a chapter list is: an MP4
+# only grows a title list when its chapter table exists.
+func _refresh_title() -> void:
+	var titles := get_full_title_descriptions()
+	var current := get_title()
+	if current < 0 or current >= titles.size():
+		%CurrentTitle.text = \"title: (none)\"
+	else:
+		%CurrentTitle.text = \"title: %d/%d %s\" % [current + 1, titles.size(), titles[current][\"name\"]]
+
+
 # Every track event redraws the lists: the track that changed is the one whose label
 # or selection has just gone stale.
 func _on_track_changed(_track_type: int, _id: String) -> void:
 	_refresh_tracks()
+
+
+func _on_chapter_changed(_chapter: int) -> void:
+	_refresh_chapter_panel()
+
+
+# libvlc sends this one without a payload on purpose: the list itself has to be asked for
+# again, and this is the signal that says it is worth asking.
+func _on_title_list_changed() -> void:
+	_refresh_chapter_panel()
+
+
+func _on_title_selection_changed(_index: int, _title: Dictionary) -> void:
+	_refresh_chapter_panel()
+
+
+func _on_stopped() -> void:
+	_refresh_chapter_panel()
+
+
+func _on_chapter_option_button_item_selected(index: int) -> void:
+	set_chapter(index)
 
 
 func _on_video_option_button_item_selected(index: int) -> void:
@@ -579,6 +646,27 @@ layout_mode = 2
 size_flags_horizontal = 3
 select_mode = 2
 
+[node name="CurrentTitle" type="Label" parent="ScrollContainer/VBoxContainer" unique_id=2000000001]
+unique_name_in_owner = true
+layout_mode = 2
+text = "title:"
+
+[node name="Chapter" type="HBoxContainer" parent="ScrollContainer/VBoxContainer" unique_id=2000000002]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Label" type="Label" parent="ScrollContainer/VBoxContainer/Chapter" unique_id=2000000003]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 0
+text = "chapter:"
+
+[node name="OptionButton" type="OptionButton" parent="ScrollContainer/VBoxContainer/Chapter" unique_id=2000000004]
+layout_mode = 2
+size_flags_horizontal = 3
+clip_text = true
+tooltip_text = "libvlc_media_player_get_full_chapter_descriptions / get_chapter / set_chapter. The list belongs to the input, so it only exists while something is playing, and a media without a chapter list is the usual case: the dropdown then says so instead of staying empty."
+
 [node name="HSlider" type="HSlider" parent="ScrollContainer/VBoxContainer" unique_id=499565026]
 unique_name_in_owner = true
 layout_mode = 2
@@ -711,6 +799,10 @@ use_native_dialog = true
 [connection signal="track_selected" from="." to="." method="_on_track_changed"]
 [connection signal="track_unselected" from="." to="." method="_on_track_changed"]
 [connection signal="track_updated" from="." to="." method="_on_track_changed"]
+[connection signal="chapter_changed" from="." to="." method="_on_chapter_changed"]
+[connection signal="stopped" from="." to="." method="_on_stopped"]
+[connection signal="title_list_changed" from="." to="." method="_on_title_list_changed"]
+[connection signal="title_selection_changed" from="." to="." method="_on_title_selection_changed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Load" to="." method="_on_load_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/LoadMRL" to="." method="_on_load_mrl_pressed"]
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Play" to="." method="_on_play_pressed"]
@@ -727,6 +819,7 @@ use_native_dialog = true
 [connection signal="pressed" from="ScrollContainer/VBoxContainer/Jump/Forward" to="." method="_on_jump_forward_pressed"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/VideoTrack/OptionButton" to="." method="_on_video_option_button_item_selected"]
 [connection signal="item_selected" from="ScrollContainer/VBoxContainer/AudioTrack/OptionButton" to="." method="_on_audio_option_button_item_selected"]
+[connection signal="item_selected" from="ScrollContainer/VBoxContainer/Chapter/OptionButton" to="." method="_on_chapter_option_button_item_selected"]
 [connection signal="value_changed" from="ScrollContainer/VBoxContainer/AudioDelay/SpinBox" to="." method="_on_audio_delay_value_changed"]
 [connection signal="multi_selected" from="ScrollContainer/VBoxContainer/TextTrack/ItemList" to="." method="_on_text_item_list_multi_selected"]
 [connection signal="drag_ended" from="ScrollContainer/VBoxContainer/HSlider" to="." method="_on_h_slider_drag_ended"]
