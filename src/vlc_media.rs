@@ -288,10 +288,14 @@ impl VlcMedia {
     /// - [param time_ms] where in the media to take the picture, in milliseconds.
     /// - [param speed] [constant VLCThumbnailRequest.SEEK_PRECISE] to land exactly there, or
     ///   [constant VLCThumbnailRequest.SEEK_FAST] to take what is near it.
-    /// - [param width] and [param height]: both set asks for that exact size, the image
-    ///   stretched or cropped to it; one of them `0` derives that one from the media's
-    ///   aspect ratio.
-    /// - [param crop] whether to crop rather than stretch when both are set.
+    /// - [param width] and [param height]: with one of them `0` the other is a size and the
+    ///   missing one is derived from the media's aspect ratio -- the way to ask for a picture
+    ///   that looks like the media. With both set libvlc returns exactly that size, and it
+    ///   reaches it by **stretching**: measured, a `256 x 256` request on a 16:9 video comes
+    ///   back a distorted square.
+    /// - [param crop] whether to crop rather than stretch, which only applies when both
+    ///   [param width] and [param height] are set: `256 x 256` with it comes back a square cut
+    ///   out of the middle of the frame instead of the whole frame squeezed into a square.
     /// - [param picture_type] one of the [constant VLCPicture] `TYPE_*` constants.
     /// - [param timeout_ms] a deadline in milliseconds, or `0` for none.
     ///
