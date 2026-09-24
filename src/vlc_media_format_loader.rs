@@ -108,10 +108,11 @@ impl IResourceFormatLoader for VlcMediaFormatLoader {
     ///
     /// The file is opened first so that one which cannot be read is reported as such,
     /// rather than becoming a media that fails later with nothing pointing at the
-    /// path. Everything after that is [method VLCMedia.load_from_file], which reads
-    /// the file through Godot's own filesystem -- which is what makes this work inside
-    /// an exported project, where the media lives in the PCK and has no path LibVLC
-    /// could open.
+    /// path. Everything after that is [method VLCMedia.load_from_file], which hands
+    /// the file to LibVLC when the operating system can see it and reads it through
+    /// Godot's own filesystem otherwise -- the second one is what keeps this working
+    /// inside an exported project, where the media lives in the PCK and has no path
+    /// LibVLC could open.
     fn load(
         &self,
         path: GString,
