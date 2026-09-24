@@ -28,8 +28,10 @@ func _init() -> void:
 	file.store_buffer(_mp3_with_a_cover())
 	file.close()
 
-	var path: String = ProjectSettings.globalize_path(FIXTURE).replace("\\", "/")
-	var media := VLCMedia.load_from_mrl("file:///%s" % path)
+	# load_from_file, not a hand-built file:// MRL: the fixture is a path the operating system can
+	# see (globalize_path resolves user://), so the loader hands libvlc the file itself and libvlc
+	# builds the URI -- separators, escaping and all.
+	var media := VLCMedia.load_from_file(FIXTURE)
 	if media == null:
 		_fail("the fixture MRL was refused")
 		return

@@ -296,8 +296,9 @@ func _playlist_line() -> String:
 
 
 # What is playing: the engine's name for it, libvlc's type, and libvlc's MRL.
-# The three disagree on purpose -- a media from res:// answers \"imem://\" to
-# get_mrl() whatever file is behind it, and one a script built itself has no
+# The three disagree on purpose -- what get_mrl() answers depends on the access
+# libvlc ended up with, \"file://...\" for a file it opens itself and the constant
+# \"imem://\" for one read through Godot, and a media a script built itself has no
 # resource_path at all -- so this line shows both, and the extension's class
 # documentation explains which of them names the file.
 func _media_identity() -> String:
