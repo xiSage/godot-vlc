@@ -4028,7 +4028,9 @@ fn a_thumbnail_request_reports_a_picture_and_a_stride_that_matches_its_buffer() 
         }
 
         // The middle of the media, which is what the editor's inspector asks for: a position
-        // needs no known duration, so this works before anything has parsed it.
+        // needs no known duration, so this works before anything has parsed it. The inspector
+        // asks for a width and lets libvlc derive the height; this fixture is square, so asking
+        // for 256x256 exactly is the same picture here.
         let request = unsafe {
             libvlc_media_thumbnail_request_by_pos(
                 sample.instance,
@@ -4086,6 +4088,11 @@ fn a_thumbnail_request_reports_a_picture_and_a_stride_that_matches_its_buffer() 
 }
 
 /// One picture from one request, retained for the caller, or null when there was none.
+///
+/// Both size parameters are `size`, which libvlc reads as an exact size and reaches by stretching
+/// -- faithful here only because the fixture is square. One of the two at `0` is the request that
+/// keeps a media's own proportions; `demo/tests/thumbnail.gd` is what measures that, on a video
+/// that is not square.
 ///
 /// Requests are made one at a time and waited for one at a time: with two outstanding, an
 /// arrival cannot be attributed to the request that caused it.

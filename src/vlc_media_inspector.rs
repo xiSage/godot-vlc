@@ -96,9 +96,10 @@ use crate::vlc_media::VlcMedia;
 use crate::vlc_picture::VlcPicture;
 use crate::vlc_thumbnail::VlcThumbnailRequest;
 
-/// The size asked libvlc for, in pixels. Only the request: the preview takes whatever width the
-/// inspector gives it, at the picture's proportions.
-const THUMBNAIL_SIZE: i32 = 256;
+/// The width asked libvlc for, in pixels. Only the request, and only a width: the height is left
+/// at `0` for libvlc to derive from the media's own aspect ratio, and the preview then takes
+/// whatever width the inspector gives it, at that same ratio.
+const THUMBNAIL_WIDTH: i32 = 256;
 
 /// Adds the media control to the inspector of every `VLCMedia`.
 #[derive(GodotClass)]
@@ -414,11 +415,15 @@ impl VlcMediaInspector {
                 .to_string(),
             );
         }
+        // A width, and no height: libvlc derives that one from the media's own aspect ratio. Both
+        // set would be an exact size reached by stretching, so a square request on a rectangular
+        // video would come back a distorted square -- and a preview of the media is the one thing
+        // this row is for. See the parameter notes on `thumbnail_request_by_time`.
         let request = media.bind().thumbnail_request_by_pos(
             0.5,
             VlcThumbnailRequest::SEEK_PRECISE as i32,
-            THUMBNAIL_SIZE,
-            THUMBNAIL_SIZE,
+            THUMBNAIL_WIDTH,
+            0,
             false,
             libvlc_picture_type_t_libvlc_picture_Png as i32,
             5000,

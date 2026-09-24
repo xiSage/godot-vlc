@@ -242,6 +242,12 @@ func _on_list_item_set(item: VLCMedia) -> void:
 # A thumbnail at the middle of the media, asked for by position: a fraction needs no known
 # duration, which is the one thing a panel cannot count on before a parse has run.
 #
+# The size is a width, with the height left at 0 for libvlc to derive from the media's own aspect
+# ratio. Both set would be an exact size, and libvlc reaches an exact size by stretching: a square
+# request on a rectangular video comes back a distorted square (measured with this demo's test.mp4,
+# which is 854x480). The rect below draws whatever arrives with KEEP_ASPECT_CENTERED, so it is the
+# request that has to keep the media's proportions, not only the drawing.
+#
 # Pressing twice ends with exactly one request in flight and one connection on the media: the
 # previous connection comes off and the previous request is let go first, because cancelling a
 # request makes libvlc answer it from inside the call, and that answer is not this press's.
@@ -253,7 +259,7 @@ func _on_thumbnail_request_pressed() -> void:
 		media.thumbnail_generated.disconnect(_on_thumbnail_generated)
 	thumbnail_request = null
 	var request := media.thumbnail_request_by_pos(
-		0.5, VLCThumbnailRequest.SEEK_PRECISE, 192, 192, false, VLCPicture.TYPE_PNG, 5000
+		0.5, VLCThumbnailRequest.SEEK_PRECISE, 192, 0, false, VLCPicture.TYPE_PNG, 5000
 	)
 	if request == null:
 		%ThumbnailInfo.text = \"thumbnail: libvlc refused the request\"
