@@ -15,12 +15,15 @@ extends SceneTree
 # an embedded cover and `test.mp4` has none, and after the fixture has been read, opening the MP4
 # must not show the fixture's cover.
 #
-# The fixture is a committed 13 KB FLAC rather than one built here, because what this test is about
-# only happens to a media the *loader* makes: libvlc's art cache is keyed on a media's URL, and
-# every media this extension loads through callbacks answers the constant `imem://`, so a media with
-# a cover and a media without one share one cache slot -- which is why the cover is left on the
-# media (`VLCMedia.editor_cover`) instead of read from that cache. `res://test.mp4` is the media the
-# demo already ships, and it is exactly the no-cover case. It was built once with:
+# The fixture is a committed 13 KB FLAC rather than one built here, because what the second half is
+# about is the shape a media the *loader* makes has. libvlc's art cache is keyed on a media's URL:
+# for the media of an exported project's PCK -- read through the callbacks, so all of them report the
+# constant `imem://` -- a media with a cover and a media without one share one cache slot, which is
+# why the cover is left on the media (`VLCMedia.editor_cover`) instead of read from that cache. A
+# media `load_from_file` hands libvlc as a path is keyed by its own path, so the sharing no longer
+# happens here; what this test still pins is that the cover the panel shows belongs to the media it
+# is showing, whichever of the two accesses that media took. `res://test.mp4` is the media the demo
+# already ships, and it is exactly the no-cover case. The fixture was built once with:
 #
 #   ffmpeg -f lavfi -i "sine=frequency=440:duration=0.3" -f lavfi -i "color=c=red:s=16x16:d=1" \
 #     -map 0:a -map 1:v -c:a flac -c:v png -disposition:v attached_pic \
@@ -81,9 +84,10 @@ func _init() -> void:
 		return
 
 	# Now a media with no cover at all, read *after* the fixture: the fixture's cover must not
-	# follow it here. The first open of the MP4 is what parses it -- and it is the parse that
-	# writes the shared `imem://` artwork slot -- so the second open is the one that used to
-	# arrive with the fixture's cover attached.
+	# follow it here. The first open of the MP4 is what parses it, and the second open is the one
+	# that used to arrive with the fixture's cover attached -- back when the cover was read out of
+	# libvlc's art cache, whose `imem://` slot the media of an exported project still share and
+	# which `VLCMedia.editor_cover` exists to keep out of this panel.
 	var plain: VLCMedia = ResourceLoader.load(PLAIN)
 	if plain == null:
 		_fail("the media %s did not load as a VLCMedia" % PLAIN)

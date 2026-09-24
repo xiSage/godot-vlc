@@ -63,14 +63,16 @@
 //!
 //! # Why the cover is not read out of libvlc's art cache
 //! It looks like the obvious source -- a parsed media's `ArtworkURL` names a file libvlc wrote --
-//! and it is wrong for exactly the media this panel is usually showing. That cache is keyed on a
-//! media's URL, and every media this extension loads through callbacks answers the constant
-//! `imem://` (see [method VLCMedia.get_mrl]), so a media with a cover and a media without one
-//! share one cache slot. Measured on two `res://` media: a 13 KB FLAC with an embedded 16x16 cover
-//! and the demo's `test.mp4`, which has none. After the FLAC was read, the MP4's own `ArtworkURL`
-//! named the FLAC's artwork file and the panel drew the FLAC's cover on the MP4 -- which is the
-//! defect that replaced the cache route. The art cache is still worth knowing about for other
-//! reasons; [method VLCMedia.get_meta] says what it is and is not.
+//! and it is wrong for the media this panel is usually showing. That cache is keyed on a media's
+//! URL, and every media the extension reads through its **callbacks** answers the constant
+//! `imem://` (see [method VLCMedia.get_mrl]), so a media with a cover and a media without one share
+//! one cache slot. Measured on the engine test's FLAC fixture and the demo's `test.mp4`: after the
+//! FLAC was read, the MP4's own `ArtworkURL` named the FLAC's artwork file and the panel drew the
+//! FLAC's cover on the MP4 -- which is the defect that replaced the cache route. Those are the
+//! media of an exported project's PCK, and the panel has to draw them too, so the route stays out;
+//! a media [method VLCMedia.load_from_file] hands libvlc as a path is keyed by that path instead.
+//! The art cache is still worth knowing about for other reasons; [method VLCMedia.get_meta] says
+//! what it is and is not.
 //!
 //! # Why the cover is not in the media's metadata either
 //! `set_meta` looks like the same idea with less machinery, and it is not: Godot writes a
@@ -267,6 +269,15 @@ impl VlcMediaInspector {
         let mut media = media.clone();
         let mrl = media.call("get_mrl", &[]).to::<GString>();
         let mut text = format!("MRL: {mrl}");
+        // libvlc falls back to the input item's *name* for the kinds a demuxer has not filled in yet:
+        // the constant "imem://" for an in-memory media, the file's own name for one it opens by
+        // path. Both are measured, and neither is metadata.
+        let name_in_mrl = mrl
+            .to_string()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
         let mut shown = 0;
 
         // The standard kinds first, because they are the ones a demuxer actually fills: a tagged
@@ -304,9 +315,9 @@ impl VlcMediaInspector {
                 .call("get_meta", &[(kind as u32).to_variant()])
                 .to::<GString>()
                 .to_string();
-            // libvlc falls back to the input item's name for Title, which for an in-memory media is
-            // "imem://" -- measured -- and that is noise, not metadata.
-            if value.is_empty() || value == mrl.to_string() {
+            // The name fallback again, now that the value is in hand: a Title that is the media's own
+            // name is not a title, and it is what a media without one reports.
+            if value.is_empty() || value == mrl.to_string() || value == name_in_mrl {
                 continue;
             }
             text.push('\n');
@@ -450,9 +461,11 @@ impl VlcMediaInspector {
     /// `parse_request` for a media libvlc has already read is refused (both measured; see
     /// [method VLCMedia.parse_request]). The media's `ArtworkURL` is not an answer either, and it is
     /// worth saying why, because it looks like one: that cache is keyed on the media's URL, and
-    /// every media this extension loads through callbacks answers the constant `imem://`, so a
+    /// every media this extension reads through its callbacks answers the constant `imem://`, so a
     /// media with a cover and a media without one share one slot -- measured on the engine test's
     /// FLAC fixture and the demo's `test.mp4`, where the MP4 was handed the FLAC's artwork file.
+    /// (A media `load_from_file` hands to libvlc as a path is keyed by that path and is not part of
+    /// this; the panel still cannot trust the URL, since it does not know which of the two it has.)
     fn show_cover_texture(&mut self, cover: &Gd<Texture2D>, from: &str) {
         if let Some(picture) = self.picture.as_mut() {
             picture.set_texture(cover);

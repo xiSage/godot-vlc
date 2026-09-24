@@ -2868,9 +2868,10 @@ fn selecting_without_an_input_changes_nothing() {
 ///
 /// None of the answers is the string the caller passed in: a path becomes a
 /// `file://` URI on the way in, a location is kept verbatim, and a media built on
-/// callbacks -- which is what this binding's `load_from_file` does -- always gets
-/// the same constant, `imem://`. That last one cannot be reached from here, since
-/// it takes the binding's own callbacks; `demo/tests/media_loader.gd` measures it.
+/// callbacks -- which is what this binding's `load_from_file` falls back to for a
+/// file the operating system cannot open -- always gets the same constant,
+/// `imem://`. That last one cannot be reached from here, since it takes the
+/// binding's own callbacks; `demo/tests/media_loader.gd` measures it.
 #[test]
 fn a_media_reports_the_mrl_it_was_built_from_and_the_type_libvlc_guesses() {
     let sample = Sample::new();

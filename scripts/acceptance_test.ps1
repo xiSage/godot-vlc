@@ -53,8 +53,10 @@ percent-encoded `file://` URI), for a location (verbatim) and for a duplicate (t
 same as its source), what `libvlc_media_get_type` guesses and how a parse rewrites
 that guess -- a local `.m3u` is a file until it is parsed and a playlist after -- and
 that an option added to a duplicate shortens only the duplicate. The one answer this
-cannot reach is the in-memory media the binding's own `load_from_file` builds, which
-reports the constant `imem://`; that one is measured in `demo/tests/media_loader.gd`.
+cannot reach is the media the binding's own `load_from_file` reads through its
+callbacks -- what it falls back to for a file the operating system cannot see, the
+media of an exported project's PCK -- which reports the constant `imem://`; that one
+is measured in `demo/tests/media_loader.gd`.
 
 The runtime's self-report is here too: that `libvlc_get_version` and
 `libvlc_get_changeset` name the build this addon pins (the changeset is a `git
@@ -126,8 +128,9 @@ Two more facts came out of the same run and are documented where they bite. The 
 an empty attachment list -- so connecting before the parse is the only way to receive it, and a
 second `parse_request` for the same media is refused, so there is no way back. And a thumbnail is
 a decoded *video* frame: an audio-only file has none, while the same file's cover comes through
-the attachment path. The `imem://` media the demo plays is thumbnailed anyway, which is what lets
-an editor inspector show a picture for a `res://` media.
+the attachment path. A media the extension reads through its callbacks is thumbnailed anyway,
+which is what lets an editor inspector show a picture for the `res://` media of an exported
+project.
 
 The binding's own half -- a `VLCPicture` reaching a script, `to_image()`, a request whose `Drop`
 is what destroys libvlc's request -- is `demo/tests/thumbnail.gd`.

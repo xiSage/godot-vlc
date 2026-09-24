@@ -32,7 +32,7 @@ use crate::{
     vlc_track_list::VlcTrackList,
 };
 use godot::{
-    classes::{Texture2D, WeakRef, file_access::ModeFlags},
+    classes::{ProjectSettings, Texture2D, WeakRef, file_access::ModeFlags},
     global::weakref,
     prelude::*,
 };
@@ -41,9 +41,12 @@ use godot::{
 /// from.
 ///
 /// # Where a media comes from
-/// - [method load_from_file] reads a file through **Godot's own filesystem**, so a
-///   media inside `res://` works in an exported project where there is no path
-///   libvlc could open. The input is an in-memory one (`imem://`), which is why
+/// - [method load_from_file] gives a media whichever access can read the file: the
+///   path goes to libvlc, which reads it with its own access module, when the
+///   operating system can open what that path names -- that is the case that seeks
+///   cheaply. What the operating system cannot open, which is a media inside the
+///   `res://` of an exported project, is read through **Godot's own filesystem**
+///   instead, and that input is an in-memory one (`imem://`) -- which is why
 ///   per-media options that belong to an access module do nothing on it; see
 ///   [method add_option].
 /// - [method load_from_mrl] hands a MRL to libvlc unchanged.
@@ -52,9 +55,10 @@ use godot::{
 ///
 /// # Asking a media what it is
 /// There is no single answer, and the three that exist disagree on purpose:
-/// - [method get_mrl] is libvlc's answer. Every media built by
-///   [method load_from_file] answers the literal `"imem://"`, whatever file is
-///   behind it, so it identifies the *kind* of input and not the file.
+/// - [method get_mrl] is libvlc's answer: a `file://` URI for a path libvlc was
+///   handed, the literal `"imem://"` for a media read through Godot's filesystem,
+///   whatever file is behind it -- so it identifies the *kind* of input, not the
+///   file.
 /// - [member Resource.resource_path] is the engine's answer, and it is set for a
 ///   media that arrived through the resource loader (a scene's `ext_resource`, or
 ///   `load("res://movie.mp4")`) -- it is the only one of these that names the file
@@ -425,32 +429,78 @@ impl VlcMedia {
 
     /// Create a new `VLCMedia` from a file path.
     ///
-    /// The file is read through **Godot's own filesystem**, not handed to libvlc as
-    /// a path: media inside `res://` live in the PCK, where there is no path libvlc
-    /// could open. What libvlc gets is an in-memory input, so this media answers
-    /// `"imem://"` to [method get_mrl], [constant MEDIA_TYPE_UNKNOWN] to
-    /// [method get_type], and nothing to [member Resource.resource_path] unless it
-    /// arrived through the resource loader -- see the class documentation for which
-    /// of the three names this file.
+    /// The path is globalized with [method ProjectSettings.globalize_path], and what
+    /// happens next depends on whether the operating system can open the file that
+    /// names:
+    /// - **A file the operating system can see** is handed to libvlc as a path, and
+    ///   libvlc reads it with its own access module.
+    /// - **Anything else** -- media inside the PCK of an exported project, which is
+    ///   what `res://` is for, a path that is not there at all -- is read through
+    ///   **Godot's own filesystem** instead. What libvlc gets then is an in-memory
+    ///   input, so that media answers `"imem://"` to [method get_mrl],
+    ///   [constant MEDIA_TYPE_UNKNOWN] to [method get_type], and nothing to
+    ///   [member Resource.resource_path] unless it arrived through the resource
+    ///   loader -- see the class documentation for which of the three names this
+    ///   file.
+    ///
+    /// The first case is not a shortcut but a fix, and it was measured on a 26-minute
+    /// 1080p HEVC file: a media built on callbacks seeks **precisely** in time
+    /// proportional to where it seeks to -- 5.0 s to 10% of the file, 22.7 s to 50%,
+    /// 39.7 s to 90% -- because libvlc reads the stream forward from the start instead
+    /// of using the file's index, while the same file through libvlc's own access
+    /// seeks precisely in about 0.12 s at any position. In a player that is what
+    /// [method set_time] with `fast = false` costs; in the editor's inspector it is a
+    /// thumbnail request that runs past its deadline and comes back as no picture.
     ///
     /// # Parameters
     /// - [param path] the path to the media file.
     #[func]
     pub fn load_from_file(path: GString) -> Gd<Self> {
+        // Which access this media gets is the operating system's answer, not ours:
+        // libvlc is handed a path exactly when it could open that path itself, which
+        // is the case where its own access (with the file's index) seeks in
+        // milliseconds. Only what the operating system cannot see -- the PCK of an
+        // exported project -- needs the callbacks below, whose input libvlc reads
+        // forward from the start.
+        let native = ProjectSettings::singleton().globalize_path(path.to_string().as_str());
+        let native_is_a_file =
+            std::fs::metadata(native.to_string()).is_ok_and(|metadata| metadata.is_file());
+        // libvlc takes a path here and, on Windows, it means it: `vlc_path2uri` turns
+        // the path into a `file://` URI, refuses a drive letter that a backslash does
+        // not follow ("drive letter-relative path not implemented") and then splits
+        // what is left on backslashes. Godot globalizes to forward slashes on every
+        // platform, so the separators are translated before the path is handed over.
+        #[cfg(windows)]
+        let native = GString::from(native.to_string().replace('/', "\\").as_str());
         let mut path = Box::new(path);
         // The reason for a failure is not in the return value -- libvlc answers
         // with a null pointer and keeps the explanation on the side -- so the side
         // is cleared first and read only if this call turns out to be the one that
         // failed. See `clear_last_error`.
         clear_last_error();
-        let media_ptr = unsafe {
-            libvlc_media_new_callbacks(
-                Some(media_open_callback),
-                Some(media_read_callback),
-                Some(media_seek_callback),
-                Some(media_close_cb),
-                path.as_mut() as *mut _ as *mut c_void,
-            )
+        let media_from_path = if native_is_a_file {
+            let native = cstring_from_gstring(native);
+            unsafe { libvlc_media_new_path(native.as_ptr()) }
+        } else {
+            std::ptr::null_mut()
+        };
+        let media_ptr = if media_from_path.is_null() {
+            // A path libvlc will not take is not a media that cannot be read: the
+            // callbacks below open it through Godot's filesystem instead, at the
+            // price of the forward-reading seek measured in the method's
+            // documentation.
+            clear_last_error();
+            unsafe {
+                libvlc_media_new_callbacks(
+                    Some(media_open_callback),
+                    Some(media_read_callback),
+                    Some(media_seek_callback),
+                    Some(media_close_cb),
+                    path.as_mut() as *mut _ as *mut c_void,
+                )
+            }
+        } else {
+            media_from_path
         };
         assert!(
             !media_ptr.is_null(),
@@ -544,16 +594,15 @@ impl VlcMedia {
     /// - It is libvlc's own string, copied before the buffer libvlc allocated for
     ///   it is freed, so the caller owns nothing and can read it as an ordinary
     ///   `String`.
-    /// - **Every media built by [method load_from_file] answers `"imem://"`**, the
-    ///   same constant for every file, because that is the access it was built on.
-    ///   It is not an identifier: use [member Resource.resource_path] for a media
-    ///   that came through the resource loader, or keep the path the script passed
-    ///   in. See the class documentation.
-    /// - A media built from a **path** answers a `file://` URI, and libvlc
-    ///   percent-encodes it -- `test/media/h264_64x64_1s.mp4` becomes
-    ///   `test%2Fmedia%2Fh264_64x64_1s.mp4` in the path part -- so it does not
-    ///   compare equal to the path that was passed in. A media built from a MRL
-    ///   answers that MRL verbatim.
+    /// - A media built by [method load_from_file] answers a `file://` URI when
+    ///   libvlc could open the path itself, which names the file -- percent-encoded,
+    ///   so it does not compare equal to the path that was passed in. **When libvlc
+    ///   could not**, the media is read through Godot's filesystem instead and
+    ///   answers the constant `"imem://"`, the same string for every file, because
+    ///   that is the access it was built on; it is not an identifier. Use
+    ///   [member Resource.resource_path] for a media that came through the resource
+    ///   loader, or keep the path the script passed in. See the class documentation.
+    /// - A media built from a MRL answers that MRL verbatim.
     /// - It does not change: parsing or playing a media does not rewrite it. For a
     ///   local `.m3u` it stays the path it was given, even once
     ///   [method get_type] has started answering [constant MEDIA_TYPE_PLAYLIST].
@@ -629,7 +678,9 @@ impl VlcMedia {
     ///   would mean parsing it again.
     /// - [method get_mrl] on the copy answers what it answers on the original,
     ///   `"imem://"` included: the copy is as anonymous as its source, and
-    ///   [member Resource.resource_path] is empty on it.
+    ///   [member Resource.resource_path] is empty on it. A copy of a media that
+    ///   libvlc opens by path keeps that path, and so keeps the cheap seeking that
+    ///   comes with it.
     /// - The copy is a new media, so [method VLCMediaPlayer.set_media] can be
     ///   pointed at it without disturbing a player using the original.
     #[func]
@@ -724,7 +775,7 @@ impl VlcMedia {
     /// # What the options are
     /// The names are VLC's own (`vlc --longhelp` lists them), and a leading `:` is optional. Nothing here validates them: an unknown name, a value that does not parse and a value outside the range its configuration option declares are all discarded without a word, at any log level -- `":start-time=abc"` is applied as `0`, and a misspelled name is never reported. A per-media value also bypasses the range the configuration declares rather than being clamped to it.
     ///
-    /// An option that names a module only does something where that module runs. On a media from [method load_from_file], whose input is read through an in-memory access, `:http-referrer=`, `:http-user-agent=` and `:network-caching=` have nothing to affect, while input-level options such as `:start-time=`, `:stop-time=` and `:sub-file=` do. Two names are traps rather than options: `:input-repeat=` has no reader for a media player at all -- looping is [method VLCMediaPlayer.set_abloop_time] -- and `imem-*` names belong to the in-memory access behind [method load_from_file], where setting one conflicts with the callbacks that media was built from.
+    /// An option that names a module only does something where that module runs. On a media from [method load_from_file] that libvlc opens itself, what runs is its file access; on one read through the callbacks, because the operating system cannot open the file, what runs is an in-memory access instead -- and there `:http-referrer=`, `:http-user-agent=` and `:network-caching=` have nothing to affect, while input-level options such as `:start-time=`, `:stop-time=` and `:sub-file=` do. Two names are traps rather than options: `:input-repeat=` has no reader for a media player at all -- looping is [method VLCMediaPlayer.set_abloop_time] -- and `imem-*` names belong to the in-memory access that still reads the file through Godot's filesystem, where setting one conflicts with the callbacks that media was built from.
     ///
     /// # Parameters
     /// - [param option] an option, in `"name=value"` form.
@@ -868,15 +919,19 @@ impl VlcMedia {
     /// # Note
     /// - **`META_ARTWORK_URL` is not this media's artwork when this media has no artwork of its
     ///   own**, and it is worth knowing before using it as a picture. libvlc's art cache is keyed
-    ///   on a media's URL, and every media [method load_from_file] makes answers the constant
-    ///   `imem://` (see [method get_mrl]) -- so all of them share one cache slot. Measured: a
-    ///   `res://` FLAC with an embedded cover, then a `res://` MP4 with none, in one process; the
-    ///   MP4's `META_ARTWORK_URL` named the **FLAC's** artwork file, because the FLAC's parse had
-    ///   put its cover in the slot they both look in. The file it names is real and loadable
+    ///   on a media's URL, and every media read through the **callbacks** -- what the operating
+    ///   system cannot open, which is a media inside the `res://` of an exported project -- answers
+    ///   the constant `imem://` (see [method get_mrl]), so all of them share one cache slot.
+    ///   Measured: the demo's 13 KB `test_cover.flac`, which has an embedded cover, then its
+    ///   `test.mp4`, which has none, both loaded that way in one process; the MP4's
+    ///   `META_ARTWORK_URL` named the **FLAC's** artwork file, because the FLAC's parse had put its
+    ///   cover in the slot they both look in. The file it names is real and loadable
     ///   (`file:///` under the VLC profile's `art/artblob/<md5 of the artwork bytes>/`), which is
-    ///   exactly what makes it dangerous: only the URL is wrong. A media built by
-    ///   [method load_from_mrl] answers its own URL, so it is keyed by itself -- but "the media's
-    ///   URL" is the only thing that distinguishes the two cases, so read that first.
+    ///   exactly what makes it dangerous: only the URL is wrong. A media libvlc opens by path
+    ///   answers its own URL, so it is keyed by itself -- the same two media, in the same order,
+    ///   with [method load_from_file] now handing libvlc the path: the MP4's artwork URL stays
+    ///   empty. "The media's URL" is the only thing that distinguishes the two cases, so read it
+    ///   first.
     #[func]
     fn get_meta(&self, meta: u32) -> GString {
         let value = unsafe { libvlc_media_get_meta(self.media_ptr, meta as libvlc_meta_t) };
