@@ -80,6 +80,8 @@ func _init() -> void:
 	# Position 0.0, not the middle: this fixture is a fifth of a second long and its middle
 	# decodes to nothing. The acceptance asks a real video file for its middle, which is what
 	# the editor's inspector wants.
+	# Both numbers the same, which is the exact-size reading of the two parameters; the second
+	# request below makes the same one with a derived height, which is what the panels ask for.
 		0.0, VLCThumbnailRequest.SEEK_PRECISE, 64, 64, false, VLCPicture.TYPE_PNG, 5000
 	)
 	if request == null:
@@ -117,8 +119,67 @@ func _init() -> void:
 		% [picture.get_width(), picture.get_height(), picture.get_buffer().size()]
 	)
 
-	# The request is still in hand, and dropping it is what destroys libvlc's request -- which
-	# the binding documents as the only thing a caller must not forget.
+	# The same request with the height left at 0 instead. libvlc then derives that number from the
+	# media's own aspect ratio, which is the reading the panels ask for: both numbers is an exact
+	# size, and libvlc reaches an exact size by stretching, so the 64x64 above is this 854x480
+	# frame squeezed into a square. Nothing about that is visible in the size alone -- which is
+	# why this asks for both readings.
+	#
+	# A second media object, rather than a second request on the first: the first request is let
+	# go here to free the instance's thumbnailer, and a cancelled request is answered from inside
+	# the drop -- an answer that must not be readable as this question's.
+	request = null
+	var second := VLCMedia.load_from_file("res://test.mp4")
+	if second == null:
+		_fail("the demo media could not be loaded a second time")
+		return
+	var derived_reports: Array = []
+	second.thumbnail_generated.connect(
+		func(picture: VLCPicture) -> void: derived_reports.append(picture)
+	)
+	var derived_request := second.thumbnail_request_by_pos(
+		0.0, VLCThumbnailRequest.SEEK_PRECISE, 64, 0, false, VLCPicture.TYPE_PNG, 5000
+	)
+	if derived_request == null:
+		_fail("libvlc refused the request with a derived height")
+		return
+	deadline = Time.get_ticks_msec() + WAIT_TIMEOUT_MS
+	while Time.get_ticks_msec() < deadline and derived_reports.is_empty():
+		await process_frame
+	if derived_reports.is_empty():
+		_fail("the request with a derived height was never answered within %dms" % WAIT_TIMEOUT_MS)
+		return
+	var derived: VLCPicture = derived_reports[0]
+	if derived == null:
+		_fail("the request with a derived height was answered with no picture")
+		return
+	var derived_image: Image = derived.to_image()
+	if derived_image == null:
+		_fail("the derived picture could not be turned into an image")
+		return
+	if derived_image.get_width() != 64:
+		_fail(
+			"the derived picture is %d wide, not the 64 that was asked for"
+			% derived_image.get_width()
+		)
+		return
+	if derived_image.get_height() == derived_image.get_width():
+		_fail("a 64-wide request with no height came back square, so no ratio was derived")
+		return
+	var ratio := float(derived_image.get_width()) / float(derived_image.get_height())
+	if absf(ratio - 854.0 / 480.0) > 0.1:
+		_fail(
+			"the derived picture is %dx%d, which is not the 854x480 shape of the media"
+			% [derived_image.get_width(), derived_image.get_height()]
+		)
+		return
+	print(
+		"thumbnail: 64 wide with no height became %dx%d, at the media's own 854x480 shape"
+		% [derived_image.get_width(), derived_image.get_height()]
+	)
+
+	# The second request is still in hand, and dropping it is what destroys libvlc's request --
+	# which the binding documents as the only thing a caller must not forget.
 	print("thumbnail OK: a cover and a requested thumbnail both reached a script as images")
 	quit(0)
 
