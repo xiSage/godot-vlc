@@ -153,8 +153,9 @@ Common failures, and what they mean:
 - The Android runtime is monolithic, so a module cannot be added or removed
   without rebuilding it. That is also why the build has to intervene on
   `libvlcjni`'s module blacklist: the vmem output this extension renders through
-  needs the dummy *vout window* module, and the access module behind `imem://` is
-  what lets media inside `res://` be played at all.
+  needs the dummy *vout window* module, and the `imem` access module the
+  extension's file callbacks feed is what lets the media inside `res://` -- an
+  exported project's PCK -- be played at all.
 - Android video goes through the software `vmem` output only. LibVLC 4 offers no
   Android engine for the output-callbacks API, so there is no zero-copy path to
   compare with the Windows D3D11 one; frames are copied to memory and uploaded.
