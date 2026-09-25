@@ -189,6 +189,14 @@ func _on_error() -> void:
 	%Error.text = \"error: yes (%d)\" % error_count
 
 
+func _on_frame_cleared() -> void:
+	# A different media was assigned and the player dropped the picture: from here until the
+	# new input has one there is nothing to show, and without that the old video would stay
+	# on screen for the second libvlc needs to build the new input. `playing` is the event
+	# that says the new input is up, and it puts the media's own line back.
+	%Media.text = \"media: (picture cleared, loading)\"
+
+
 # A track's name is a title, and empty for a track that came from the media
 # rather than from the player, so the codec and the shape are what tell two
 # tracks apart. One helper, so that the three lists read the same way.
@@ -799,6 +807,7 @@ use_native_dialog = true
 
 [connection signal="buffering" from="." to="." method="_on_buffering"]
 [connection signal="error" from="." to="." method="_on_error"]
+[connection signal="frame_cleared" from="." to="." method="_on_frame_cleared"]
 [connection signal="playing" from="." to="." method="_on_playing"]
 [connection signal="seekable_changed" from="." to="." method="_on_seekable_changed"]
 [connection signal="track_added" from="." to="." method="_on_track_changed"]
