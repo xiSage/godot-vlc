@@ -15,6 +15,12 @@ Subtitles are resources too. A `.srt`, `.ass`, `.ssa`, `.vtt`, `.sub`, `.smi` or
 
 Chapters and titles are read back by name. `VLCMediaPlayer.get_full_chapter_descriptions()` gives one dictionary per chapter -- `name`, `time_offset`, `duration` -- and `get_full_title_descriptions()` one per title -- `name`, `duration`, `flags`; both lists belong to the input rather than to the media, so both are empty until something is playing, and `chapter_changed`, `title_list_changed` and `title_selection_changed` announce what moves in them. `get_chapter()`, `set_chapter()`, `next_chapter()` and `previous_chapter()` are the libvlc names for moving.
 
+Assigning a different media to a `VLCMediaPlayer` drops what it was showing first, so nothing of
+the old video is left on screen while libvlc builds the new input: the control goes blank,
+`get_frame()` answers `null`, and `frame_cleared` announces it. The new media's own video output
+fills it in again. Assigning the media the player already has, or `null`, is not a change --
+libvlc keeps the media it has either way, and the picture stays with it.
+
 There are some other features, such as statistics, that can be accessed through scripts. For more information, see the in-editor documentation.
 
 ## Screenshot
