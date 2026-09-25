@@ -52,6 +52,7 @@ use godot::{
         AudioServer, AudioStream, AudioStreamPlayer, Control, IControl, Image, ImageTexture,
         Texture2D, TextureRect,
         control::{LayoutPreset, LayoutPresetMode},
+        image,
         native::AudioFrame,
         node::InternalMode,
         notify::ControlNotification,
@@ -247,6 +248,9 @@ unsafe fn dictionaries<T: Description>(entries: *mut *mut T, count: c_int) -> Ar
 #[class(base=Control, rename=VLCMediaPlayer)]
 struct VlcMediaPlayer {
     base: Base<Control>,
+    /// The media this player plays. Assigning one clears whatever it was
+    /// showing first: see [signal frame_cleared]. Assigning `null` is not that
+    /// -- libvlc keeps the media it already has, and the picture stays up.
     #[export]
     #[var(set=set_media)]
     media: Option<Gd<VlcMedia>>,
@@ -298,6 +302,16 @@ struct VlcMediaPlayer {
     /// forever when the GPU output is the one running -- that path keeps its frames
     /// in a texture this binding does not read back.
     frame: Option<Gd<Image>>,
+    /// True between clearing the picture and the first frame of the video
+    /// output that follows it.
+    ///
+    /// Changing the media sends the frames of the output that is going away
+    /// down the same channel as the new output's, and the last frame libvlc
+    /// produced usually sits in that channel when the change happens. Those
+    /// frames carry no mark of their own, so this window is what tells them
+    /// apart: while it is open, a frame that is not the first one of a video
+    /// output is dropped instead of being shown.
+    awaiting_output: bool,
     video_tx: Box<mpsc::Sender<(bool, Gd<Image>)>>, // (is_resized, image)
     video_rx: mpsc::Receiver<(bool, Gd<Image>)>,
     audio_prod: Box<(HeapProd<AudioFrame>, Gd<AudioStreamPlayer>)>,
@@ -313,6 +327,17 @@ struct VlcMediaPlayer {
     /// disconnecting that Callable on Drop releases the ref.
     #[cfg(all(feature = "gpu", windows))]
     gpu_importer: Option<std::sync::Arc<gpu_d3d11::importer::ImporterTask>>,
+    /// True while the GPU path shows nothing because a media change cleared the
+    /// picture: `texture_rect` is pointed back at the software texture, which
+    /// is the same blank [member texture] the software path clears with.
+    #[cfg(all(feature = "gpu", windows))]
+    gpu_picture_hidden: bool,
+    /// The destination texture the GPU path was showing when the picture was
+    /// cleared. The picture goes back up once the importer builds another one:
+    /// a texture this player did not have before belongs to the video output of
+    /// the media that replaced the old one.
+    #[cfg(all(feature = "gpu", windows))]
+    gpu_hidden_rid: Option<Rid>,
     #[cfg(all(feature = "gpu", windows))]
     gpu_frame_callable: Option<Callable>,
 }
@@ -353,6 +378,7 @@ impl IControl for VlcMediaPlayer {
             texture,
             texture_rect: texture_rect.clone(),
             frame: None,
+            awaiting_output: false,
             video_tx,
             video_rx,
             audio_prod,
@@ -364,27 +390,44 @@ impl IControl for VlcMediaPlayer {
             #[cfg(all(feature = "gpu", windows))]
             gpu_importer: None,
             #[cfg(all(feature = "gpu", windows))]
+            gpu_picture_hidden: false,
+            #[cfg(all(feature = "gpu", windows))]
+            gpu_hidden_rid: None,
+            #[cfg(all(feature = "gpu", windows))]
             gpu_frame_callable: None,
         }
     }
 
     fn on_notification(&mut self, what: ControlNotification) {
         if what == ControlNotification::INTERNAL_PROCESS {
+            // A picture a media change cleared goes back up on the frame that
+            // finds a video output the importer did not have before.
+            #[cfg(all(feature = "gpu", windows))]
+            self.restore_gpu_picture();
             if let Ok(data) = self.video_rx.try_recv()
                 && data.1.is_instance_valid()
                 && !data.1.is_empty()
                 && data.1.get_data_size() > 0
             {
+                // The first frame of a video output is the one that ends the
+                // window a media change opened (`awaiting_output`); anything
+                // else that arrives while it is open belongs to the output that
+                // just went away.
                 if data.0 {
-                    self.texture.set_image(&data.1);
-                } else {
-                    self.texture.update(&data.1);
+                    self.awaiting_output = false;
                 }
-                // Kept so that a caller can look at the frame itself: the texture
-                // cannot be read back on every rendering driver, and the software
-                // output path already has the image in hand here.
-                self.frame = Some(data.1.clone());
-                self.signals().video_frame().emit();
+                if !self.awaiting_output {
+                    if data.0 {
+                        self.texture.set_image(&data.1);
+                    } else {
+                        self.texture.update(&data.1);
+                    }
+                    // Kept so that a caller can look at the frame itself: the texture
+                    // cannot be read back on every rendering driver, and the software
+                    // output path already has the image in hand here.
+                    self.frame = Some(data.1.clone());
+                    self.signals().video_frame().emit();
+                }
             }
             // Everything libvlc has reported since the last frame goes out here,
             // on the main thread, in the order it arrived.
@@ -756,8 +799,48 @@ impl VlcMediaPlayer {
     ///   answers `false` before a media opens and after it stops.
     #[signal]
     fn pausable_changed(pausable: bool);
+    /// Emitted when the software output path has turned a decoded frame into
+    /// this player's texture.
+    ///
+    /// # Note
+    /// - It does not arrive when the GPU output is the one running
+    ///   ([method is_gpu_output_active]): that path copies frames into a
+    ///   render-device texture from the rendering thread and reports nothing
+    ///   back here, so a caller that watches this signal sees nothing at all.
+    ///   [signal frame_cleared] is emitted by both paths.
+    /// - One frame of this control is one frame into the texture: frames libvlc
+    ///   produced faster than the control updates are taken from the queue on
+    ///   the frames that follow, so the picture lags rather than skipping.
     #[signal]
     fn video_frame();
+    /// Emitted when this player drops the picture it was showing because a
+    /// different media was assigned to [member media].
+    ///
+    /// # What it is for
+    /// Without it, changing the media leaves the old video on screen until the
+    /// new one produces its first frame -- the old output's last frame is
+    /// already on its way when the change happens. The picture is dropped here
+    /// instead, and the frames that were on their way are held back: the
+    /// texture shows nothing from this signal until the new media's own video
+    /// output produces a frame.
+    ///
+    /// # Note
+    /// - Only a change is emitted: assigning a media before anything has been
+    ///   shown, assigning the media this player already has, and assigning
+    ///   `null` (which leaves the picture up, see [member media]) are all
+    ///   silent.
+    /// - What ends the blank is a frame of the new video output, not this
+    ///   signal: a media with no video track, or one that fails to open, leaves
+    ///   this player showing nothing.
+    /// - The texture is blanked in place, so a caller holding the object
+    ///   [method get_texture] handed out sees the picture go away as well. It
+    ///   is 1 by 1 and transparent while the player is blank; the size of the
+    ///   video is back once a frame arrives.
+    /// - Nothing is emitted for the media a media list player moves to on its
+    ///   own: that player changes its item without this property being
+    ///   assigned.
+    #[signal]
+    fn frame_cleared();
     /// Emitted when a track joins the input: at the moment a media opens and its
     /// tracks are created, and again when something adds one -- a subtitle
     /// attached while playing, a stream that reveals another track.
@@ -917,12 +1000,97 @@ impl VlcMediaPlayer {
 
     // ── media / texture / GPU ──
 
+    /// Assigns the media to play, clearing the picture this player was showing
+    /// first when it is a different media (see [signal frame_cleared]).
     #[func]
     pub fn set_media(&mut self, media: Option<Gd<VlcMedia>>) {
+        // Assigning a media is the moment a caller can ask this player to let go
+        // of what it is showing: the frames arriving between here and the new
+        // media's first one belong to what is being replaced. Assigning `null`
+        // is not that -- libvlc is handed nothing to change to, so it keeps
+        // playing what it has and the picture stays up.
+        let replaces = match (&self.media, &media) {
+            (Some(current), Some(next)) => current.instance_id() != next.instance_id(),
+            (None, Some(_)) => true,
+            _ => false,
+        };
         self.media = media;
+        if replaces {
+            self.clear_frame();
+        }
         self.update_media();
     }
 
+    /// Drops the picture this player is showing and waits for the video output
+    /// of the media that replaces it.
+    fn clear_frame(&mut self) {
+        let had_picture = self.frame.is_some() || self.gpu_was_showing();
+        self.frame = None;
+        self.awaiting_output = true;
+        // Blanked in place rather than swapped for another texture: `get_texture`
+        // hands this object out, and a caller that kept it has to see the picture
+        // go away as well. 1 by 1 and transparent, so nothing is drawn from it.
+        if let Some(mut blank) = Image::create_empty(1, 1, false, image::Format::RGBA8) {
+            blank.fill(Color::TRANSPARENT_BLACK);
+            self.texture.set_image(&blank);
+        }
+        #[cfg(all(feature = "gpu", windows))]
+        if let Some(importer) = self.gpu_importer.clone() {
+            // The render-device texture is left alone: it is off the screen while
+            // this is set, and the importer keeps writing to it every frame
+            // regardless. The software texture stands in for it until the
+            // importer builds the texture of the output that follows.
+            self.texture_rect
+                .set_texture(&self.texture.clone().upcast::<Texture2D>());
+            self.gpu_picture_hidden = true;
+            self.gpu_hidden_rid = importer.current_dst_rid();
+        }
+        if had_picture {
+            self.signals().frame_cleared().emit();
+        }
+    }
+
+    /// Whether the GPU output path has put a frame on screen. Always `false` in
+    /// builds without it.
+    #[cfg(all(feature = "gpu", windows))]
+    fn gpu_was_showing(&self) -> bool {
+        self.gpu_importer
+            .as_ref()
+            .is_some_and(|importer| importer.frames_copied.load(Ordering::SeqCst) > 0)
+    }
+
+    #[cfg(not(all(feature = "gpu", windows)))]
+    fn gpu_was_showing(&self) -> bool {
+        false
+    }
+
+    /// Puts the GPU picture back up once the importer has a destination texture
+    /// that was not there when the picture was cleared.
+    #[cfg(all(feature = "gpu", windows))]
+    fn restore_gpu_picture(&mut self) {
+        if !self.gpu_picture_hidden {
+            return;
+        }
+        let Some(importer) = self.gpu_importer.clone() else {
+            return;
+        };
+        if importer.current_dst_rid() == self.gpu_hidden_rid {
+            return;
+        }
+        let drd = importer
+            .texture_2drd
+            .lock()
+            .expect("texture_2drd poisoned")
+            .clone();
+        self.texture_rect.set_texture(&drd.upcast::<Texture2D>());
+        self.gpu_picture_hidden = false;
+    }
+
+    /// This player's texture, blank until playback puts a frame in it.\
+    /// It is the object the control draws with, and it is the same object for the whole life of this player: a media change blanks it in place rather than swapping a new one in, so a caller that kept what this handed out sees the picture go away as well (see [signal frame_cleared]). While it is blank it is 1 by 1 and transparent, whatever the size of the video was.
+    ///
+    /// # Note
+    /// - On Windows with [member force_hardware] this is not the texture on screen: the GPU output has a render-device texture of its own, and this one is what stands in for it while the picture is blank.
     #[func]
     fn get_texture(&self) -> Gd<Texture2D> {
         self.texture.clone().upcast()
@@ -934,7 +1102,7 @@ impl VlcMediaPlayer {
     /// # What it is for, and what it is not
     /// It is the frame **before** Godot draws it: the same pixels the texture received, at the size the decoder produced. Subtitles are part of those pixels -- LibVLC's video output composites them -- so two frames taken at the same point of a media differ by whether a subtitle was shown, which is what makes this usable as evidence that a subtitle was rendered rather than merely attached.
     ///
-    /// This is not a screenshot facility and not a snapshot API: it does not capture on demand, does not decode anything, and does not look at the GPU path. On Windows with [member force_hardware] the GPU output is driving, its frames live in a texture this binding never reads back, and this returns `null` -- as it does before the first frame of any playback.
+    /// This is not a screenshot facility and not a snapshot API: it does not capture on demand, does not decode anything, and does not look at the GPU path. On Windows with [member force_hardware] the GPU output is driving, its frames live in a texture this binding never reads back, and this returns `null` -- as it does before the first frame of any playback, and as it does again from [signal frame_cleared] until the media that replaced the old one produces a frame.
     ///
     /// # Returns
     /// the last software-path frame, or `null` when the GPU output is running or no
@@ -981,6 +1149,26 @@ impl VlcMediaPlayer {
     #[func]
     fn _debug_gpu_active(&self) -> bool {
         self.gpu_backend.is_some()
+    }
+
+    /// True while the control is drawing something other than the GPU texture: a media
+    /// change points it back at the blank software texture, and the new video output points
+    /// it at a texture of its own again. False when the GPU backend isn't active.
+    #[cfg(all(feature = "gpu", windows))]
+    #[func]
+    fn _debug_gpu_picture_hidden(&self) -> bool {
+        let Some(importer) = self.gpu_importer.as_ref() else {
+            return false;
+        };
+        let drd = importer
+            .texture_2drd
+            .lock()
+            .expect("texture_2drd poisoned")
+            .clone();
+        match self.texture_rect.get_texture() {
+            Some(shown) => shown.instance_id() != drd.instance_id(),
+            None => true,
+        }
     }
 
     /// Number of per-frame `copy_and_sync` invocations completed by the
