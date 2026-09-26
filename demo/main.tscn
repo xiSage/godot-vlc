@@ -13,6 +13,14 @@ var error_count = 0
 # request kept only in a local is destroyed by the time its answer arrives -- and libvlc answers
 # that with a null picture.
 var thumbnail_request: VLCThumbnailRequest = null
+# The cover art the media on the player carries: libvlc reports a cover once, from the parse that
+# finds it, so a later press has no event left to hear it from -- and this is what it shows
+# instead. Reset when the media changes, because a cover is that media's and not the panel's.
+var cover: Texture2D = null
+# The media whose cover this panel is listening for. The listener cannot wait for a press:
+# playing a media counts as parsing it, and libvlc refuses to parse one it has read, so a cover is
+# heard only by whoever was listening when the media arrived.
+var watched_media: VLCMedia = null
 var loop_a = -1
 var video_tracks: Array[VLCTrack]
 var audio_tracks: Array[VLCTrack]
@@ -55,6 +63,7 @@ func _process(_delta: float) -> void:
 	_update_loop_label()
 	if not dragging:
 		%HSlider.value = pos
+	_watch_media()
 
 
 func _on_seekable_changed(seekable: bool) -> void:
@@ -162,7 +171,7 @@ func _on_input_mrl_dialog_confirmed() -> void:
 	if loaded != null:
 		for option in %Options.text.split(\",\", false):
 			loaded.add_option(option.strip_edges())
-	media = loaded
+	_show_media(loaded)
 	%InputMRLDialog.hide()
 	pass
 
@@ -247,7 +256,55 @@ func _on_list_item_set(item: VLCMedia) -> void:
 	%List.text = \"list item: %s\" % item.get_mrl()
 
 
-# A thumbnail at the middle of the media, asked for by position: a fraction needs no known
+# The listener and the question, in the order they have to happen: libvlc reports a cover once,
+# from the parse that finds it, and a parse has to be asked for. A local file parses in tens of
+# milliseconds, so an event that arrives before this connection is one nobody hears.
+func _listen_for_cover(loaded: VLCMedia) -> void:
+	if (
+		watched_media != null
+		and watched_media.attached_thumbnails_found.is_connected(_on_attached_thumbnails_found)
+	):
+		watched_media.attached_thumbnails_found.disconnect(_on_attached_thumbnails_found)
+	watched_media = loaded
+	# A cover belongs to the media it came from, and this is where the media changes.
+	cover = null
+	if loaded != null:
+		loaded.attached_thumbnails_found.connect(_on_attached_thumbnails_found)
+
+
+# Hands a media to the player, listening for its cover first. This is the only moment that works:
+# the player parses a media it is given by itself, and reports nothing -- a media that has been
+# through the player is a media whose cover went to nobody, and libvlc refuses to parse it again,
+# since opening it for playback counts as reading it. So the listener and the parse both have to
+# be in place before the player has the media at all, which is why the demo loads media here.
+func _show_media(loaded: VLCMedia) -> void:
+	_listen_for_cover(loaded)
+	if loaded != null:
+		loaded.parse_request(VLCMedia.PARSE_FLAG_PARSE_LOCAL | VLCMedia.PARSE_FLAG_PARSE_FORCED, 0)
+	media = loaded
+
+
+# What is left for a media the demo did not load itself -- one a list player hands over, say: the
+# panel watches the player's media, listens to it, and asks the parse when the media is still
+# unread. A media the player has already opened is past saving by the time this sees it: its parse
+# has run, and the cover from it went to nobody.
+func _watch_media() -> void:
+	if media == watched_media:
+		return
+	_listen_for_cover(media)
+	if media != null and media.get_parsed_status() in [
+		VLCMedia.PARSED_STATUS_NONE, VLCMedia.PARSED_STATUS_SKIPPED, VLCMedia.PARSED_STATUS_FAILED,
+		VLCMedia.PARSED_STATUS_TIMEOUT, VLCMedia.PARSED_STATUS_CANCELLED
+	]:
+		media.parse_request(VLCMedia.PARSE_FLAG_PARSE_LOCAL | VLCMedia.PARSE_FLAG_PARSE_FORCED, 0)
+
+
+# A picture of the media, from whichever of the two places libvlc has one: it decodes a video
+# frame into a thumbnail, and it reports the cover art a file carries as an attachment. An audio
+# file has no frame to decode -- a FLAC's cover is the only picture it has -- and a cover has
+# already been heard by the time a press happens: see `_show_media` above.
+#
+# The thumbnail is asked for at the middle of the media, by position: a fraction needs no known
 # duration, which is the one thing a panel cannot count on before a parse has run.
 #
 # The size is a width, with the height left at 0 for libvlc to derive from the media's own aspect
@@ -256,9 +313,10 @@ func _on_list_item_set(item: VLCMedia) -> void:
 # which is 854x480). The rect below draws whatever arrives with KEEP_ASPECT_CENTERED, so it is the
 # request that has to keep the media's proportions, not only the drawing.
 #
-# Pressing twice ends with exactly one request in flight and one connection on the media: the
-# previous connection comes off and the previous request is let go first, because cancelling a
-# request makes libvlc answer it from inside the call, and that answer is not this press's.
+# Pressing twice ends with exactly one request in flight and one connection on the generated
+# signal: the previous connection comes off and the previous request is let go first, because
+# cancelling a request makes libvlc answer it from inside the call, and that answer is not this
+# press's.
 func _on_thumbnail_request_pressed() -> void:
 	if media == null:
 		%ThumbnailInfo.text = \"thumbnail: nothing loaded\"
@@ -266,6 +324,10 @@ func _on_thumbnail_request_pressed() -> void:
 	if media.thumbnail_generated.is_connected(_on_thumbnail_generated):
 		media.thumbnail_generated.disconnect(_on_thumbnail_generated)
 	thumbnail_request = null
+	if cover != null:
+		# The cover was heard when the media arrived, and it is the better picture: a press only
+		# asks for a generated frame, which the answer below drops anyway.
+		show_cover(cover, \"remembered from this media\")
 	var request := media.thumbnail_request_by_pos(
 		0.5, VLCThumbnailRequest.SEEK_PRECISE, 192, 0, false, VLCPicture.TYPE_PNG, 5000
 	)
@@ -282,6 +344,10 @@ func _on_thumbnail_generated(picture: VLCPicture) -> void:
 	# The answer has arrived, so the request has done its job and can go; letting it go here is
 	# what destroys libvlc's, rather than leaving it on the panel until the next press.
 	thumbnail_request = null
+	if cover != null:
+		# A cover is the better picture and it is already up. This frame is the one thing that
+		# could replace it, and the two events are independent, so either one can be the last.
+		return
 	if picture == null:
 		%ThumbnailInfo.text = \"thumbnail: none (libvlc reports every failure this way)\"
 		return
@@ -290,8 +356,32 @@ func _on_thumbnail_generated(picture: VLCPicture) -> void:
 		%ThumbnailInfo.text = \"thumbnail: could not be turned into an image\"
 		return
 	%Thumbnail.texture = ImageTexture.create_from_image(image)
-	%ThumbnailInfo.text = \"thumbnail: %dx%d, %d bytes\" % [
+	%ThumbnailInfo.text = \"thumbnail: generated %dx%d, %d bytes\" % [
 		image.get_width(), image.get_height(), picture.get_buffer().size()
+	]
+
+
+# The cover art libvlc found: it goes up as soon as it arrives -- the panel asked for the parse
+# that reports it, not a press -- and it is kept for the presses after that, since the event fires
+# once per parse and there is no second parse to hear it from.
+func _on_attached_thumbnails_found(pictures: Array) -> void:
+	if pictures.is_empty():
+		return
+	var picture: VLCPicture = pictures[0]
+	var image: Image = picture.to_image()
+	if image == null:
+		%ThumbnailInfo.text = \"thumbnail: the cover could not be turned into an image\"
+		return
+	cover = ImageTexture.create_from_image(image)
+	show_cover(cover, \"reported by libvlc\")
+
+
+# One line for a cover, so the reported one and the remembered one read the same way -- and so
+# the line says which of the two it is, which is the one thing about it the picture cannot show.
+func show_cover(texture: Texture2D, from: String) -> void:
+	%Thumbnail.texture = texture
+	%ThumbnailInfo.text = \"thumbnail: embedded cover %dx%d (%s)\" % [
+		texture.get_width(), texture.get_height(), from
 	]
 
 
@@ -493,7 +583,7 @@ func _on_statics_pressed() -> void:
 
 
 func _on_file_dialog_file_selected(path: String) -> void:
-	media = VLCMedia.load_from_file(path)
+	_show_media(VLCMedia.load_from_file(path))
 "
 
 [node name="VLCMediaPlayer" type="VLCMediaPlayer" unique_id=730198423]
