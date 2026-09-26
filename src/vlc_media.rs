@@ -26,6 +26,7 @@ use std::{
 use crate::{
     util::cstring_from_gstring,
     vlc::*,
+    vlc_event_attachments::EventAttachments,
     vlc_instance::{self, clear_last_error, last_error},
     vlc_media_list::VlcMediaList,
     vlc_subtitle::VlcSubtitle,
@@ -74,10 +75,16 @@ use godot::{
 #[class(base=Resource, rename=VLCMedia, no_init, tool)]
 pub struct VlcMedia {
     base: Base<Resource>,
-    #[allow(dead_code)]
-    path: Option<Box<GString>>,
     pub media_ptr: *mut libvlc_media_t,
     self_gd: Option<Box<Gd<WeakRef>>>,
+    /// The media's event callbacks, kept so that `Drop` can detach them
+    /// (`vlc_event_attachments.rs`).
+    ///
+    /// The media has to be detached whatever its reference count is: a media
+    /// list retains every media in it, so this wrapper can be freed while the
+    /// media lives on, and a parse or a thumbnail that lands afterwards would
+    /// call into the weak reference that was freed with this object.
+    attachments: EventAttachments,
     /// The cover the editor's inspector last showed for this media, when it has one.
     ///
     /// Nothing here asks libvlc for a picture and no libvlc call reads this: it is the editor's
@@ -476,7 +483,15 @@ impl VlcMedia {
         // platform, so the separators are translated before the path is handed over.
         #[cfg(windows)]
         let native = GString::from(native.to_string().replace('/', "\\").as_str());
-        let mut path = Box::new(path);
+        // The path stays for the process. libvlc reads this pointer every time it
+        // opens the media, and it opens media this wrapper may no longer exist for:
+        // a list holds a reference of its own to every media in it, and
+        // `VlcMediaList.add_media` does not keep the object that built it alive.
+        // Nothing tells this binding that the last open is done -- libvlc's only
+        // callback of that kind belongs to a video output, not to a media -- so one
+        // string per media read through the callbacks below is left behind, which in
+        // an exported project is every media it plays.
+        let path: &'static GString = Box::leak(Box::new(path));
         // The reason for a failure is not in the return value -- libvlc answers
         // with a null pointer and keeps the explanation on the side -- so the side
         // is cleared first and read only if this call turns out to be the one that
@@ -500,7 +515,7 @@ impl VlcMedia {
                     Some(media_read_callback),
                     Some(media_seek_callback),
                     Some(media_close_cb),
-                    path.as_mut() as *mut _ as *mut c_void,
+                    path as *const GString as *mut c_void,
                 )
             }
         } else {
@@ -513,9 +528,9 @@ impl VlcMedia {
         );
         let mut media = Gd::from_init_fn(|base| Self {
             base,
-            path: Some(path),
             media_ptr,
             self_gd: None,
+            attachments: EventAttachments::default(),
             editor_cover: None,
         });
         let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
@@ -549,9 +564,9 @@ impl VlcMedia {
         }
         let mut media = Gd::from_init_fn(|base| Self {
             base,
-            path: None,
             media_ptr,
             self_gd: None,
+            attachments: EventAttachments::default(),
             editor_cover: None,
         });
         let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
@@ -575,9 +590,9 @@ impl VlcMedia {
         }
         let mut media = Gd::from_init_fn(|base| Self {
             base,
-            path: None,
             media_ptr,
             self_gd: None,
+            attachments: EventAttachments::default(),
             editor_cover: None,
         });
         let self_gd = Box::new(weakref(&media.to_variant()).to::<Gd<WeakRef>>());
@@ -705,23 +720,29 @@ impl VlcMedia {
     fn register_signals(media: &mut Gd<Self>) {
         unsafe {
             let event_manager = libvlc_media_event_manager(media.bind().media_ptr);
-            libvlc_event_attach(
+            // One pointer, three events: the weak reference this wrapper was
+            // built around. It is read once because it is what the detach in
+            // `Drop` has to hand back, and it is recorded there rather than
+            // computed again.
+            let data = Self::event_data(media);
+            let mut media = media.bind_mut();
+            media.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
                 Some(parsed_changed_callback),
-                Self::event_data(media),
+                data,
             );
-            libvlc_event_attach(
+            media.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaThumbnailGenerated as libvlc_event_type_t,
                 Some(thumbnail_generated_callback),
-                Self::event_data(media),
+                data,
             );
-            libvlc_event_attach(
+            media.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaAttachedThumbnailsFound as libvlc_event_type_t,
                 Some(attached_thumbnails_callback),
-                Self::event_data(media),
+                data,
             );
         }
     }
@@ -1141,22 +1162,15 @@ impl Drop for VlcMedia {
     fn drop(&mut self) {
         unsafe {
             if !self.media_ptr.is_null() {
-                // The event first, and with the same callback and user data it was
-                // attached with: libvlc finds the handler by that pair, and this wrapper
-                // may be one of several for the same media (a list hands ports of it
-                // around), so detaching is what keeps a freed object out of a later
-                // callback. The same gap was recorded for the player in the analysis;
-                // lists are what made it reachable, because a list keeps media alive past
-                // the wrapper a script built.
-                if let Some(weak) = self.self_gd.as_deref_mut() {
-                    let data = (&mut **weak) as *mut WeakRef as *mut c_void;
-                    libvlc_event_detach(
-                        libvlc_media_event_manager(self.media_ptr),
-                        libvlc_event_e_libvlc_MediaParsedChanged as libvlc_event_type_t,
-                        Some(parsed_changed_callback),
-                        data,
-                    );
-                }
+                // The events first, and with the same callbacks and user data they
+                // were attached with: libvlc finds the handler by that triple, and
+                // this wrapper may be one of several for the same media (a list
+                // hands ports of it around), so detaching is what keeps a freed
+                // object out of a later callback. All three go, not just the parse
+                // one: a thumbnail request that lands after the wrapper is gone
+                // would otherwise call into the weak reference freed with it.
+                self.attachments
+                    .detach_all(libvlc_media_event_manager(self.media_ptr));
                 libvlc_media_release(self.media_ptr);
             }
         }

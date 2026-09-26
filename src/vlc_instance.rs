@@ -306,6 +306,11 @@ impl IObject for VLCInstance {
             && let Some(instance) = self.instance.take()
         {
             unsafe {
+                // Unset before releasing: this is the call that waits for a log
+                // callback already running to return, so that nothing can be
+                // writing into the sink -- which lives in this object -- after
+                // it returns. The release that follows destroys the instance.
+                vlc::libvlc_log_unset(instance);
                 vlc::libvlc_release(instance);
             }
         }

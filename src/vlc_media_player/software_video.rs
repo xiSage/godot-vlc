@@ -28,8 +28,17 @@ use godot::{
     prelude::*,
 };
 
+use super::output_sink::OutputSink;
+
+/// One video output's picture, and where its frames go.
+///
+/// The sender is owned rather than borrowed from the player: this state lives as
+/// long as the video output does, and that is not the same as the player's
+/// lifetime -- the player can be freed first (a media list player retains it), and
+/// then a borrowed address would be one into a freed object. An output that is
+/// opened after that gets no sender at all and simply delivers nowhere.
 struct SoftwareVideoState {
-    tx: *mut mpsc::Sender<(bool, Gd<Image>)>,
+    tx: Option<mpsc::Sender<(bool, Gd<Image>)>>,
     img: Gd<Image>,
     buffer: PackedByteArray,
 }
@@ -65,11 +74,11 @@ pub(super) unsafe extern "C" fn video_unlock_callback(
 pub(super) unsafe extern "C" fn video_display_callback(opaque: *mut c_void, _picture: *mut c_void) {
     unsafe {
         let state = (opaque as *mut SoftwareVideoState).as_mut().unwrap();
-        _ = state
-            .tx
-            .as_mut()
-            .unwrap()
-            .send((false, Gd::duplicate_resource(&state.img).cast()));
+        // No sender is the player having been freed while this output was still
+        // running; the frame is drawn for nobody rather than sent to a dead channel.
+        if let Some(tx) = &state.tx {
+            _ = tx.send((false, Gd::duplicate_resource(&state.img).cast()));
+        }
     }
 }
 
@@ -82,8 +91,11 @@ pub(super) unsafe extern "C" fn video_format_callback(
     lines: *mut c_uint,
 ) -> c_uint {
     unsafe {
-        let tx: *mut mpsc::Sender<(bool, Gd<Image>)> =
-            *opaque as *mut mpsc::Sender<(bool, Gd<Image>)>;
+        // `*opaque` is the player-level address until this callback stores the
+        // state over it: libvlc keeps one opaque per output and hands its address
+        // here, and it is the sink that was passed to `libvlc_video_set_callbacks`.
+        let sink = OutputSink::from_opaque(*opaque);
+        let tx = sink.video_sender();
         let img =
             match Image::create_empty(*width as i32, *height as i32, false, image::Format::RGB8) {
                 Some(img) => img,
@@ -95,7 +107,12 @@ pub(super) unsafe extern "C" fn video_format_callback(
         chroma.copy_from(c"RV24".as_ptr(), 5);
         *pitches = *width * 3;
         *lines = *height;
-        if tx.as_mut().unwrap().send((true, img.clone())).is_err() {
+        // A closed sink is not a reason to refuse the output: the picture is
+        // accepted and drawn into nothing, which is what keeps a list player
+        // playing the next item instead of tearing this output down.
+        if let Some(tx) = &tx
+            && tx.send((true, img.clone())).is_err()
+        {
             return 0;
         }
         *opaque = Box::into_raw(Box::new(SoftwareVideoState { tx, img, buffer })) as *mut c_void;

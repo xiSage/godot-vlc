@@ -39,6 +39,7 @@ mod vlc {
 #[cfg(test)]
 mod acceptance;
 mod vlc_editor_plugin;
+mod vlc_event_attachments;
 mod vlc_instance;
 mod vlc_media;
 mod vlc_media_format_loader;

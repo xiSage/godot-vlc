@@ -28,6 +28,7 @@
 use super::VlcMediaPlayer;
 use crate::{
     vlc::*,
+    vlc_event_attachments::EventAttachments,
     vlc_instance,
     vlc_media_list::{HeldMedia, VlcMediaList},
 };
@@ -168,12 +169,25 @@ pub struct VlcMediaListPlayer {
     /// Where the event callbacks leave what they received. Boxed because the events are
     /// attached with this address, and it is written from libvlc's threads.
     park: Box<ListPlayerPark>,
+    /// The three list-player events, kept so that `Drop` can detach them
+    /// (`vlc_event_attachments.rs`).
+    ///
+    /// Detaching is what keeps a callback from running against the park once
+    /// this object is gone. libvlc's own release does join the list player's
+    /// thread, so it would be a barrier too -- but only for a list player this
+    /// object is the last reference to, and the detach is the one that does not
+    /// depend on that.
+    attachments: EventAttachments,
 }
 
 impl Drop for VlcMediaListPlayer {
     fn drop(&mut self) {
         if let Some(ptr) = self.ptr.take() {
-            unsafe { libvlc_media_list_player_release(ptr) };
+            unsafe {
+                self.attachments
+                    .detach_all(libvlc_media_list_player_event_manager(ptr));
+                libvlc_media_list_player_release(ptr);
+            }
         }
     }
 }
@@ -550,11 +564,12 @@ impl INode for VlcMediaListPlayer {
             "libvlc could not create a media list player: {}",
             crate::vlc_instance::last_error()
         );
-        let player = Self {
+        let mut player = Self {
             base,
             ptr: Some(ptr),
             media_list: None,
             park: Box::new(ListPlayerPark::new()),
+            attachments: EventAttachments::default(),
         };
 
         // The three events, attached with the park's address.
@@ -575,7 +590,7 @@ impl INode for VlcMediaListPlayer {
                     stopped_callback,
                 ),
             ] {
-                libvlc_event_attach(
+                player.attachments.attach(
                     manager,
                     event_type as libvlc_event_type_t,
                     Some(callback),

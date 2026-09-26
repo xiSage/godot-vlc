@@ -28,7 +28,7 @@
 //! `libvlc_media_list_release` releases every media the list holds, so this object's
 //! `Drop` is what frees the elements as well as the list.
 
-use crate::{vlc::*, vlc_media::VlcMedia};
+use crate::{vlc::*, vlc_event_attachments::EventAttachments, vlc_media::VlcMedia};
 use godot::{classes::WeakRef, global::weakref, prelude::*};
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -220,6 +220,15 @@ pub struct VlcMediaList {
     /// Where the event callbacks leave what they received. Boxed because the events are
     /// attached with this address, and it is written from libvlc's threads.
     events: Box<ListBridge>,
+    /// The five list events, kept so that `Drop` can detach them
+    /// (`vlc_event_attachments.rs`).
+    ///
+    /// A list is not shared the way a media is, but the detach is still what
+    /// makes the teardown certain: libvlc's own `libvlc_media_list_release`
+    /// destroys the event manager without joining anything or looking at what is
+    /// attached, so a list that went away mid-callback would leave the callback
+    /// running against freed memory.
+    attachments: EventAttachments,
 }
 
 impl Drop for VlcMediaList {
@@ -227,40 +236,11 @@ impl Drop for VlcMediaList {
         unsafe {
             // Detached before the list goes: the callbacks are handed this object's
             // weak reference, and a list that outlived its wrapper would call into
-            // freed memory. (`VlcMedia` does not do this for its own event, which is a
-            // known gap recorded in the analysis; there is no reason to repeat it.)
-            let event_manager = libvlc_media_list_event_manager(self.ptr);
-            let data = self.events.as_ref() as *const ListBridge as *mut c_void;
-            libvlc_event_detach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaListWillAddItem as libvlc_event_type_t,
-                Some(will_add_callback),
-                data,
-            );
-            libvlc_event_detach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaListItemAdded as libvlc_event_type_t,
-                Some(added_callback),
-                data,
-            );
-            libvlc_event_detach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaListWillDeleteItem as libvlc_event_type_t,
-                Some(will_delete_callback),
-                data,
-            );
-            libvlc_event_detach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaListItemDeleted as libvlc_event_type_t,
-                Some(deleted_callback),
-                data,
-            );
-            libvlc_event_detach(
-                event_manager,
-                libvlc_event_e_libvlc_MediaListEndReached as libvlc_event_type_t,
-                Some(end_reached_callback),
-                data,
-            );
+            // freed memory. libvlc's own release is not that barrier -- it destroys
+            // the event manager without joining anything or looking at what is still
+            // attached -- so the detach has to come first.
+            self.attachments
+                .detach_all(libvlc_media_list_event_manager(self.ptr));
             libvlc_media_list_release(self.ptr);
         }
     }
@@ -275,16 +255,17 @@ impl IRefCounted for VlcMediaList {
             "libvlc could not create a media list: {}",
             crate::vlc_instance::last_error()
         );
-        let list = Self {
+        let mut list = Self {
             base,
             ptr,
             events: Box::new(ListBridge::new()),
+            attachments: EventAttachments::default(),
         };
         // `to_init_gd` is how an object reaches itself from `init`: it is the one moment
         // there is no other `Gd` to take a weak reference from. For a `RefCounted` base
         // that reference is usable, which is why this class uses one.
         let weak = weakref(&list.base.to_init_gd().to_variant()).to::<Gd<WeakRef>>();
-        attach_events(ptr, &list.events, weak);
+        list.attach_events(weak);
         list
     }
 }
@@ -368,38 +349,40 @@ unsafe extern "C" fn end_reached_callback(_event: *const libvlc_event_t, data: *
     }
 }
 
-/// Attaches the five list events, and records the weak reference the callbacks use.
-fn attach_events(ptr: *mut libvlc_media_list_t, events: &ListBridge, weak: Gd<WeakRef>) {
-    unsafe {
-        match events.self_gd.lock() {
-            Ok(mut self_gd) => *self_gd = Some(weak),
-            Err(poisoned) => *poisoned.into_inner() = Some(weak),
-        }
+impl VlcMediaList {
+    /// Attaches the five list events, and records the weak reference the callbacks use.
+    fn attach_events(&mut self, weak: Gd<WeakRef>) {
+        unsafe {
+            match self.events.self_gd.lock() {
+                Ok(mut self_gd) => *self_gd = Some(weak),
+                Err(poisoned) => *poisoned.into_inner() = Some(weak),
+            }
 
-        let event_manager = libvlc_media_list_event_manager(ptr);
-        let data = events as *const ListBridge as *mut c_void;
-        for (event_type, callback) in [
-            (
-                libvlc_event_e_libvlc_MediaListWillAddItem,
-                will_add_callback as unsafe extern "C" fn(_, _),
-            ),
-            (libvlc_event_e_libvlc_MediaListItemAdded, added_callback),
-            (
-                libvlc_event_e_libvlc_MediaListWillDeleteItem,
-                will_delete_callback,
-            ),
-            (libvlc_event_e_libvlc_MediaListItemDeleted, deleted_callback),
-            (
-                libvlc_event_e_libvlc_MediaListEndReached,
-                end_reached_callback,
-            ),
-        ] {
-            libvlc_event_attach(
-                event_manager,
-                event_type as libvlc_event_type_t,
-                Some(callback),
-                data,
-            );
+            let event_manager = libvlc_media_list_event_manager(self.ptr);
+            let data = self.events.as_ref() as *const ListBridge as *mut c_void;
+            for (event_type, callback) in [
+                (
+                    libvlc_event_e_libvlc_MediaListWillAddItem,
+                    will_add_callback as unsafe extern "C" fn(_, _),
+                ),
+                (libvlc_event_e_libvlc_MediaListItemAdded, added_callback),
+                (
+                    libvlc_event_e_libvlc_MediaListWillDeleteItem,
+                    will_delete_callback,
+                ),
+                (libvlc_event_e_libvlc_MediaListItemDeleted, deleted_callback),
+                (
+                    libvlc_event_e_libvlc_MediaListEndReached,
+                    end_reached_callback,
+                ),
+            ] {
+                self.attachments.attach(
+                    event_manager,
+                    event_type as libvlc_event_type_t,
+                    Some(callback),
+                    data,
+                );
+            }
         }
     }
 }
@@ -687,13 +670,14 @@ impl VlcMediaList {
         if ptr.is_null() {
             return None;
         }
-        let list = Gd::from_init_fn(|base| Self {
+        let mut list = Gd::from_init_fn(|base| Self {
             base,
             ptr,
             events: Box::new(ListBridge::new()),
+            attachments: EventAttachments::default(),
         });
         let weak = weakref(&list.to_variant()).to::<Gd<WeakRef>>();
-        attach_events(ptr, list.bind().events.as_ref(), weak);
+        list.bind_mut().attach_events(weak);
         Some(list)
     }
 }

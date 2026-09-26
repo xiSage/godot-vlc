@@ -293,13 +293,19 @@ impl VlcMediaPlayer {
             // the other, never both. On any GPU init failure we fall
             // through to the software path.
             let gpu_active = self.try_init_gpu_backend();
+            // The address both callback sets are given, leaked rather than borrowed:
+            // libvlc reads it again for every output it opens, and the player it
+            // belongs to can be freed before libvlc is done with it -- a media list
+            // player retains the player it is given. `Drop` closes the sink instead
+            // of freeing it, so what libvlc reads afterwards is an empty shell.
+            let sink = self.output_sink.leak();
             if !gpu_active {
                 libvlc_video_set_callbacks(
                     self.player_ptr,
                     Some(software_video::video_lock_callback),
                     Some(software_video::video_unlock_callback),
                     Some(software_video::video_display_callback),
-                    self.video_tx.as_mut() as *mut _ as *mut c_void,
+                    sink,
                 );
                 libvlc_video_set_format_callbacks(
                     self.player_ptr,
@@ -314,7 +320,7 @@ impl VlcMediaPlayer {
                 Some(super::audio_callbacks::audio_resume_callback),
                 Some(super::audio_callbacks::audio_flush_callback),
                 Some(super::audio_callbacks::audio_drain_callback),
-                self.audio_prod.as_mut() as *mut _ as *mut c_void,
+                sink,
             );
             libvlc_audio_set_format_callbacks(
                 self.player_ptr,
@@ -337,7 +343,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Opening) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerOpening as libvlc_event_type_t,
                 Some(opening_callback),
@@ -363,7 +369,7 @@ impl VlcMediaPlayer {
                     (*slot).store(percent.to_bits(), Ordering::Relaxed);
                 }
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerBuffering as libvlc_event_type_t,
                 Some(buffering_callback),
@@ -376,7 +382,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Playing) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerPlaying as libvlc_event_type_t,
                 Some(playing_callback),
@@ -389,7 +395,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Paused) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerPaused as libvlc_event_type_t,
                 Some(paused_callback),
@@ -402,7 +408,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Stopped) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerStopped as libvlc_event_type_t,
                 Some(stopped_callback),
@@ -415,7 +421,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Forward) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerForward as libvlc_event_type_t,
                 Some(forward_callback),
@@ -428,7 +434,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Backward) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerBackward as libvlc_event_type_t,
                 Some(backward_callback),
@@ -441,7 +447,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Stopping) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerStopping as libvlc_event_type_t,
                 Some(stopping_callback),
@@ -460,7 +466,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Error) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerEncounteredError as libvlc_event_type_t,
                 Some(error_callback),
@@ -473,7 +479,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Position(read_position(event))) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerPositionChanged as libvlc_event_type_t,
                 Some(position_callback),
@@ -486,7 +492,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Time(read_time(event))) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerTimeChanged as libvlc_event_type_t,
                 Some(time_callback),
@@ -499,7 +505,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Length(read_length(event))) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerLengthChanged as libvlc_event_type_t,
                 Some(length_callback),
@@ -512,7 +518,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Seekable(read_seekable(event))) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerSeekableChanged as libvlc_event_type_t,
                 Some(seekable_callback),
@@ -525,7 +531,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::Pausable(read_pausable(event))) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerPausableChanged as libvlc_event_type_t,
                 Some(pausable_callback),
@@ -544,7 +550,7 @@ impl VlcMediaPlayer {
                 let (track_type, id) = unsafe { read_es_changed(event) };
                 unsafe { park(user_data, ParkedEvent::TrackAdded(track_type, id)) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerESAdded as libvlc_event_type_t,
                 Some(es_added_callback),
@@ -558,7 +564,7 @@ impl VlcMediaPlayer {
                 let (track_type, id) = unsafe { read_es_changed(event) };
                 unsafe { park(user_data, ParkedEvent::TrackRemoved(track_type, id)) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerESDeleted as libvlc_event_type_t,
                 Some(es_deleted_callback),
@@ -576,7 +582,7 @@ impl VlcMediaPlayer {
             // `ESUpdated` is 285, with the cork, mute and volume events in
             // between -- so this is attached on its own name rather than by
             // counting from `ESAdded`.
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerESUpdated as libvlc_event_type_t,
                 Some(es_updated_callback),
@@ -591,7 +597,7 @@ impl VlcMediaPlayer {
                     unsafe { park(user_data, event) };
                 }
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerESSelected as libvlc_event_type_t,
                 Some(es_selected_callback),
@@ -611,7 +617,7 @@ impl VlcMediaPlayer {
                 let chapter = unsafe { read_chapter_changed(event) };
                 unsafe { park(user_data, ParkedEvent::ChapterChanged(chapter)) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerChapterChanged as libvlc_event_type_t,
                 Some(chapter_changed_callback),
@@ -627,7 +633,7 @@ impl VlcMediaPlayer {
             ) {
                 unsafe { park(user_data, ParkedEvent::TitleListChanged) };
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerTitleListChanged as libvlc_event_type_t,
                 Some(title_list_changed_callback),
@@ -642,7 +648,7 @@ impl VlcMediaPlayer {
                     unsafe { park(user_data, event) };
                 }
             }
-            libvlc_event_attach(
+            self.attachments.attach(
                 event_manager,
                 libvlc_event_e_libvlc_MediaPlayerTitleSelectionChanged as libvlc_event_type_t,
                 Some(title_selection_changed_callback),

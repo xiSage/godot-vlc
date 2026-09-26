@@ -23,39 +23,52 @@ use std::{
 };
 
 use godot::{
-    classes::{AudioServer, AudioStreamPlayer, native::AudioFrame},
+    classes::{AudioServer, native::AudioFrame},
     prelude::*,
 };
 use ringbuf::{HeapProd, traits::Producer};
 
-use super::internal_audio_stream::InternalAudioStream;
+use super::output_sink::OutputSink;
 
-/// The node a callback was handed, if it is still there and still playing somewhere.
+/// Runs one audio callback against the ring buffer it fills, or does nothing when
+/// there is nothing left to write into.
 ///
-/// The audio player is a child of the `VLCMediaPlayer`, and Godot destroys a node's
-/// children **before** it destroys the extension instance behind the node -- so between
-/// those two moments libvlc's audio thread can arrive here holding a `Gd` whose object has
-/// been freed. `is_instance_valid` is the one call that answers for such a handle instead
-/// of asserting; anything else aborts the process (measured: `AudioStreamPlayer::upcast_ref`,
-/// "access to instance ... after it has been freed", in two runs out of three when the
-/// demo exits while it is playing).
+/// Nothing here reaches the node that plays the buffer back. That node is a child of
+/// the `VLCMediaPlayer`, Godot destroys a node's children **before** it destroys the
+/// extension instance behind the node, and `Drop` -- the moment the player learns
+/// that it is going away -- runs after both. A callback that asks the node whether
+/// it is still there is therefore racing the teardown rather than guarding against
+/// it, and that was measured, not guessed: the callback passed `is_instance_valid`,
+/// the main thread freed the node, and the next call aborted the process with
+/// `AudioStreamPlayer::upcast_ref`, "access to instance ... after it has been
+/// freed". `is_inside_tree` was the second half of the same attempt and failed the
+/// same way. What the callbacks want done to the node is left in the sink instead,
+/// and the frame applies it on the main thread
+/// (`VlcMediaPlayer::apply_audio_intent`), where the node is only ever reached while
+/// the object that owns it is alive.
 ///
-/// `is_inside_tree` is the second half of that, and it was measured rather than guessed:
-/// the run that aborts prints Godot's own `Playback can only happen when a node is inside
-/// the scene tree` immediately before the assert, which means the node had left the tree
-/// while still being a valid instance -- a state `is_instance_valid` alone lets through,
-/// and one where `play()` is refused and the callback should simply not bother.
+/// The slot is behind a lock because `Drop` takes the ring buffer out of it while
+/// these callbacks may be running: the sink is the one thing both sides can reach
+/// after the player's own fields are gone.
 ///
-/// Returns the pair the callbacks are given: the ring buffer producer and the node.
-unsafe fn audio_context<'a>(
+/// # Safety
+///
+/// `data` has to be an address from `OutputSink::leak`.
+unsafe fn with_audio_sink(
     data: *mut c_void,
-) -> Option<(&'a mut HeapProd<AudioFrame>, &'a mut Gd<AudioStreamPlayer>)> {
-    let (producer, player) =
-        unsafe { (data as *mut (HeapProd<AudioFrame>, Gd<AudioStreamPlayer>)).as_mut()? };
-    if !player.is_instance_valid() || !player.is_inside_tree() {
-        return None;
+    run: impl FnOnce(&mut HeapProd<AudioFrame>, &OutputSink),
+) {
+    let sink = unsafe { OutputSink::from_opaque(data) };
+    if sink.is_closed() || !sink.is_accepting() {
+        return;
     }
-    Some((producer, player))
+    let Ok(mut slot) = sink.audio().lock() else {
+        return;
+    };
+    let Some(producer) = slot.as_mut() else {
+        return;
+    };
+    run(producer, sink);
 }
 
 pub(super) unsafe extern "C" fn audio_play_callback(
@@ -64,68 +77,47 @@ pub(super) unsafe extern "C" fn audio_play_callback(
     count: c_uint,
     _pts: i64,
 ) {
-    unsafe {
-        // Nothing is pushed for a node that is gone: the ring buffer has no reader left,
-        // and filling it would only report itself full.
-        let Some((rb_prod, player)) = audio_context(data) else {
-            return;
-        };
-
-        let samples_slice = slice_from_raw_parts(samples as *const f32, count as usize * 2)
+    let samples = unsafe {
+        slice_from_raw_parts(samples as *const f32, count as usize * 2)
             .as_ref()
-            .unwrap();
-
-        for i in 0..count as usize {
-            let left = samples_slice[i * 2];
-            let right = samples_slice[i * 2 + 1];
-            let frame = AudioFrame { left, right };
-            if rb_prod.try_push(frame).is_err() {
-                godot_error!("godot-vlc: audio buffer full");
-                break;
+            .unwrap()
+    };
+    unsafe {
+        with_audio_sink(data, |rb_prod, sink| {
+            for i in 0..count as usize {
+                let left = samples[i * 2];
+                let right = samples[i * 2 + 1];
+                let frame = AudioFrame { left, right };
+                if rb_prod.try_push(frame).is_err() {
+                    godot_error!("godot-vlc: audio buffer full");
+                    break;
+                }
             }
-        }
 
-        if !player.is_playing() {
-            player.call_thread_safe("play", &[]);
-        }
+            // The node is started from the frame, not from here: `is_playing` and
+            // `play` are both calls on an object this thread does not own.
+            sink.request_play();
+        });
     }
 }
 
 pub(super) unsafe extern "C" fn audio_pause_callback(data: *mut c_void, _pts: i64) {
     unsafe {
-        let Some((_, player)) = audio_context(data) else {
-            return;
-        };
-        player.set_stream_paused(true);
+        with_audio_sink(data, |_, sink| sink.request_pause(true));
     }
 }
 
 pub(super) unsafe extern "C" fn audio_resume_callback(data: *mut c_void, _pts: i64) {
     unsafe {
-        let Some((_, player)) = audio_context(data) else {
-            return;
-        };
-        player.set_stream_paused(false);
+        with_audio_sink(data, |_, sink| sink.request_pause(false));
     }
 }
 
 pub(super) unsafe extern "C" fn audio_flush_callback(data: *mut c_void, _pts: i64) {
     unsafe {
-        // `audio_context` is the same check this one used to make for itself, and it now
+        // The context is the same check this one used to make for itself, and it now
         // covers the whole callback rather than only the call that happened to need it.
-        let Some((_, player)) = audio_context(data) else {
-            return;
-        };
-        player.call_thread_safe("stop", &[]);
-        if let Some(stream) = player.get_stream()
-            && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>()
-        {
-            internal_stream
-                .bind_mut()
-                .playback
-                .bind_mut()
-                .clear_buffer();
-        }
+        with_audio_sink(data, |_, sink| sink.request_flush());
     }
 }
 
