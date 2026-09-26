@@ -293,13 +293,19 @@ impl VlcMediaPlayer {
             // the other, never both. On any GPU init failure we fall
             // through to the software path.
             let gpu_active = self.try_init_gpu_backend();
+            // The address both callback sets are given, leaked rather than borrowed:
+            // libvlc reads it again for every output it opens, and the player it
+            // belongs to can be freed before libvlc is done with it -- a media list
+            // player retains the player it is given. `Drop` closes the sink instead
+            // of freeing it, so what libvlc reads afterwards is an empty shell.
+            let sink = self.output_sink.leak();
             if !gpu_active {
                 libvlc_video_set_callbacks(
                     self.player_ptr,
                     Some(software_video::video_lock_callback),
                     Some(software_video::video_unlock_callback),
                     Some(software_video::video_display_callback),
-                    self.video_tx.as_mut() as *mut _ as *mut c_void,
+                    sink,
                 );
                 libvlc_video_set_format_callbacks(
                     self.player_ptr,
@@ -314,7 +320,7 @@ impl VlcMediaPlayer {
                 Some(super::audio_callbacks::audio_resume_callback),
                 Some(super::audio_callbacks::audio_flush_callback),
                 Some(super::audio_callbacks::audio_drain_callback),
-                self.audio_prod.as_mut() as *mut _ as *mut c_void,
+                sink,
             );
             libvlc_audio_set_format_callbacks(
                 self.player_ptr,

@@ -22,6 +22,7 @@ mod events;
 mod internal_audio_stream;
 pub mod internal_audio_stream_playback;
 mod list_player;
+mod output_sink;
 mod software_video;
 mod time_watch;
 
@@ -32,6 +33,7 @@ use std::{
     ffi::c_int,
     ptr,
     sync::{
+        Arc,
         atomic::{AtomicU32, Ordering},
         mpsc,
     },
@@ -54,7 +56,6 @@ use godot::{
         Texture2D, TextureRect,
         control::{LayoutPreset, LayoutPresetMode},
         image,
-        native::AudioFrame,
         node::InternalMode,
         notify::ControlNotification,
         texture_rect::{ExpandMode, StretchMode as TextureRectStretchMode},
@@ -62,7 +63,7 @@ use godot::{
     obj::NewAlloc,
     prelude::*,
 };
-use ringbuf::{HeapProd, HeapRb, traits::Split};
+use ringbuf::{HeapRb, traits::Split};
 
 #[cfg(all(feature = "gpu", windows))]
 use godot::classes::RenderingServer;
@@ -323,9 +324,14 @@ struct VlcMediaPlayer {
     /// apart: while it is open, a frame that is not the first one of a video
     /// output is dropped instead of being shown.
     awaiting_output: bool,
-    video_tx: Box<mpsc::Sender<(bool, Gd<Image>)>>, // (is_resized, image)
+    /// What the video and audio callbacks write into, and the address libvlc was
+    /// handed for them (`vlc_media_player/output_sink.rs`).
+    ///
+    /// libvlc reads that address again for every output it opens, and this wrapper
+    /// can be freed while libvlc still holds the player, so `Drop` closes the sink
+    /// instead of freeing it.
+    output_sink: Arc<output_sink::OutputSink>,
     video_rx: mpsc::Receiver<(bool, Gd<Image>)>,
-    audio_prod: Box<(HeapProd<AudioFrame>, Gd<AudioStreamPlayer>)>,
     audio_player: Gd<AudioStreamPlayer>,
     /// libvlc-side `Arc<Backend>` ref; the libvlc-side ref is held via the
     /// opaque pointer passed to `libvlc_video_set_output_callbacks`. Both
@@ -365,11 +371,10 @@ impl IControl for VlcMediaPlayer {
         texture_rect.set_texture(&texture);
 
         let (video_tx, video_rx) = mpsc::channel();
-        let video_tx = Box::new(video_tx);
         let mut audio_player = AudioStreamPlayer::new_alloc();
         let audio_rb = HeapRb::new(AudioServer::singleton().get_mix_rate() as usize * 5);
         let (audio_rb_prod, audio_rb_cons) = audio_rb.split();
-        let audio_prod = Box::new((audio_rb_prod, audio_player.clone()));
+        let output_sink = output_sink::OutputSink::new(video_tx, audio_rb_prod);
         let audio_stream = InternalAudioStream::create(audio_rb_cons);
         audio_player.set_stream(&audio_stream.upcast::<AudioStream>());
         Self {
@@ -391,9 +396,8 @@ impl IControl for VlcMediaPlayer {
             texture_rect: texture_rect.clone(),
             frame: None,
             awaiting_output: false,
-            video_tx,
+            output_sink,
             video_rx,
-            audio_prod,
             audio_player,
             #[cfg(all(feature = "gpu", windows))]
             gpu_backend: None,
@@ -412,6 +416,9 @@ impl IControl for VlcMediaPlayer {
 
     fn on_notification(&mut self, what: ControlNotification) {
         if what == ControlNotification::INTERNAL_PROCESS {
+            // What libvlc's audio callbacks asked the node to do goes first: they
+            // cannot do it themselves, and this is the frame that can.
+            self.apply_audio_intent();
             // A picture a media change cleared goes back up on the frame that
             // finds a video output the importer did not have before.
             #[cfg(all(feature = "gpu", windows))]
@@ -492,6 +499,13 @@ impl IControl for VlcMediaPlayer {
             if self.autoplay {
                 self.play();
             }
+        } else if what == ControlNotification::EXIT_TREE {
+            // Nothing is played back from outside the tree, and the callbacks are told
+            // so here: by the time Godot frees the audio node, the frame that would
+            // have read their requests is already gone.
+            self.output_sink.set_accepting(false);
+        } else if what == ControlNotification::ENTER_TREE {
+            self.output_sink.set_accepting(true);
         }
     }
 }
@@ -510,6 +524,13 @@ impl Drop for VlcMediaPlayer {
         if let Some(c) = self.gpu_frame_callable.take() {
             RenderingServer::singleton().disconnect(&StringName::from("frame_pre_draw"), &c);
         }
+        // The video and audio callbacks are closed first, for the same reason the
+        // events are detached below: the release only tears the player down when it
+        // drops the last reference, while this object's channel, ring buffer and
+        // audio node are freed with it. Closing takes the ring buffer out and leaves
+        // libvlc an empty sink to keep reading -- an output that is opened afterwards
+        // is drawn and discarded instead of being delivered into freed memory.
+        self.output_sink.close();
         // Detach before releasing: the release stops the player and joins its
         // threads, but only when this is the last reference to it, and these
         // callbacks carry user data that lives in this object. Detaching is
@@ -2594,6 +2615,39 @@ impl VlcMediaPlayer {
 
 #[allow(clippy::unnecessary_cast)]
 impl VlcMediaPlayer {
+    /// Applies what libvlc's audio callbacks asked for, on the main thread.
+    ///
+    /// Called from `on_notification`, on the main thread.
+    ///
+    /// The callbacks cannot do any of this themselves: they run on libvlc's own
+    /// thread, and the node they would have to touch is freed by Godot's teardown of
+    /// the player's children -- which happens before this object's `Drop`, so the
+    /// `closed` flag arrives too late to make a check safe. Asking the node whether it
+    /// is still valid was measured to be a race rather than a guard: the callback
+    /// passed `is_instance_valid`, the main thread freed the node, and the next call
+    /// aborted the process in `is_inside_tree`. Here the player is alive by
+    /// construction, because this runs from its own frame.
+    fn apply_audio_intent(&mut self) {
+        if self.output_sink.take_flush() {
+            self.audio_player.stop();
+            if let Some(stream) = self.audio_player.get_stream()
+                && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>()
+            {
+                internal_stream
+                    .bind_mut()
+                    .playback
+                    .bind_mut()
+                    .clear_buffer();
+            }
+        }
+        if self.output_sink.take_play() && !self.audio_player.is_playing() {
+            self.audio_player.play();
+        }
+        if let Some(paused) = self.output_sink.take_pause() {
+            self.audio_player.set_stream_paused(paused);
+        }
+    }
+
     /// Emits the watcher's signals for everything recorded since the last frame.
     ///
     /// Called from `on_notification`, on the main thread.
