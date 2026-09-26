@@ -40,6 +40,7 @@ use std::{
 use crate::{
     util::cstring_from_gstring,
     vlc::*,
+    vlc_event_attachments::EventAttachments,
     vlc_instance::{self},
     vlc_media::VlcMedia,
     vlc_media_player::internal_audio_stream::InternalAudioStream,
@@ -295,6 +296,16 @@ struct VlcMediaPlayer {
     /// libvlc is handed this address once and it has to stay put for as long as the
     /// watcher is registered.
     time_watch: Box<time_watch::WatchSink>,
+    /// The player's event callbacks, kept so that `Drop` can detach them
+    /// (`vlc_event_attachments.rs`).
+    ///
+    /// It is not enough to release the player: libvlc stops it, joins its
+    /// threads and destroys its event manager only when the reference count
+    /// reaches zero, and a media list player retains the player it is given.
+    /// This wrapper can therefore be freed while libvlc still holds the player,
+    /// and then the callbacks would go on running with the user data that was
+    /// freed along with this object.
+    attachments: EventAttachments,
     texture: Gd<ImageTexture>,
     texture_rect: Gd<TextureRect>,
     /// The most recent frame the software output produced, kept so that
@@ -375,6 +386,7 @@ impl IControl for VlcMediaPlayer {
             buffering_percent: Box::new(AtomicU32::new(NO_BUFFERING_REPORT.to_bits())),
             buffering_reported: NO_BUFFERING_REPORT,
             time_watch: Box::new(time_watch::WatchSink::new()),
+            attachments: EventAttachments::default(),
             texture,
             texture_rect: texture_rect.clone(),
             frame: None,
@@ -497,6 +509,16 @@ impl Drop for VlcMediaPlayer {
         #[cfg(all(feature = "gpu", windows))]
         if let Some(c) = self.gpu_frame_callable.take() {
             RenderingServer::singleton().disconnect(&StringName::from("frame_pre_draw"), &c);
+        }
+        // Detach before releasing: the release stops the player and joins its
+        // threads, but only when this is the last reference to it, and these
+        // callbacks carry user data that lives in this object. Detaching is
+        // what makes that independent of the reference count, and it also
+        // happens before the release's own teardown, so nothing is delivered
+        // into a player that is on its way out.
+        unsafe {
+            self.attachments
+                .detach_all(libvlc_media_player_event_manager(self.player_ptr));
         }
         unsafe {
             libvlc_media_player_release(self.player_ptr);
@@ -1129,6 +1151,18 @@ impl VlcMediaPlayer {
     }
 
     // ── debug functions ──
+
+    /// How many libvlc event handlers are attached and not yet detached, over
+    /// every object in this process.
+    ///
+    /// A freed wrapper has to leave none of its own behind, whatever holds the
+    /// libvlc object it was wrapping, so this reads zero once everything a test
+    /// built has been freed. A static method: the question is about the
+    /// process, not about one player.
+    #[func]
+    fn _debug_outstanding_attachments() -> i64 {
+        crate::vlc_event_attachments::outstanding()
+    }
 
     /// Pop the pending GPU output event from the mailbox, returning the
     /// texture's `(width, height)` or `(0, 0)` if empty. Drains the mailbox.
