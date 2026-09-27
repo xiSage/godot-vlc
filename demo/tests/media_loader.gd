@@ -19,6 +19,11 @@ extends SceneTree
 # file either way, and the two answer different questions -- see the class documentation
 # of VLCMedia.
 #
+# The last checks are the loader's extension list, which is the project setting
+# vlc/media_extensions: its default is VLC's own audio and video globs, and what the
+# loader answers with is whatever the setting holds at the moment it is asked -- so the
+# list is replaced here and put back.
+#
 #   godot --headless --path demo --script res://tests/media_loader.gd
 
 # A file that is not on disk, so libvlc cannot be handed a path to it: globalize_path
@@ -90,7 +95,82 @@ func _init() -> void:
 		_fail("the copy reports %s where the original reports %s" % [copy.get_mrl(), direct.get_mrl()])
 		return
 
+	# The loader's extension list is the project setting vlc/media_extensions. Its default
+	# is VLC's own list -- the EXTENSIONS_AUDIO and EXTENSIONS_VIDEO globs of
+	# include/vlc_interface.h at the revision the runtime was built from, concatenated and
+	# de-duplicated -- and what checks that against the source is
+	# scripts/check_media_extensions.ps1. The numbers below are what that revision
+	# declares, so a list that drifted fails here as well as there.
+	var configured: Variant = ProjectSettings.get_setting("vlc/media_extensions")
+	if not (configured is PackedStringArray):
+		_fail("vlc/media_extensions is a %s, not a PackedStringArray" % type_string(typeof(configured)))
+		return
+	var defaults := configured as PackedStringArray
+	if defaults.size() != 130:
+		_fail("the default extension list holds %d entries, not the 130 VLC declares" % defaults.size())
+		return
+	for extension in defaults:
+		if extension.is_empty() or extension.begins_with(".") or extension != extension.to_lower():
+			_fail("the default list holds %s, which is not a bare lower-case extension" % extension)
+			return
+		if defaults.count(extension) != 1:
+			_fail("the default list holds %s more than once" % extension)
+			return
+	if not defaults.has("aac") or defaults.has("acc"):
+		_fail("the default list spells aac as acc, or does not offer it at all")
+		return
+	for playlist in ["m3u", "m3u8", "pls", "xspf", "wpl", "cue"]:
+		if defaults.has(playlist):
+			_fail("the default list offers %s, which is a playlist rather than a media file" % playlist)
+			return
+
+	# What the loader answers with is the setting, not the constant. res://test_cover.flac
+	# is the file these ask about, because nothing in this test has loaded it: the engine's
+	# answer for a path it already holds in its cache says nothing about the setting.
+	ProjectSettings.set_setting("vlc/media_extensions", PackedStringArray(["flac"]))
+	if not ResourceLoader.exists("res://test_cover.flac", "VLCMedia"):
+		_fail("flac is the only extension configured, and res://test_cover.flac is not a VLCMedia")
+		return
+
+	# The entries are read as they are written: a leading dot, surrounding space and case
+	# are not part of an extension, and a repeated one is still one entry. The list the
+	# engine reports also carries the two extensions of the loader it always has for plain
+	# resources -- tres and res -- so this is asked as membership rather than as a count.
+	ProjectSettings.set_setting("vlc/media_extensions", PackedStringArray([".FLAC", " mp4 ", "", "flac"]))
+	var normalized := ResourceLoader.get_recognized_extensions_for_type("VLCMedia")
+	if not normalized.has("flac") or not normalized.has("mp4"):
+		_fail("[.FLAC, mp4, '', flac] was reported as %s" % normalized)
+		return
+	if normalized.has("ogg") or normalized.has("wav"):
+		_fail("the narrowed list still recognizes ogg or wav: %s" % normalized)
+		return
+
+	# An extension the setting no longer holds is not a media: the same file it answered
+	# for a moment ago stops being one.
+	ProjectSettings.set_setting("vlc/media_extensions", PackedStringArray(["mp4"]))
+	if ResourceLoader.exists("res://test_cover.flac", "VLCMedia"):
+		_fail("res://test_cover.flac is still a VLCMedia with flac removed from the setting")
+		return
+
+	# An empty array is a list of nothing, not a request for the default one.
+	ProjectSettings.set_setting("vlc/media_extensions", PackedStringArray())
+	var empty := ResourceLoader.get_recognized_extensions_for_type("VLCMedia")
+	if empty.has("flac") or empty.has("mp4") or empty.has("ogg"):
+		_fail("an empty setting still recognizes %s" % empty)
+		return
+	if ResourceLoader.exists("res://test_cover.flac", "VLCMedia"):
+		_fail("res://test_cover.flac is a VLCMedia with no extension configured at all")
+		return
+
+	ProjectSettings.set_setting("vlc/media_extensions", defaults)
+	if not ResourceLoader.exists("res://test_cover.flac", "VLCMedia"):
+		_fail("res://test_cover.flac is not a VLCMedia again after the default list was put back")
+		return
+
 	print("media_loader OK: res://test.mp4 is a VLCMedia, res://subtitle.srt a VLCSubtitle")
+	print("media_loader extensions: %d defaults, %s narrowed, %s empty" % [
+		defaults.size(), normalized, empty
+	])
 	print("media_loader identity: loader resource_path=%s mrl=%s type=%d" % [
 		media.resource_path, media.get_mrl(), media.get_type()
 	])

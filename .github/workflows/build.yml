@@ -38,6 +38,9 @@ jobs:
     - name: LibVLC provenance check
       run: ./scripts/check_vlc_provenance.ps1 -SelfTest
 
+    - name: Media extension list check
+      run: ./scripts/check_media_extensions.ps1 -SelfTest
+
   # Formatting only. Clippy needs the crate to compile, and the crate's build
   # script generates its LibVLC bindings from the staged runtime's vlc.h, so
   # clippy lives in the platform jobs where that runtime has been staged. It runs

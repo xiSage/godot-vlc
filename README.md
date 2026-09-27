@@ -9,6 +9,17 @@ Android.
 ## How to use
 Put media files into `res://` and they will be loaded as `VLCMedia`. Then you can play them with `VLCMediaPlayer` node.
 
+Which files those are is up to the `vlc/media_extensions` project setting: one extension per
+entry, no dot, case-insensitive. It starts as the list VLC's own open dialogs offer -- the
+audio and video globs in `include/vlc_interface.h` at the revision the addon is built from --
+and a project that wants something else edits it in Project Settings. Adding an entry makes
+those files load, removing one stops them from being recognized, and an empty list leaves
+nothing recognized, though `VLCMedia.load_from_file()` still builds a media from any path.
+The setting is read whenever a path is resolved, so an edit applies to the next load; the
+editor's FileSystem dock keeps the extensions it last scanned, so a change made there needs a
+rescan before it shows the new type. `scripts/check_media_extensions.ps1` compares the list
+the addon ships against the VLC revision it is built from.
+
 You can also use `VLCMedia.load_from_file()` to load media from disk or `VLCMedia.load_from_mrl()` to load media from a [media resource locator](https://wiki.videolan.org/Media_resource_locator).
 
 Subtitles are resources too. A `.srt`, `.ass`, `.ssa`, `.vtt`, `.sub`, `.smi` or `.ttml` file inside `res://` is imported as a `VLCSubtitle`, and one from anywhere else can be built with `VLCSubtitle.load_from_file()` or `VLCSubtitle.load_from_mrl()`. Either can be handed to `VLCMedia.add_subtitle()` before the media is assigned to a player, or to `VLCMediaPlayer.add_subtitle()` while it is playing; `set_spu_delay_us()` and `set_spu_text_scale()` adjust subtitles that are out of step or too small. VLC's per-media options go through `VLCMedia.add_option()`.
