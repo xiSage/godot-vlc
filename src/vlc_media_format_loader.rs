@@ -28,18 +28,19 @@ use godot::{
 
 /// The extensions that become [VLCMedia] resources.
 ///
-/// This is VLC's own list of what it can open, with the containers it demuxes; it is
-/// not derived from anything at runtime, because a resource loader has to answer
-/// before a file is opened. One entry is deliberately corrected from the script this
-/// replaced: `.xesc` carried a leading dot, which `String.get_extension()` never
-/// returns, so that file was the one extension of the list that could not load.
+/// This is the association table VLC's own preferences offer on Windows, from
+/// `modules/gui/qt/dialogs/preferences/simple_preferences.cpp` at the revision this is
+/// built against; it is not derived from anything at runtime, because a resource loader
+/// has to answer before a file is opened. One entry is deliberately corrected from the
+/// script this replaced: `.xesc` carried a leading dot, which
+/// `String.get_extension()` never returns, so that file was the one extension of the
+/// list that could not load.
 const MEDIA_EXTENSIONS: &[&str] = &[
     // audio
-    "3ga", "669", "a52", "acc", "ac3", "adt", "adts", "aif", "aifc", "aiff", "alac", "amr", "aob",
-    "au", "ape", "caf", "cda", "dts", "dsf", "dff", "flac", "it", "m4a", "m4p", "mka", "mlp",
-    "mod", "mp1", "mp2", "mp3", "mpc", "mpga", "oga", "oma", "opus", "qcp", "ra", "rmi", "snd",
-    "s3m", "spx", "tak", "tta", "voc", "vqf", "w64", "wav", "wma", "wv", "xa", "xm",
-    // video
+    "3ga", "669", "a52", "aac", "ac3", "adt", "adts", "aif", "aifc", "aiff", "alac", "amr", "aob",
+    "au", "ape", "caf", "dts", "dsf", "dff", "flac", "it", "m4a", "m4p", "mka", "mlp", "mod",
+    "mp1", "mp2", "mp3", "mpc", "mpga", "oga", "oma", "opus", "qcp", "ra", "rmi", "s3m", "spx",
+    "tak", "tta", "voc", "vqf", "w64", "wav", "wma", "wv", "xa", "xm", // video
     "3g2", "3gp", "3gp2", "3gpp", "amrec", "amv", "asf", "avi", "bik", "dav", "divx", "drc", "dv",
     "dvr-ms", "evo", "f4v", "flv", "gvi", "gxf", "k3g", "m1v", "m2t", "m2v", "m2ts", "m4v", "mkv",
     "mov", "mp2v", "mp4", "mp4v", "mpa", "mpe", "mpeg", "mpeg1", "mpeg2", "mpeg4", "mpg", "mpv2",
