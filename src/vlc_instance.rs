@@ -178,10 +178,31 @@ pub(crate) fn drain_parked_logs() {
     singleton.bind_mut().emit_parked_logs();
 }
 
+/// The one LibVLC instance this extension runs on, registered as an engine
+/// singleton while the scene layer is initialised.
+///
+/// It is built from two project settings -- `vlc/log_level` and `vlc/arguments` --
+/// and both are read **once**, there: an edit to either applies to the next run of
+/// the project, not to the one that is running. `vlc/log_level` has a runtime
+/// override ([method set_log_level]); `vlc/arguments` has none, because libvlc
+/// offers no way to change an instance's arguments after the instance exists. What
+/// this run was started with is [method get_arguments], and whether there is an
+/// instance at all is [method has_instance].
+///
+/// libvlc's own header advises against that list -- "There is absolutely no warranty
+/// or promise of forward, backward and cross-platform compatibility with regards to
+/// libvlc_new() arguments. We recommend that you do not use them, other than when
+/// debugging." -- so an empty `vlc/arguments` is the supported state, and the
+/// arguments that are worth setting per media go through
+/// [method VLCMedia.add_option] instead.
 #[derive(GodotClass)]
 #[class(base=Object, tool)]
 pub struct VLCInstance {
     instance: Option<*mut vlc::libvlc_instance_t>,
+    /// What `libvlc_new` was handed, kept for [method VLCInstance.get_arguments]:
+    /// the setting it came from can be edited afterwards and this instance cannot
+    /// follow it, so the copy is the only record of what this run is running with.
+    arguments: Vec<GString>,
     log: Box<LogSink>,
     base: Base<Object>,
 }
@@ -221,35 +242,37 @@ impl IObject for VLCInstance {
         );
         ProjectSettings::singleton().add_property_info(&info);
         ProjectSettings::singleton().set_restart_if_changed("vlc/arguments", true);
-        let configured_arguments: Array<GString> = ProjectSettings::singleton()
-            .get_setting("vlc/arguments")
-            .try_to()
-            .unwrap_or_default();
-
-        // Copied rather than used in place: a Godot Array is reference-counted,
-        // so appending the Android default to it would edit the project setting.
-        #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
-        let mut arguments: Vec<GString> = configured_arguments.iter_shared().collect();
-
-        // Android has no window for LibVLC to draw into, and the software
-        // callbacks are the only output that can produce a texture, so `vmem` is
-        // what this extension always wants there. Registering those callbacks
-        // already sets the media player's own `vout`, which outranks an instance
-        // option; this default earns its place when that registration did not
-        // happen, where it turns a silent "no video" into vmem's own "missing
-        // lock callback" error -- the difference between a symptom and a reason.
-        #[cfg(target_os = "android")]
-        {
-            let already_chosen = arguments.iter().any(|argument| {
-                let argument = argument.to_string();
-                argument.starts_with("--vout") || argument.starts_with(":vout")
-            });
-            if !already_chosen {
-                arguments.push(GString::from("--vout=vmem"));
+        // A project that writes this setting by hand can leave it as a plain array,
+        // which is not the array of strings the setting is declared as and does not
+        // convert. Starting with none is the safe reading of that; saying so is what
+        // keeps it from being a silent one.
+        let configured_setting = ProjectSettings::singleton().get_setting("vlc/arguments");
+        let configured_arguments: Array<GString> = match configured_setting.try_to() {
+            Ok(configured_arguments) => configured_arguments,
+            Err(_) => {
+                godot_warn!(
+                    "godot-vlc: vlc/arguments is not an array of strings ({configured_setting:?}); starting with none"
+                );
+                Array::new()
             }
-        }
+        };
 
-        let args: Vec<CString> = arguments.into_iter().map(cstring_from_gstring).collect();
+        // Copied rather than used in place: a Godot Array is reference-counted, so
+        // appending the Android default to it would edit the project setting.
+        let configured: Vec<String> = configured_arguments
+            .iter_shared()
+            .map(|argument| argument.to_string())
+            .collect();
+        let arguments: Vec<GString> = effective_arguments(&configured, cfg!(target_os = "android"))
+            .into_iter()
+            .map(|argument| GString::from(argument.as_str()))
+            .collect();
+
+        let args: Vec<CString> = arguments
+            .iter()
+            .cloned()
+            .map(cstring_from_gstring)
+            .collect();
         let argc = args.len() as c_int;
         let args: Vec<_> = args.iter().map(|s| s.as_ptr()).collect();
         let argv = args.as_ptr();
@@ -273,6 +296,23 @@ impl IObject for VLCInstance {
         // dereferences a key that does not exist yet -- it crashes rather than
         // answering NULL. `libvlc_new` records its own failure, so the message is
         // there to read without clearing anything.
+        // What the instance is being started with, said once and in one line. The
+        // arguments come from a project setting that is read here and nowhere else,
+        // so a project that wonders why an edit did nothing has no other way to see
+        // what this run actually got. It is printed before the call rather than
+        // after it, so that a `libvlc_new` that fails is still explained by what it
+        // was asked for -- and it is the same list [method get_arguments] answers
+        // with, quoted the same way.
+        godot_print!(
+            "godot-vlc: libvlc_new({} args): [{}]",
+            arguments.len(),
+            arguments
+                .iter()
+                .map(|argument| format!("{:?}", argument.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
         let instance = unsafe { vlc::libvlc_new(argc, argv) };
         if instance.is_null() {
             godot_error!(
@@ -281,6 +321,10 @@ impl IObject for VLCInstance {
             );
             return Self {
                 instance: None,
+                // Nothing was started, so there are no arguments in force:
+                // [method get_arguments] answers with the empty list rather than
+                // with the ones that were refused.
+                arguments: Vec::new(),
                 log,
                 base,
             };
@@ -296,6 +340,7 @@ impl IObject for VLCInstance {
         }
         Self {
             instance: Some(instance),
+            arguments,
             log,
             base,
         }
@@ -447,6 +492,50 @@ impl VLCInstance {
         self.log.level.load(Ordering::Relaxed)
     }
 
+    /// The arguments this instance was created with, exactly as they were handed to
+    /// libvlc.
+    ///
+    /// # Returns
+    /// the list `vlc/arguments` held while the extension was loading, in order, plus
+    /// the one default this binding adds on Android; empty when libvlc did not come
+    /// up at all, which [method has_instance] reports.
+    ///
+    /// # Note
+    /// - This is the instance's own copy, not the project setting: the setting is
+    ///   read once, at creation, and editing it afterwards changes what the **next**
+    ///   run gets. A report about what is playing now needs this one; what the
+    ///   project asks for is `ProjectSettings.get_setting("vlc/arguments")`.
+    /// - It is this binding's record, not libvlc's answer: `libvlc_new`'s arguments
+    ///   are write-only, and no API reads an instance's options back.
+    /// - On Android the list can hold an argument no one wrote: `--vout=vmem` is
+    ///   appended when the project did not choose a video output, because that is
+    ///   the only output that can produce a texture there.
+    /// - The same list is printed once, when the instance is created, so a log
+    ///   already answers this for the run it came from.
+    #[func]
+    fn get_arguments(&self) -> PackedStringArray {
+        self.arguments.iter().cloned().collect()
+    }
+
+    /// Whether this extension has a LibVLC instance at all.
+    ///
+    /// # Returns
+    /// `false` when `libvlc_new` failed while the extension was loading -- a missing
+    /// runtime library or a data directory it could not find -- and `true` otherwise.
+    ///
+    /// # Note
+    /// - The failure is already reported: it is logged once, with libvlc's own
+    ///   reason, where the instance is created. This method exists so that a project
+    ///   can check before calling something that would panic: with no instance,
+    ///   every method that needs one fails with that same reason rather than
+    ///   answering.
+    /// - [method get_arguments] answers with an empty list in that state, because
+    ///   nothing was started with any argument.
+    #[func]
+    fn has_instance(&self) -> bool {
+        self.instance.is_some()
+    }
+
     /// The clock behind every time value libvlc reports, in microseconds.
     ///
     /// # Returns
@@ -564,6 +653,37 @@ impl VLCInstance {
     }
 }
 
+/// The arguments this binding hands to `libvlc_new`, in order.
+///
+/// Split out from `VLCInstance::init` so that the rule can be tested without an
+/// engine and without an instance, and so that [method VLCInstance.get_arguments],
+/// the startup line and the call itself cannot disagree about what was handed over.
+///
+/// The project's list is passed through unchanged. Android has no window for LibVLC
+/// to draw into, and the software callbacks are the only output that can produce a
+/// texture, so `vmem` is what this extension always wants there. Registering those
+/// callbacks already sets the media player's own `vout`, which outranks an instance
+/// option; this default earns its place when that registration did not happen, where
+/// it turns a silent "no video" into vmem's own "missing lock callback" error -- the
+/// difference between a symptom and a reason. A project that named a video output
+/// itself has made that choice and keeps it, so the default is appended only when
+/// neither `--vout...` nor `:vout...` is there already.
+///
+/// `android` is a parameter rather than a `cfg` so that both answers can be tested
+/// from one build; the caller passes `cfg!(target_os = "android")`. It works on
+/// `String` rather than on `GString` for the same reason -- a `GString` allocates
+/// through Godot's own interface, which a unit test has not started.
+fn effective_arguments(configured: &[String], android: bool) -> Vec<String> {
+    let mut arguments = configured.to_vec();
+    let chosen_an_output = arguments
+        .iter()
+        .any(|argument| argument.starts_with("--vout") || argument.starts_with(":vout"));
+    if android && !chosen_an_output {
+        arguments.push(String::from("--vout=vmem"));
+    }
+    arguments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +721,36 @@ mod tests {
         // And a value below the range is the loudest state, which is what it has
         // always been here; the setter clamps before anything is stored.
         assert!(reports(-1, 0));
+    }
+
+    /// The project's list reaches libvlc as it was written: same entries, same order,
+    /// and on the desktop nothing else at all.
+    #[test]
+    fn passes_the_configured_arguments_through_unchanged() {
+        assert!(effective_arguments(&[], false).is_empty());
+
+        let configured = [String::from("--no-video"), String::from("--verbose=2")];
+        let arguments = effective_arguments(&configured, false);
+        assert_eq!(arguments.len(), 2);
+        assert_eq!(arguments[0], "--no-video");
+        assert_eq!(arguments[1], "--verbose=2");
+    }
+
+    /// Android appends its `vmem` default, and only when the project has not named a
+    /// video output itself: naming one is the project's decision to make.
+    #[test]
+    fn adds_the_android_video_output_only_when_none_was_chosen() {
+        let configured = [String::from("--no-audio")];
+        let arguments = effective_arguments(&configured, true);
+        assert_eq!(arguments.len(), 2);
+        assert_eq!(arguments[0], "--no-audio");
+        assert_eq!(arguments[1], "--vout=vmem");
+
+        for chosen in ["--vout=dummy", ":vout=gl", "--vout", ":vout"] {
+            let configured = [String::from(chosen)];
+            let arguments = effective_arguments(&configured, true);
+            assert_eq!(arguments.len(), 1, "{chosen} should have been kept alone");
+            assert_eq!(arguments[0], chosen);
+        }
     }
 }
