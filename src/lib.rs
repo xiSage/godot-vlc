@@ -72,6 +72,11 @@ struct GodotVLCExtension;
 unsafe impl ExtensionLibrary for GodotVLCExtension {
     fn on_stage_init(stage: InitStage) {
         if stage == InitStage::Scene {
+            // The loader answers from a project setting, so the setting exists before the
+            // first call reaches it -- and the loader's own first call can be the engine's
+            // scan of the project, which happens after this stage.
+            vlc_media_format_loader::register_extensions_setting();
+
             Engine::singleton()
                 .register_singleton("VLCInstance", &vlc_instance::VLCInstance::new_alloc());
 
