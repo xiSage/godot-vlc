@@ -20,6 +20,33 @@ editor's FileSystem dock keeps the extensions it last scanned, so a change made 
 rescan before it shows the new type. `scripts/check_media_extensions.ps1` compares the list
 the addon ships against the VLC revision it is built from.
 
+`vlc/arguments` is the list of arguments handed to `libvlc_new`, one per entry, and it is read
+once, while the extension loads: **editing it applies to the next run of the project**, which is
+why Godot marks the setting as needing a restart. It is an array of strings, and one written by
+hand into `project.godot` has to say so -- `arguments=Array[String](["--no-video"])` -- because a
+plain array does not convert; the addon warns and starts with none rather than reading it loosely.
+`VLCInstance.get_arguments()` reports what the running instance was actually started with, and
+`VLCInstance.has_instance()` says whether there is one at all. libvlc's own header warns that
+these arguments carry no promise of compatibility between versions, so an empty list is the
+supported state -- and most options belong somewhere narrower, because the instance is created
+once for the whole project:
+
+| Option | Where it goes |
+|---|---|
+| something that belongs to one media (`:start-time`, `:stop-time`, `:no-audio`, …) | `VLCMedia.add_option()`, before the media is assigned |
+| a subtitle, or its delay and text scale | `VLCMedia.add_subtitle()`, `VLCMediaPlayer.set_spu_delay_us()`, `set_spu_text_scale()` |
+| the log level | `vlc/log_level` for the first frame, `VLCInstance.set_log_level()` from any frame on |
+| which files load as `VLCMedia` | `vlc/media_extensions`, read on every load |
+| the video output | the addon's own choice: the software path on Android (`--vout=vmem` is added for it) and the output callbacks on desktop |
+| the audio output | `vlc/arguments`, and a restart -- no bound setter takes effect without one |
+| filters, hardware decoding, cache sizes, network options | `vlc/arguments`, and a restart |
+| anything else that is instance-wide | `vlc/arguments`, and a restart |
+
+Both settings that need a restart are read while the extension loads, and the instance they
+produce lives until the engine shuts down. There is no runtime rebuild: every player, media and
+list libvlc has handed out was built on that instance and keeps it alive, so a new instance
+would be a second one rather than a replacement.
+
 You can also use `VLCMedia.load_from_file()` to load media from disk or `VLCMedia.load_from_mrl()` to load media from a [media resource locator](https://wiki.videolan.org/Media_resource_locator).
 
 Subtitles are resources too. A `.srt`, `.ass`, `.ssa`, `.vtt`, `.sub`, `.smi` or `.ttml` file inside `res://` is imported as a `VLCSubtitle`, and one from anywhere else can be built with `VLCSubtitle.load_from_file()` or `VLCSubtitle.load_from_mrl()`. Either can be handed to `VLCMedia.add_subtitle()` before the media is assigned to a player, or to `VLCMediaPlayer.add_subtitle()` while it is playing; `set_spu_delay_us()` and `set_spu_text_scale()` adjust subtitles that are out of step or too small. VLC's per-media options go through `VLCMedia.add_option()`.
