@@ -14,6 +14,6 @@
 # This is not a statement about the oldest compiler the crate supports. That is
 # Cargo.toml's rust-version, which is deliberately lower.
 [toolchain]
-channel = "1.98.1"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
