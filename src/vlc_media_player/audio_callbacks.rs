@@ -20,15 +20,28 @@
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
     ptr::slice_from_raw_parts,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
-use godot::{
-    classes::{AudioServer, native::AudioFrame},
-    prelude::*,
-};
+use godot::classes::native::AudioFrame;
 use ringbuf::{HeapProd, traits::Producer};
 
 use super::output_sink::OutputSink;
+
+/// The rate libvlc is asked to produce at, in Hz: the one the node sized its ring
+/// buffer with.
+///
+/// Written once, by the node, on the main thread; read here by the setup callback,
+/// which libvlc calls on one of its own threads. Reading it from the `AudioServer`
+/// there would be a call into a Godot object from a thread that owns none, which is
+/// the one thing these callbacks do not otherwise do.
+static MIX_RATE: AtomicU32 = AtomicU32::new(44_100);
+
+/// Records the rate the node built its ring buffer for. Called on the main thread,
+/// before any callback can run.
+pub(crate) fn record_mix_rate(rate: u32) {
+    MIX_RATE.store(rate, Ordering::Relaxed);
+}
 
 /// Runs one audio callback against the ring buffer it fills, or does nothing when
 /// there is nothing left to write into.
@@ -84,14 +97,25 @@ pub(super) unsafe extern "C" fn audio_play_callback(
     };
     unsafe {
         with_audio_sink(data, |rb_prod, sink| {
+            // The ring holds five seconds of stereo audio. A block that finds it full
+            // arrives while nothing has been taking audio out of it for that long --
+            // a paused node, a stalled output -- so the block is dropped rather than
+            // queueing audio that is already late. That is recorded, not printed: this
+            // runs on libvlc's thread, and the frame that can print is the node's.
+            let mut dropped = false;
             for i in 0..count as usize {
                 let left = samples[i * 2];
                 let right = samples[i * 2 + 1];
                 let frame = AudioFrame { left, right };
                 if rb_prod.try_push(frame).is_err() {
-                    godot_error!("godot-vlc: audio buffer full");
+                    dropped = true;
                     break;
                 }
+            }
+            if dropped {
+                sink.mark_audio_overflow();
+            } else {
+                sink.clear_audio_overflow();
             }
 
             // The node is started from the frame, not from here: `is_playing` and
@@ -133,7 +157,7 @@ pub(super) unsafe extern "C" fn audio_setup_callback(
 ) -> c_int {
     unsafe {
         format.copy_from(c"FL32".as_ptr(), 5);
-        *rate = AudioServer::singleton().get_mix_rate() as c_uint;
+        *rate = MIX_RATE.load(Ordering::Relaxed) as c_uint;
         *channels = 2;
         0
     }

@@ -75,6 +75,7 @@ pub(crate) struct OutputSink {
     accepting: AtomicBool,
     play_requested: AtomicBool,
     flush_requested: AtomicBool,
+    audio_overflow: AtomicBool,
     pause_request: AtomicU8,
     video_tx: Mutex<Option<VideoSender>>,
     audio: Mutex<Option<AudioSlot>>,
@@ -96,6 +97,7 @@ impl OutputSink {
             accepting: AtomicBool::new(true),
             play_requested: AtomicBool::new(false),
             flush_requested: AtomicBool::new(false),
+            audio_overflow: AtomicBool::new(false),
             pause_request: AtomicU8::new(PAUSE_NONE),
             video_tx: Mutex::new(Some(video_tx)),
             audio: Mutex::new(Some(audio)),
@@ -114,7 +116,7 @@ impl OutputSink {
     ///
     /// `data` has to be an address from [`OutputSink::leak`]. Those are never
     /// freed, so the reference is valid for the rest of the process.
-    pub(crate) unsafe fn from_opaque<'a>(data: *mut c_void) -> &'a Self {
+    pub(crate) unsafe fn from_opaque(data: *mut c_void) -> &'static Self {
         unsafe { &*(data as *const Self) }
     }
 
@@ -174,6 +176,27 @@ impl OutputSink {
             PAUSE_RESUMED => Some(false),
             _ => None,
         }
+    }
+
+    /// Records that libvlc produced a block the ring buffer had no room for.
+    ///
+    /// The callback that finds the ring full has nowhere to say so: it runs on
+    /// libvlc's thread, where printing through Godot's logger is a call into an object
+    /// that thread does not own. It leaves the record here instead, and the frame
+    /// reports it once.
+    pub(crate) fn mark_audio_overflow(&self) {
+        self.audio_overflow.store(true, Ordering::Release);
+    }
+
+    /// Whether libvlc has produced more audio than the player has taken since the ring
+    /// last had room again.
+    pub(crate) fn is_audio_overflowing(&self) -> bool {
+        self.audio_overflow.load(Ordering::Acquire)
+    }
+
+    /// The ring has room again, so the next overflow is a new one and gets reported.
+    pub(crate) fn clear_audio_overflow(&self) {
+        self.audio_overflow.store(false, Ordering::Release);
     }
 
     /// A sender for the frames of a video output, or `None` when there is nothing

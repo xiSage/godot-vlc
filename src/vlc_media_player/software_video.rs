@@ -20,7 +20,6 @@
 use std::{
     ffi::{c_char, c_uint, c_void},
     ptr,
-    sync::mpsc,
 };
 
 use godot::{
@@ -28,7 +27,7 @@ use godot::{
     prelude::*,
 };
 
-use super::output_sink::OutputSink;
+use super::output_sink::{OutputSink, VideoSender};
 
 /// One video output's picture, and where its frames go.
 ///
@@ -37,10 +36,27 @@ use super::output_sink::OutputSink;
 /// lifetime -- the player can be freed first (a media list player retains it), and
 /// then a borrowed address would be one into a freed object. An output that is
 /// opened after that gets no sender at all and simply delivers nowhere.
+///
+/// The sink is the exception: it is leaked on purpose and outlives everything libvlc
+/// can do with it (see `output_sink.rs`), so the display callback may read it to ask
+/// whether the player is taking pictures at all.
 struct SoftwareVideoState {
-    tx: Option<mpsc::Sender<(bool, Gd<Image>)>>,
+    tx: Option<VideoSender>,
+    sink: &'static OutputSink,
     img: Gd<Image>,
     buffer: PackedByteArray,
+}
+
+impl SoftwareVideoState {
+    /// Whether the player is somewhere a picture would be shown.
+    ///
+    /// A node that is paused or out of the tree takes no frames, and a picture copied
+    /// for it would only wait in the channel: it would come out late at best, and
+    /// before this check came out all at the engine's frame rate, which is a video
+    /// playing its backlog fast instead of playing where the media actually is.
+    fn accepting(&self) -> bool {
+        self.sink.is_accepting()
+    }
 }
 
 pub(super) unsafe extern "C" fn video_lock_callback(
@@ -76,7 +92,12 @@ pub(super) unsafe extern "C" fn video_display_callback(opaque: *mut c_void, _pic
         let state = (opaque as *mut SoftwareVideoState).as_mut().unwrap();
         // No sender is the player having been freed while this output was still
         // running; the frame is drawn for nobody rather than sent to a dead channel.
-        if let Some(tx) = &state.tx {
+        // A player that is not accepting is paused or out of the tree: neither will
+        // show this picture, and copying it would only add a frame to a backlog that
+        // nobody is waiting for.
+        if let Some(tx) = &state.tx
+            && state.accepting()
+        {
             _ = tx.send((false, Gd::duplicate_resource(&state.img).cast()));
         }
     }
@@ -115,7 +136,12 @@ pub(super) unsafe extern "C" fn video_format_callback(
         {
             return 0;
         }
-        *opaque = Box::into_raw(Box::new(SoftwareVideoState { tx, img, buffer })) as *mut c_void;
+        *opaque = Box::into_raw(Box::new(SoftwareVideoState {
+            tx,
+            sink,
+            img,
+            buffer,
+        })) as *mut c_void;
         1
     }
 }

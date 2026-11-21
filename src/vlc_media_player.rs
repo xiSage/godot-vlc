@@ -24,6 +24,7 @@ pub mod internal_audio_stream_playback;
 mod list_player;
 mod output_sink;
 mod software_video;
+mod stall_watch;
 mod time_watch;
 
 #[cfg(all(feature = "gpu", windows))]
@@ -52,7 +53,7 @@ use crate::{
 };
 use godot::{
     classes::{
-        AudioServer, AudioStream, AudioStreamPlayer, Control, IControl, Image, ImageTexture,
+        AudioServer, AudioStream, AudioStreamPlayer, Control, IControl, Image, ImageTexture, Node,
         Texture2D, TextureRect,
         control::{LayoutPreset, LayoutPresetMode},
         image,
@@ -244,8 +245,59 @@ unsafe fn dictionaries<T: Description>(entries: *mut *mut T, count: c_int) -> Ar
     entries
 }
 
+/// `Node::NOTIFICATION_SUSPENDED` and `Node::NOTIFICATION_UNSUSPENDED`.
+///
+/// The engine sends these to every node when the tree is suspended, which is what the
+/// editor's Suspend button does. Suspending does not set `paused`, so no
+/// `NOTIFICATION_PAUSED` follows and `can_process` keeps saying yes; the only report
+/// is this pair (`SceneTree::set_suspend` -> `Node::_propagate_suspend_notification`).
+/// They are not bound for scripting, and the numbers are the ones the engine has used
+/// since 4.4: 9001 and 9002 are the editor's save notifications, and these two follow
+/// them.
+const NOTIFICATION_SUSPENDED: i32 = 9003;
+const NOTIFICATION_UNSUSPENDED: i32 = 9004;
+
 /// A control used for video playback.\
 /// This control provides a simple way to play video files using the VLC library. It supports most common video formats, including MP4, MKV, AVI, etc.
+///
+/// Audio is played through a child `AudioStreamPlayer`, from a buffer five seconds
+/// long that libvlc's audio callbacks fill.
+///
+/// Playback belongs to the node's processing: the media plays while this node
+/// processes and stops when it does not, so nothing runs on behind a node that is not
+/// showing it.
+///
+/// The engine's pause is passed on that way. This node takes no frames and its child
+/// plays no audio while paused, so a media left running would decode on behind a frozen
+/// picture and come back a pause's length further along: a playing media is paused with
+/// the tree instead, and resumed with it. The picture then holds the frame it had, and
+/// the ring keeps the audio it had already buffered, because nothing new is produced --
+/// playback continues from where it stopped. Leaving the tree freezes the media the
+/// same way, and entering it resumes it. A suspended tree -- the editor's Suspend
+/// button, which stops processing without setting `paused` -- freezes the media too,
+/// for the same reason.
+///
+/// Only a pause this node made is undone: a media the caller paused stays paused, and
+/// one that never started is not started. A player whose `process_mode` is
+/// `PROCESS_MODE_ALWAYS` is not paused by the tree at all, so it keeps playing through
+/// a pause; a suspended tree freezes it like everything else, because a suspension
+/// stops the game rather than the node.
+///
+/// A break in the debugger is the same rule with nothing to announce it: the main loop
+/// stops where it is, no notification is sent, and no method here runs while the game
+/// is held -- the editor's Pause button is that break. A thread this node starts
+/// watches its own heartbeat, and pauses a playing media once a quarter second has
+/// passed without a frame; the first frame afterwards resumes it. That quarter second
+/// is content skipped by every break, which is why it is short. A node that stops
+/// processing on its own -- `set_process_internal(false)` with the game still running
+/// -- stops the media the same way, and that is the intended behaviour rather than a
+/// side effect: nothing else plays the sound.
+///
+/// A media libvlc will not pause -- a live stream, a player with nothing open -- is
+/// covered by the callbacks instead: they drop what libvlc produces while the node is
+/// not processing rather than queueing it, so playback resumes where the stream is and
+/// the ring never holds more than the five seconds it was given. One line is logged
+/// when a buffer does fill anyway, not one per dropped block.
 #[derive(GodotClass)]
 #[class(base=Control, rename=VLCMediaPlayer)]
 struct VlcMediaPlayer {
@@ -333,6 +385,35 @@ struct VlcMediaPlayer {
     output_sink: Arc<output_sink::OutputSink>,
     video_rx: mpsc::Receiver<(bool, Gd<Image>)>,
     audio_player: Gd<AudioStreamPlayer>,
+    /// Whether the overflow the callbacks recorded has been reported already.
+    ///
+    /// The ring stays full for as long as nothing drains it, and every block libvlc
+    /// produces while it is full is dropped by the same callbacks: reporting each of
+    /// those would turn one stall into a line every few tens of milliseconds. The
+    /// callbacks only record that it happened; the end of the stall clears the record,
+    /// so the next one is reported again.
+    audio_overflow_reported: bool,
+    /// Whether the pause the tree's pause needed was one this node made.
+    ///
+    /// A paused tree pauses the media so that a pause freezes the picture and the
+    /// sound rather than only the node that shows them. Undoing that pause is this
+    /// node's business and nobody else's: a media the caller had already paused was
+    /// never paused here, and resuming it on an unpause would be playing something
+    /// the caller stopped.
+    paused_for_tree: bool,
+    /// Whether the tree is suspended rather than paused.
+    ///
+    /// The editor's Suspend button stops the tree without setting `paused`: nothing in
+    /// the node runs, so no pause notification arrives, but the media would keep
+    /// decoding and come back a suspension's length further along. The engine reports
+    /// it to every node as `NOTIFICATION_SUSPENDED`, which is what this records.
+    suspended: bool,
+    /// Pauses a playing media while the node is not running at all.
+    ///
+    /// A debugger break, or any other stall, stops the main loop where no
+    /// notification can be sent and no method of this node runs, so the stall has to
+    /// be noticed from a thread that is still running.
+    stall_watch: stall_watch::StallWatch,
     /// libvlc-side `Arc<Backend>` ref; the libvlc-side ref is held via the
     /// opaque pointer passed to `libvlc_video_set_output_callbacks`. Both
     /// drop when the player is destroyed (libvlc's via `cleanup_cb`).
@@ -372,7 +453,13 @@ impl IControl for VlcMediaPlayer {
 
         let (video_tx, video_rx) = mpsc::channel();
         let mut audio_player = AudioStreamPlayer::new_alloc();
-        let audio_rb = HeapRb::new(AudioServer::singleton().get_mix_rate() as usize * 5);
+        // The rate libvlc is asked to produce at is the one the ring buffer is sized
+        // with, and it is read here rather than by the setup callback: that callback
+        // runs on libvlc's thread, where a call into the AudioServer is a call into an
+        // object this thread does not own.
+        let mix_rate = AudioServer::singleton().get_mix_rate();
+        audio_callbacks::record_mix_rate(mix_rate as u32);
+        let audio_rb = HeapRb::new(mix_rate as usize * 5);
         let (audio_rb_prod, audio_rb_cons) = audio_rb.split();
         let output_sink = output_sink::OutputSink::new(video_tx, audio_rb_prod);
         let audio_stream = InternalAudioStream::create(audio_rb_cons);
@@ -399,6 +486,10 @@ impl IControl for VlcMediaPlayer {
             output_sink,
             video_rx,
             audio_player,
+            audio_overflow_reported: false,
+            paused_for_tree: false,
+            suspended: false,
+            stall_watch: stall_watch::StallWatch::start(player_ptr),
             #[cfg(all(feature = "gpu", windows))]
             gpu_backend: None,
             #[cfg(all(feature = "gpu", windows))]
@@ -416,6 +507,10 @@ impl IControl for VlcMediaPlayer {
 
     fn on_notification(&mut self, what: ControlNotification) {
         if what == ControlNotification::INTERNAL_PROCESS {
+            // The media is resumed before anything else this frame does, and only a
+            // stall this node's own thread froze is resumed: the watch is the only
+            // thing that ran while the main loop was stopped.
+            self.stall_watch.frame(self.player_ptr, &self.output_sink);
             // What libvlc's audio callbacks asked the node to do goes first: they
             // cannot do it themselves, and this is the frame that can.
             self.apply_audio_intent();
@@ -423,28 +518,41 @@ impl IControl for VlcMediaPlayer {
             // finds a video output the importer did not have before.
             #[cfg(all(feature = "gpu", windows))]
             self.restore_gpu_picture();
-            if let Ok(data) = self.video_rx.try_recv()
-                && data.1.is_instance_valid()
-                && !data.1.is_empty()
-                && data.1.get_data_size() > 0
+            // Only the newest picture is worth showing. A frame that waited in the
+            // channel while the node was not processing is already late, and showing
+            // the frames one per process frame plays that backlog at the engine's
+            // rate: after a paused tree the pause's seconds go by in half the time,
+            // which reads as a jump forward. Every frame is still taken out of the
+            // channel, so a new output's first one still ends the window a media
+            // change opened.
+            let mut newest = None;
+            let mut resized = false;
+            while let Ok(data) = self.video_rx.try_recv() {
+                resized |= data.0;
+                newest = Some(data);
+            }
+            if let Some((_, img)) = newest
+                && img.is_instance_valid()
+                && !img.is_empty()
+                && img.get_data_size() > 0
             {
                 // The first frame of a video output is the one that ends the
                 // window a media change opened (`awaiting_output`); anything
                 // else that arrives while it is open belongs to the output that
                 // just went away.
-                if data.0 {
+                if resized {
                     self.awaiting_output = false;
                 }
                 if !self.awaiting_output {
-                    if data.0 {
-                        self.texture.set_image(&data.1);
+                    if resized {
+                        self.texture.set_image(&img);
                     } else {
-                        self.texture.update(&data.1);
+                        self.texture.update(&img);
                     }
                     // Kept so that a caller can look at the frame itself: the texture
                     // cannot be read back on every rendering driver, and the software
                     // output path already has the image in hand here.
-                    self.frame = Some(data.1.clone());
+                    self.frame = Some(img.clone());
                     self.signals().video_frame().emit();
                 }
             }
@@ -502,16 +610,33 @@ impl IControl for VlcMediaPlayer {
         } else if what == ControlNotification::EXIT_TREE {
             // Nothing is played back from outside the tree, and the callbacks are told
             // so here: by the time Godot frees the audio node, the frame that would
-            // have read their requests is already gone.
+            // have read their requests is already gone. The media is frozen with it,
+            // for the same reason the tree's pause freezes it: nothing can show it.
             self.output_sink.set_accepting(false);
-        } else if what == ControlNotification::ENTER_TREE {
-            self.output_sink.set_accepting(true);
+            self.pause_media_for_tree();
+        } else if what == ControlNotification::ENTER_TREE
+            || what == ControlNotification::PAUSED
+            || what == ControlNotification::UNPAUSED
+        {
+            self.apply_tree_pause();
+        } else if what == ControlNotification::Unknown(NOTIFICATION_SUSPENDED) {
+            // The editor's Suspend button stops the tree without pausing it: no pause
+            // notification follows, and processing simply stops. The media is frozen
+            // here for the same reason a paused tree freezes it.
+            self.suspended = true;
+            self.apply_tree_pause();
+        } else if what == ControlNotification::Unknown(NOTIFICATION_UNSUSPENDED) {
+            self.suspended = false;
+            self.apply_tree_pause();
         }
     }
 }
 
 impl Drop for VlcMediaPlayer {
     fn drop(&mut self) {
+        // The watch is stopped before anything else: it holds the player pointer, and
+        // once the player is released below there is nothing left for it to call.
+        self.stall_watch.stop();
         // A registered time watcher has to go before the player it is registered on:
         // libvlc keeps the timer inside the player, and its own teardown does not
         // remove it. The sink knows whether there is one -- asking libvlc to unwatch
@@ -2603,6 +2728,68 @@ impl VlcMediaPlayer {
 }
 
 impl VlcMediaPlayer {
+    /// Whether this node is processed right now.
+    ///
+    /// The audio node is a child that inherits this node's mode, so this is also the
+    /// answer to "is anything draining the ring buffer". `can_process` belongs to
+    /// `Node`, which this class only reaches through the object it wraps.
+    fn can_process_now(&self) -> bool {
+        self.to_gd().upcast::<Node>().can_process()
+    }
+
+    /// Makes the media follow whether this node is being processed.
+    ///
+    /// The engine pauses nodes, not libvlc: a media left running behind a paused node
+    /// keeps decoding, so the picture freezes on its last frame while the sound is
+    /// collected by nobody, and the media comes back a pause's length further along.
+    /// A pause is therefore passed on to libvlc as well, which freezes the picture and
+    /// stops the audio callbacks -- the ring keeps what it had already buffered, and
+    /// resuming plays it out -- and an unpause resumes the media.
+    ///
+    /// Only a pause this node made is undone. A media the caller paused was never
+    /// paused here, and resuming it on an unpause would be playing something the caller
+    /// stopped; the same holds for a media that never started.
+    ///
+    /// The callbacks are told too, and that is what covers a media libvlc will not
+    /// pause -- a live stream, a player with nothing open: its blocks are dropped
+    /// rather than queued for a node that is not taking them, so playback comes back
+    /// where the stream is.
+    fn apply_tree_pause(&mut self) {
+        // A suspended tree is not a paused one, but it stops processing just the same:
+        // both mean nothing here will show a picture or play a sound until it ends.
+        let runs = self.can_process_now() && !self.suspended;
+        self.output_sink.set_accepting(runs);
+        if runs {
+            self.resume_media_paused_for_tree();
+        } else {
+            self.pause_media_for_tree();
+        }
+    }
+
+    /// Pauses a media that is playing, and remembers that the pause was this node's.
+    fn pause_media_for_tree(&mut self) {
+        if self.paused_for_tree || !self.is_playing() {
+            return;
+        }
+        // `set_pause` rather than `pause`: the latter toggles, so a second pause
+        // notification would resume the media instead of holding it.
+        unsafe { libvlc_media_player_set_pause(self.player_ptr, 1) };
+        self.paused_for_tree = true;
+    }
+
+    /// Undoes [`Self::pause_media_for_tree`], and nothing else.
+    fn resume_media_paused_for_tree(&mut self) {
+        if !self.paused_for_tree {
+            return;
+        }
+        self.paused_for_tree = false;
+        unsafe { libvlc_media_player_set_pause(self.player_ptr, 0) };
+        // libvlc reports the resume on its own thread, and the pause it reported
+        // before may still be on its way: the stream is resumed here rather than one
+        // frame after the media already is.
+        self.output_sink.request_pause(false);
+    }
+
     /// The libvlc player behind this node.
     ///
     /// Used by `list_player.rs`, which hands it to
@@ -2628,7 +2815,26 @@ impl VlcMediaPlayer {
     /// aborted the process in `is_inside_tree`. Here the player is alive by
     /// construction, because this runs from its own frame.
     fn apply_audio_intent(&mut self) {
-        if self.output_sink.take_flush() {
+        // An overflow means libvlc has produced audio the player did not take. The ring
+        // holds five seconds, so whatever is queued is older than what libvlc is
+        // producing now: it is dropped rather than played late, and the audio that
+        // follows starts from the block libvlc is producing.
+        //
+        // The callbacks cannot say this themselves: they find the ring full on libvlc's
+        // thread, where printing through Godot's logger is a call into an object that
+        // thread does not own. They record it in the sink, and this frame reports it
+        // once per stall -- the record clears when a block fits again, which is the
+        // moment the stall is over, so the same loop of drops costs one line rather
+        // than one line per block.
+        let overflowing = self.output_sink.is_audio_overflowing();
+        let first_overflow = overflowing && !self.audio_overflow_reported;
+        if overflowing != self.audio_overflow_reported {
+            self.audio_overflow_reported = overflowing;
+            if first_overflow {
+                godot_error!("godot-vlc: audio buffer full, dropping the queued audio");
+            }
+        }
+        if self.output_sink.take_flush() || first_overflow {
             self.audio_player.stop();
             if let Some(stream) = self.audio_player.get_stream()
                 && let Ok(mut internal_stream) = stream.try_cast::<InternalAudioStream>()
