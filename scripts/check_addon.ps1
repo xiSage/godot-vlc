@@ -516,9 +516,9 @@ function Test-InspectedCoverage {
     check passed vacuously.
 
     The requirement is that a declared directory contains files, not that it
-    contains shared objects. libexec/ and share/ are data -- the out-of-process
-    preparser, the plugin cache generator and the Lua scripts -- and hold no
-    shared objects at all, so requiring some from them failed on a correct addon.
+    contains shared objects. libexec/ and share/ are data -- the compiled Lua
+    scripts and the files they read -- and hold no shared objects at all, so
+    requiring some from them failed on a correct addon.
     #>
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$DeclaredDirectories,

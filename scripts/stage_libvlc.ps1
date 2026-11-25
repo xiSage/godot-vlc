@@ -13,8 +13,9 @@ expects:
     thirdparty/vlc/<platform>/share/**
 
 libexec and share are runtime rather than build-time: the first holds the
-out-of-process preparser and the plugin cache generator, the second the Lua
-scripts. Without them every plugin still loads and no interface can start.
+compiled Lua scripts (metadata readers, playlist parsers, service discovery),
+the second the Lua files that are read as data. Without them every plugin still
+loads and the Lua-backed modules then do nothing, without saying so.
 
 The Android runtime, which build/vlc-android/ produces, has neither. It is
 monolithic -- every module linked into libvlc.so -- so there is no plugin tree to
@@ -67,10 +68,11 @@ foreach ($platform in $Platforms) {
     New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
 
     # bsdtar (shipped with Windows 10+) and GNU tar both accept this form.
-    # libexec and share are runtime, not build-time: libexec carries the preparser
-    # and plugin cache generator, share carries the Lua scripts. A runtime without
-    # them loads every plugin and still cannot start an interface. The Android
-    # runtime has neither and is unpacked as what it is.
+    # libexec and share are runtime, not build-time: libexec carries the compiled
+    # Lua scripts, share carries the Lua files that are read as data. A runtime
+    # without them loads every plugin and the Lua-backed modules then do nothing,
+    # without saying so. The Android runtime has neither and is unpacked as what
+    # it is.
     $isAndroid = $platform -like 'android-*'
     $members = if ($isAndroid) { @('include', 'lib') } else { @('include', 'lib', 'libexec', 'share') }
     if ($IncludeTools -and -not $isAndroid) { $members += 'tools' }
@@ -95,11 +97,51 @@ foreach ($platform in $Platforms) {
     } else {
         $libexecCheck = Join-Path $targetDir 'libexec/vlc'
         if (-not (Test-Path -LiteralPath $libexecCheck -PathType Container)) {
-            throw "'$artifactName' does not contain libexec/vlc; the runtime could not start an interface."
+            throw "'$artifactName' does not contain libexec/vlc; the Lua metadata readers and playlist parsers would be missing."
         }
         $shareCheck = Join-Path $targetDir 'share/vlc'
         if (-not (Test-Path -LiteralPath $shareCheck -PathType Container)) {
             throw "'$artifactName' does not contain share/vlc; the Lua-based modules would be missing."
+        }
+
+        # `make install` also puts two executables here, and neither is ever run
+        # by this runtime, so both are dropped before anything can copy them into
+        # an addon:
+        #
+        #   vlc-cache-gen   writes plugins/plugins.dat, and only ever from VLC's
+        #                   own install-exec-hook (bin/Makefile.am:166-180), which
+        #                   runs it only when the build is native; a cross build
+        #                   prints "Cross-compilation: cache generation skipped!"
+        #                   and ships no cache at all. No source file mentions
+        #                   the name, so no runtime path can reach it. The cache
+        #                   is an optimisation: without it the module bank logs
+        #                   one line and scans the plugin directories instead.
+        #
+        #   vlc-preparser   the out-of-process preparser, spawned from
+        #                   src/preparser/external.c when a preparser is built
+        #                   with external_process = true. playlist and
+        #                   medialibrary set that; the media parse and thumbnail
+        #                   APIs this binding exposes set it false (lib/core.c:272
+        #                   and :293) and preparse in process, and the main
+        #                   playlist is created lazily, when an interface is added
+        #                   (src/libvlc.c:489-535), which this binding never does.
+        #
+        # Both are compiled executables, and the Godot Asset Store refuses a
+        # package containing "Standalone, compiled executables". Dropping them
+        # costs nothing measured: with and without, all 43 acceptance tests pass
+        # and the run logs are identical line for line.
+        #
+        # They are dropped here rather than in build/vlc/build.ps1 because that
+        # script is part of the runtime cache key in .github/workflows/build.yml,
+        # so editing it would rebuild both runtimes from contrib, and because the
+        # tarball is an internal cache that is never downloaded by users. BaseName
+        # matches vlc-preparser and vlc-preparser.exe alike.
+        foreach ($name in @('vlc-cache-gen', 'vlc-preparser')) {
+            foreach ($item in @(Get-ChildItem -LiteralPath $libexecCheck -File -Force |
+                    Where-Object { $_.BaseName -eq $name })) {
+                Remove-Item -LiteralPath $item.FullName -Force
+                Write-Host "stage_libvlc: dropped libexec/vlc/$($item.Name) (compiled executable, never run)"
+            }
         }
     }
 
